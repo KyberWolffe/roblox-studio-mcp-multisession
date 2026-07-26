@@ -11,7 +11,7 @@ command downloads the versioned bootstrap from an exact tag, verifies its
 published digest, pins the archive digest, and runs only the verified file:
 
 ```bash
-/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.2 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
+/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.2 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 61c88ef0c582917b3d4606439d027f7c79764b8288a100f1cd7645525fc03328
 ```
 
 This bootstrap path is for a fresh install or reinstalling the same version.
@@ -65,7 +65,7 @@ installed manager:
   --tag v0.3.0-rc.2 \
   --archive ./roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz \
   --checksum-file ./roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256 \
-  --expected-sha256 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
+  --expected-sha256 61c88ef0c582917b3d4606439d027f7c79764b8288a100f1cd7645525fc03328
 ```
 
 Do not paste a GitHub token into chat, a v2 configuration file, a command-line

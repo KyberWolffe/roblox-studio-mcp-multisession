@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import socketserver
 import threading
 import time
 import uuid
@@ -107,6 +108,18 @@ class V2HTTPServer(ThreadingHTTPServer):
     # graceful stop. SO_REUSEADDR avoids a TIME_WAIT-only restart failure; it
     # does not permit a second concurrent listener on the same loopback tuple.
     allow_reuse_address = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind() performs socket.getfqdn(host), which is an
+        # unnecessary reverse-DNS lookup for an already validated literal
+        # loopback address. A slow or broken local resolver must never delay
+        # authenticated broker readiness.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        if host not in {"127.0.0.1", "::1"}:
+            raise ValueError("The v2 hub bound a non-loopback address")
+        self.server_name = host
+        self.server_port = port
 
     def __init__(
         self,

@@ -18,6 +18,8 @@ Studio. See [V1 capability parity](CAPABILITY_PARITY.md).
 - Authenticated Python loopback clients now ignore all ambient HTTP proxy
   settings and refuse redirects, so local bearer credentials cannot be routed
   through a proxy or forwarded away from the exact broker endpoint.
+- Broker startup skips reverse-DNS lookup for the already validated literal
+  loopback address, avoiding resolver-dependent startup delays on macOS.
 - GitHub CI suppresses Python bytecode for every project command and audits the
   source tree before and after tests.
 - Multiple Studio windows register as distinct authenticated sessions.
@@ -60,7 +62,7 @@ The installed manager accepts a selected version tag:
   --owner KyberWolffe \
   --repo roblox-studio-mcp-multisession \
   --tag v0.3.0-rc.2 \
-  --expected-sha256 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
+  --expected-sha256 61c88ef0c582917b3d4606439d027f7c79764b8288a100f1cd7645525fc03328
 ```
 
 For a private repository, download the archive and checksum through an

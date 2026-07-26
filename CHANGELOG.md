@@ -15,6 +15,9 @@ Security and CI correction to the unpublished `0.3.0-rc.1` candidate.
   or prevent local broker readiness.
 - The disposable mock Studio applies the same loopback-only, proxy-free,
   no-redirect transport boundary.
+- Broker binding bypasses Python's unnecessary reverse-DNS lookup for an
+  already validated literal loopback address, so slow local name resolution
+  cannot exhaust the bounded startup deadline.
 - GitHub workflows suppress bytecode for every project Python command and
   audit the checkout before and after tests, preventing `__pycache__` from
   contaminating deterministic source audits.

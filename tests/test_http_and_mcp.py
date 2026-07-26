@@ -100,6 +100,31 @@ class HTTPBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(401, status)
         self.assertEqual("authentication_failed", payload["error"]["code"])
 
+    async def test_server_bind_never_resolves_loopback_hostname(self):
+        with mock.patch(
+            "socket.getfqdn",
+            side_effect=AssertionError("loopback DNS lookup is forbidden"),
+        ) as lookup:
+            server = create_http_server(
+                "127.0.0.1",
+                0,
+                loop=asyncio.get_running_loop(),
+                registry=self.registry,
+                service=self.service,
+                catalog=self.catalog,
+                security=HubSecurityConfig(
+                    studio_token=STUDIO_TOKEN,
+                    client_token=CLIENT_TOKEN,
+                    client_principal=Principal.create("dns-free-test"),
+                ),
+            )
+        try:
+            self.assertEqual("127.0.0.1", server.server_name)
+            self.assertGreater(server.server_port, 0)
+            lookup.assert_not_called()
+        finally:
+            server.server_close()
+
     async def test_studio_and_client_tokens_are_separate(self):
         status, _ = await self._request(
             "/v2/client/tools", STUDIO_TOKEN, {}
