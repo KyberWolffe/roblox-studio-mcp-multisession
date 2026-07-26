@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} / Apple Silicon
+    runs-on: macos-15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python:
+          - "3.11"
+          - "3.13"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: arm64
+
+      - name: Enforce native Apple Silicon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          if [[ "$(/usr/sbin/sysctl -in sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+            echo "Rosetta execution is unsupported." >&2
+            exit 1
+          fi
+          python3 -c 'import platform_support; platform_support.require_supported_platform(); platform_support.require_supported_runtime()'
+
+      - name: Validate JSON catalogs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in config/*.json tests/fixtures/*.json; do
+            python3 -m json.tool "$file" >/dev/null
+          done
+
+      - name: Enforce 25-tool capability parity gate
+        run: python3 scripts/validate_capability_parity.py
+
+      - name: Run complete test suite
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -v
+
+  release-proof:
+    name: Deterministic release proof
+    runs-on: macos-15
+    timeout-minutes: 25
+    needs: test
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          architecture: arm64
+
+      - name: Enforce native Apple Silicon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          if [[ "$(/usr/sbin/sysctl -in sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+            echo "Rosetta execution is unsupported." >&2
+            exit 1
+          fi
+
+      - name: Audit repository
+        run: python3 scripts/audit_release.py --repo .
+
+      - name: Build twice and compare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/build_durable_release.py --output-dir dist-a
+          python3 -B scripts/build_durable_release.py --output-dir dist-b
+          diff -qr dist-a dist-b
+          mkdir dist
+          cp dist-a/* dist/
+
+      - name: Audit archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print)"
+          test -n "$archive"
+          python3 scripts/audit_release.py --archive "$archive"
+
+      - name: Prove isolated install lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print)"
+          python3 scripts/prove_release.py \
+            --archive "$archive" \
+            --checksum-file "${archive}.sha256"
+
+      - name: Verify reproducible release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            shasum -a 256 --check ./*.tar.gz.sha256
+            shasum -a 256 --check ./*.py.sha256
+            shasum -a 256 --check SHA256SUMS
+          )
+
+      - name: Upload candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: roblox-studio-mcp-v2-macos-arm64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
+            dist/*.py
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

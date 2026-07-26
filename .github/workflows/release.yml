@@ -1,0 +1,235 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing version tag, for example v0.3.0-rc.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate exact tag and build
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit_sha: ${{ steps.version.outputs.commit_sha }}
+
+    steps:
+      - name: Check out requested tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          architecture: arm64
+
+      - name: Validate platform, tag, and package version
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          if [[ "$(/usr/sbin/sysctl -in sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+            echo "Rosetta execution is unsupported." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$ ]]; then
+            echo "Release tag is not a safe semantic version." >&2
+            exit 1
+          fi
+          commit_sha="$(git rev-parse HEAD)"
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{}")"
+          test "$tag_commit" = "$commit_sha"
+          version="$(python3 -c 'from release_tools.installer import VERSION; print(VERSION)')"
+          test "$RELEASE_TAG" = "v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Run complete test suite
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -v
+
+      - name: Enforce tagged 25-tool capability parity gate
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: python3 scripts/validate_capability_parity.py --tag "$RELEASE_TAG"
+
+      - name: Audit repository
+        run: python3 scripts/audit_release.py --repo .
+
+      - name: Build twice and compare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/build_durable_release.py --output-dir dist-a
+          python3 -B scripts/build_durable_release.py --output-dir dist-b
+          diff -qr dist-a dist-b
+          mkdir dist
+          cp dist-a/* dist/
+
+      - name: Audit archive and prove isolated lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print)"
+          test -n "$archive"
+          python3 scripts/audit_release.py --archive "$archive"
+          python3 scripts/prove_release.py \
+            --archive "$archive" \
+            --checksum-file "${archive}.sha256"
+
+      - name: Stage release assets and manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            shasum -a 256 --check ./*.tar.gz.sha256
+            shasum -a 256 --check ./*.py.sha256
+            shasum -a 256 --check SHA256SUMS
+          )
+
+      - name: Upload validated release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.version.outputs.version }}-macos-arm64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
+            dist/*.py
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish protected GitHub Release
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 10
+    environment: github-release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out release notes from exact tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.build.outputs.commit_sha }}
+          fetch-depth: 1
+          # The ephemeral job token is retained only so the final step can
+          # re-fetch and re-resolve the remote tag immediately before publish.
+          persist-credentials: true
+
+      - name: Download validated assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.build.outputs.version }}-macos-arm64
+          path: release-assets
+
+      - name: Verify downloaded assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          (
+            cd release-assets
+            shasum -a 256 --check ./*.tar.gz.sha256
+            shasum -a 256 --check ./*.py.sha256
+            shasum -a 256 --check SHA256SUMS
+          )
+
+      - name: Require maintainer-attested release policy
+        env:
+          RELEASE_POLICY_ATTESTED: ${{ vars.RELEASE_POLICY_ATTESTED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RELEASE_POLICY_ATTESTED" = \
+            "immutable-releases+protected-v-tags-v1"
+
+      - name: Stage exact-tag draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_COMMIT_SHA: ${{ needs.build.outputs.commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite assets." >&2
+            exit 1
+          fi
+          prerelease=()
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+          verify_ref="refs/tags/release-candidate-verify"
+          git fetch --no-tags --force origin \
+            "refs/tags/$RELEASE_TAG:$verify_ref"
+          remote_tag_commit="$(git rev-parse "${verify_ref}^{}")"
+          if [[ "$remote_tag_commit" != "$RELEASE_COMMIT_SHA" ]]; then
+            echo "Release tag moved after validation; refusing publication." >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --target "$RELEASE_COMMIT_SHA" \
+            --title "Roblox Studio MCP v2 $RELEASE_VERSION" \
+            --notes-file "docs/RELEASE_NOTES_$RELEASE_VERSION.md" \
+            "${prerelease[@]}"
+
+      - name: Recheck tag and publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT_SHA: ${{ needs.build.outputs.commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_ref="refs/tags/release-publish-verify"
+          git fetch --no-tags --force origin \
+            "refs/tags/$RELEASE_TAG:$verify_ref"
+          remote_tag_commit="$(git rev-parse "${verify_ref}^{}")"
+          if [[ "$remote_tag_commit" != "$RELEASE_COMMIT_SHA" ]]; then
+            echo "Release tag moved while the draft was staged; refusing publication." >&2
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --verify-tag \
+            --target "$RELEASE_COMMIT_SHA"
+          immutable="$(
+            gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isImmutable \
+              --jq '.isImmutable'
+          )"
+          test "$immutable" = "true"
+          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"

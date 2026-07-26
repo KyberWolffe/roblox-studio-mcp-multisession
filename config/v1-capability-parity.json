@@ -1,0 +1,329 @@
+{
+  "schema_version": 1,
+  "release_version": "0.3.0-rc.1",
+  "baseline": {
+    "catalog_path": "config/tool-catalog.json",
+    "modern_tool_count": 25,
+    "legacy_alias_count": 6,
+    "excluded_legacy_aliases": [
+      "GetConsoleOutput",
+      "GetStudioMode",
+      "InsertModel",
+      "RunCode",
+      "RunScriptInPlayMode",
+      "StartStopPlay"
+    ]
+  },
+  "policy": {
+    "full_parity_claimed": false,
+    "p0_complete": false,
+    "no_global_v1_fallback": true,
+    "complete_statuses": [
+      "v2_full",
+      "native_codex_equivalent"
+    ],
+    "allowed_statuses": [
+      "v2_full",
+      "v2_partial",
+      "native_codex_equivalent",
+      "deferred"
+    ]
+  },
+  "tools": [
+    {
+      "name": "http_get",
+      "priority": "P1",
+      "status": "native_codex_equivalent",
+      "p0_gap": false,
+      "references": [
+        {
+          "kind": "native_codex",
+          "name": "web_browsing"
+        }
+      ],
+      "gap": null,
+      "phase": "phase_1_complete"
+    },
+    {
+      "name": "character_navigation",
+      "priority": "P0",
+      "status": "deferred",
+      "p0_gap": true,
+      "references": [],
+      "gap": "No bounded session-local character navigation adapter exists.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "user_mouse_input",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_fire_input_binding"
+        }
+      ],
+      "gap": "V2 can fire an existing Scriptable InputBinding but cannot inject arbitrary mouse or Studio UI input.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "search_game_tree",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_list_tree"
+        }
+      ],
+      "gap": "The bounded tree reader lacks the upstream keyword, class, summary, and pagination semantics.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "script_search",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_list_tree"
+        }
+      ],
+      "gap": "Tree inspection can locate known paths but there is no bounded fuzzy script-name search adapter.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "upload_image",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "No reviewed authenticated Roblox asset-upload adapter exists.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "script_read",
+      "priority": "P0",
+      "status": "v2_full",
+      "p0_gap": false,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_read_script"
+        }
+      ],
+      "gap": null,
+      "phase": "phase_1_complete"
+    },
+    {
+      "name": "insert_asset",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "No bounded asset insertion adapter or permission contract exists.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "subagent",
+      "priority": "P1",
+      "status": "native_codex_equivalent",
+      "p0_gap": false,
+      "references": [
+        {
+          "kind": "native_codex",
+          "name": "multi_agent_delegation"
+        }
+      ],
+      "gap": null,
+      "phase": "phase_1_complete"
+    },
+    {
+      "name": "multi_edit",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_update_script"
+        }
+      ],
+      "gap": "V2 provides whole-source compare-and-swap updates but not the upstream multi-patch edit shape.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "get_studio_state",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_get_state"
+        }
+      ],
+      "gap": "V2 returns identity, mode, and Play state but not the v1 list of available DataModel types.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "search_asset",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "Web search is not equivalent to Creator Store and authenticated inventory search.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "execute_luau",
+      "priority": "P0",
+      "status": "deferred",
+      "p0_gap": true,
+      "references": [],
+      "gap": "Arbitrary Luau evaluation is intentionally absent pending a reviewed capability and authorization design.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "skill",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "No Roblox-specific skill content equivalent to the v1 skill catalog is shipped.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "screen_capture",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_capture_screenshot"
+        }
+      ],
+      "gap": "Current viewport capture exists, but upstream camera-positioning and stored-image semantics are not complete.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "get_console_output",
+      "priority": "P0",
+      "status": "v2_full",
+      "p0_gap": false,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_get_console"
+        }
+      ],
+      "gap": null,
+      "phase": "phase_1_complete"
+    },
+    {
+      "name": "script_grep",
+      "priority": "P0",
+      "status": "deferred",
+      "p0_gap": true,
+      "references": [],
+      "gap": "No bounded cross-script content search adapter exists.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "wait_job_finished",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "broker_tool",
+          "name": "get_studio_job_v2"
+        }
+      ],
+      "gap": "V2 jobs are session-scoped, but upstream primitive-generation job identity and result semantics are not adapted.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "generate_procedural_model",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "No reviewed procedural-generation adapter exists.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "generate_material",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "No reviewed material-generation adapter exists.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "user_keyboard_input",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_fire_input_binding"
+        }
+      ],
+      "gap": "V2 can fire an existing Scriptable InputBinding but cannot inject arbitrary keyboard or Studio UI input.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "start_stop_play",
+      "priority": "P0",
+      "status": "v2_full",
+      "p0_gap": false,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_start_stop_play"
+        }
+      ],
+      "gap": null,
+      "phase": "phase_1_complete"
+    },
+    {
+      "name": "generate_mesh",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "No reviewed mesh-generation adapter exists.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "inspect_instance",
+      "priority": "P0",
+      "status": "v2_partial",
+      "p0_gap": true,
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_list_tree"
+        }
+      ],
+      "gap": "Tree metadata is available, but the full property, attribute, and child inspection shape is not.",
+      "phase": "phase_2"
+    },
+    {
+      "name": "store_image",
+      "priority": "P1",
+      "status": "deferred",
+      "p0_gap": false,
+      "references": [],
+      "gap": "No safe equivalent of the upstream local-file IMAGEID storage mechanism exists.",
+      "phase": "phase_2"
+    }
+  ]
+}

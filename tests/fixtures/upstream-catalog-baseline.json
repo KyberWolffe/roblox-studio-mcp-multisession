@@ -1,0 +1,16 @@
+{
+  "format": "studio-mcp-v2-upstream-fixture",
+  "catalog_version": "fixture-1",
+  "tools": [
+    {
+      "name": "existing_unmapped_tool",
+      "description": "An unchanged baseline-only operation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

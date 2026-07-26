@@ -1,0 +1,31 @@
+{
+  "release_audit_fixture": "synthetic",
+  "sessions": [
+    {
+      "metadata": {
+        "game_id": 9100000001,
+        "name": "Synthetic MCP Place Alpha",
+        "place_id": 9200000001
+      },
+      "studio_id": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "metadata": {
+        "game_id": 9100000002,
+        "name": "Synthetic MCP Place Beta",
+        "place_id": 9200000002
+      },
+      "studio_id": "00000000-0000-4000-8000-000000000002"
+    }
+  ],
+  "user_requests": [
+    {
+      "place_name": "Synthetic MCP Place Alpha",
+      "task": "read the console"
+    },
+    {
+      "place_name": "Synthetic MCP Place Beta",
+      "task": "read the console"
+    }
+  ]
+}

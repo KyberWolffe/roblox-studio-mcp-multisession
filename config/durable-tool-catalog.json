@@ -1,0 +1,320 @@
+{
+  "format": "studio-mcp-v2-durable-catalog",
+  "catalog_version": "0.2.0",
+  "upstream": {
+    "version": "production-v1-snapshot-2026-07-26",
+    "source_sha256": "96130d76240be565f98417414f86e0776a5b73d880f4fadbc5de0bd1c915535b",
+    "compatibility": "reviewed-local-subset-only"
+  },
+  "tools": [
+    {
+      "name": "studio_get_state",
+      "description": "Read bounded connection, document, and Play state from one explicitly targeted Studio session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Get Studio State",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_list_tree",
+      "description": "List a bounded descendant tree beneath one exact Studio instance path.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 0,
+            "maxItems": 64,
+            "description": "Exact child-name segments from the DataModel root; an empty array means the DataModel."
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List Studio Tree",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_read_script",
+      "description": "Read bounded editor source and its SHA-256 revision from one exact LuaSourceContainer path.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 262144
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Read Studio Script",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_update_script",
+      "description": "Compare-and-swap one exact LuaSourceContainer using the current SHA-256 revision before applying bounded source.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "expected_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "new_source": {
+            "type": "string",
+            "maxLength": 262144
+          }
+        },
+        "required": [
+          "path",
+          "expected_sha256",
+          "new_source"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Update Studio Script",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_set_attribute",
+      "description": "Compare an exact prior attribute state, then create, replace, or remove one bounded primitive attribute.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "expected_exists": {
+            "type": "boolean"
+          },
+          "expected_value_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "expected_value": {},
+          "value_type": {
+            "type": "string",
+            "enum": [
+              "remove",
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "path",
+          "name",
+          "expected_exists",
+          "expected_value_type",
+          "value_type"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Set Studio Attribute",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_get_console",
+      "description": "Read a bounded tail of Studio log history from one explicitly targeted Studio session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "max_entries": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Get Studio Console",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_capture_screenshot",
+      "description": "Capture a permission-gated bounded Studio screenshot and return PNG bytes as base64.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "max_width": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 1280
+          },
+          "max_height": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 720
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Capture Studio Screenshot",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_fire_input_binding",
+      "description": "Fire one existing Scriptable InputBinding at an exact Studio path; this cannot inject keys, mouse input, OS input, or Studio UI input.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "state_type": {
+            "type": "string",
+            "enum": [
+              "boolean",
+              "number",
+              "vector2",
+              "vector3"
+            ]
+          },
+          "state": {}
+        },
+        "required": [
+          "path",
+          "state_type",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Fire Scriptable Input Binding",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_start_stop_play",
+      "description": "Start or stop one guarded Play transition in the explicitly targeted Studio session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "is_start": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "is_start"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Start or Stop Studio Play",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

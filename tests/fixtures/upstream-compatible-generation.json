@@ -1,0 +1,10 @@
+{
+  "format": "studio-mcp-v2-generated-compatibility-fixture",
+  "candidate_version": "fixture-2",
+  "upstream_name": "studio_structured_script_read",
+  "durable_handler": "studio_read_script",
+  "exposed_remote_name": "studio_read_script",
+  "exposed_mcp_name": "studio_read_script_v2",
+  "schema_policy": "exact_handler_schema",
+  "raw_upstream_name_exposed": false
+}

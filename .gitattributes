@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.py text eol=lf
+*.luau text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.rbxmx binary
+*.tar.gz binary

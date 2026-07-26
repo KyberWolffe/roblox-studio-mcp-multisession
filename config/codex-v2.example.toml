@@ -1,0 +1,15 @@
+# Example only. The durable installer writes this as a separate table and
+# refuses to replace the existing Roblox_Studio block.
+
+[mcp_servers.Roblox_Studio_v2]
+command = "/absolute/path/to/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2"
+args = []
+enabled = true
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 180
+default_tools_approval_mode = "writes"
+
+# No credential or hub URL belongs in Codex configuration. The stable launcher
+# reads the private, per-install configuration and starts or reuses the
+# authenticated loopback broker.

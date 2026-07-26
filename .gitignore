@@ -1,0 +1,42 @@
+# macOS and editors
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.coverage.*
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+
+# Build and release output
+build/
+dist/
+dist-*/
+release-work/
+release-proof-*/
+*.rbxmx
+
+# Machine-local state and credentials
+.env
+.env.*
+!.env.example
+*.log
+live-v2-run-*/
+host-context.json
+client-context.json
+run-manifest.json
+secrets.json
+runtime.json
+install-state.json
+rollback-receipt*.json

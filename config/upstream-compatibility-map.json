@@ -1,0 +1,58 @@
+{
+  "format": "studio-mcp-v2-upstream-compatibility-map",
+  "manifest_version": "1",
+  "durable_catalog_version": "0.2.0",
+  "schema_policy": "exact_handler_schema",
+  "mappings": [
+    {
+      "upstream_name": "get_studio_state",
+      "family": "state_read",
+      "durable_handler": "studio_get_state"
+    },
+    {
+      "upstream_name": "GetStudioMode",
+      "family": "state_read",
+      "durable_handler": "studio_get_state"
+    },
+    {
+      "upstream_name": "search_game_tree",
+      "family": "tree_read",
+      "durable_handler": "studio_list_tree"
+    },
+    {
+      "upstream_name": "script_read",
+      "family": "script_read",
+      "durable_handler": "studio_read_script"
+    },
+    {
+      "upstream_name": "studio_structured_script_read",
+      "family": "script_read",
+      "durable_handler": "studio_read_script"
+    },
+    {
+      "upstream_name": "get_console_output",
+      "family": "console_read",
+      "durable_handler": "studio_get_console"
+    },
+    {
+      "upstream_name": "GetConsoleOutput",
+      "family": "console_read",
+      "durable_handler": "studio_get_console"
+    },
+    {
+      "upstream_name": "screen_capture",
+      "family": "screenshot",
+      "durable_handler": "studio_capture_screenshot"
+    },
+    {
+      "upstream_name": "start_stop_play",
+      "family": "play_lifecycle",
+      "durable_handler": "studio_start_stop_play"
+    },
+    {
+      "upstream_name": "StartStopPlay",
+      "family": "play_lifecycle",
+      "durable_handler": "studio_start_stop_play"
+    }
+  ]
+}
