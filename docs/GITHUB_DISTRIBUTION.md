@@ -1,8 +1,8 @@
 # GitHub distribution
 
-This document describes the intended release flow. Replace `OWNER` with the
-confirmed GitHub user or organization. Never substitute a mutable branch for
-an exact version tag.
+This document describes the release flow for
+`KyberWolffe/roblox-studio-mcp-multisession`. Never substitute a mutable branch
+for an exact version tag.
 
 ## Public repository
 
@@ -11,7 +11,7 @@ command downloads the versioned bootstrap from an exact tag, verifies its
 published digest, pins the archive digest, and runs only the verified file:
 
 ```bash
-/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- OWNER roblox-studio-mcp-v2 v0.3.0-rc.1 PUBLISHED_BOOTSTRAP_SHA256 PUBLISHED_ARCHIVE_SHA256
+/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.2 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
 ```
 
 This bootstrap path is for a fresh install or reinstalling the same version.
@@ -32,13 +32,13 @@ does not execute content from `main`.
 
 ```bash
 curl --fail --location --remote-name \
-  "https://github.com/OWNER/roblox-studio-mcp-v2/releases/download/v0.3.0-rc.1/roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.3.0-rc.2/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz"
 curl --fail --location --remote-name \
-  "https://github.com/OWNER/roblox-studio-mcp-v2/releases/download/v0.3.0-rc.1/roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.3.0-rc.2/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256"
 shasum -a 256 --check \
-  roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256
-tar -xzf roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz
-python3 roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64/install.py install
+  roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256
+tar -xzf roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz
+python3 roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64/install.py install
 ```
 
 Compare the displayed digest with the GitHub Release notes or another trusted
@@ -51,9 +51,9 @@ authentication outside v2:
 
 ```bash
 gh auth status
-gh release download v0.3.0-rc.1 \
-  --repo OWNER/roblox-studio-mcp-v2 \
-  --pattern 'roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz*'
+gh release download v0.3.0-rc.2 \
+  --repo KyberWolffe/roblox-studio-mcp-multisession \
+  --pattern 'roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz*'
 ```
 
 Then verify and install exactly as above, or pass the local files to the
@@ -62,10 +62,10 @@ installed manager:
 ```bash
 "$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
   update \
-  --tag v0.3.0-rc.1 \
-  --archive ./roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz \
-  --checksum-file ./roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256 \
-  --expected-sha256 PUBLISHED_ARCHIVE_SHA256
+  --tag v0.3.0-rc.2 \
+  --archive ./roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz \
+  --checksum-file ./roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256 \
+  --expected-sha256 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
 ```
 
 Do not paste a GitHub token into chat, a v2 configuration file, a command-line
@@ -75,7 +75,7 @@ argument, or an issue. V2 does not need access to that token.
 
 The release workflow is intentionally manual:
 
-1. Run `python3 scripts/release_dry_run.py` from a clean checkout.
+1. Run `python3 -B scripts/release_dry_run.py` from a clean checkout.
 2. Review the changelog, release notes, audit report, archive manifest, and
    SHA-256 outputs.
 3. Enable GitHub immutable releases for the repository and create an active
@@ -138,10 +138,10 @@ Online update:
 ```bash
 "$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
   update \
-  --owner OWNER \
-  --repo roblox-studio-mcp-v2 \
+  --owner KyberWolffe \
+  --repo roblox-studio-mcp-multisession \
   --tag vNEXT \
-  --expected-sha256 PUBLISHED_ARCHIVE_SHA256
+  --expected-sha256 ARCHIVE_SHA256_FROM_TARGET_RELEASE
 ```
 
 Rollback to a retained installed version:

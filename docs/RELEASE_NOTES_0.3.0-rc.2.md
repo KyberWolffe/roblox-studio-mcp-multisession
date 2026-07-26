@@ -1,4 +1,4 @@
-# Roblox Studio MCP v2 0.3.0-rc.1
+# Roblox Studio MCP v2 0.3.0-rc.2
 
 <!-- experimental-prerelease: true -->
 <!-- capability-parity: incomplete -->
@@ -15,6 +15,11 @@ Studio. See [V1 capability parity](CAPABILITY_PARITY.md).
 
 ## Highlights
 
+- Authenticated Python loopback clients now ignore all ambient HTTP proxy
+  settings and refuse redirects, so local bearer credentials cannot be routed
+  through a proxy or forwarded away from the exact broker endpoint.
+- GitHub CI suppresses Python bytecode for every project command and audits the
+  source tree before and after tests.
 - Multiple Studio windows register as distinct authenticated sessions.
 - Every operational call names an exact `studio_id`; there is no global active
   Studio selection or one-Studio fallback.
@@ -35,10 +40,10 @@ Studio. See [V1 capability parity](CAPABILITY_PARITY.md).
 
 ## Release assets
 
-- `roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz`
-- `roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256`
-- `roblox-studio-mcp-v2-bootstrap-0.3.0-rc.1.py`
-- `roblox-studio-mcp-v2-bootstrap-0.3.0-rc.1.py.sha256`
+- `roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz`
+- `roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256`
+- `roblox-studio-mcp-v2-bootstrap-0.3.0-rc.2.py`
+- `roblox-studio-mcp-v2-bootstrap-0.3.0-rc.2.py.sha256`
 - `SHA256SUMS`
 
 The final published digests must match the locally reproduced
@@ -52,10 +57,10 @@ The installed manager accepts a selected version tag:
 ```bash
 "$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
   update \
-  --owner OWNER \
-  --repo roblox-studio-mcp-v2 \
-  --tag v0.3.0-rc.1 \
-  --expected-sha256 PUBLISHED_ARCHIVE_SHA256
+  --owner KyberWolffe \
+  --repo roblox-studio-mcp-multisession \
+  --tag v0.3.0-rc.2 \
+  --expected-sha256 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
 ```
 
 For a private repository, download the archive and checksum through an
@@ -80,9 +85,9 @@ with a current Python 3.9+ to repin it.
 
 The 0.2.0 broker/plugin operation surface and lifecycle behavior were validated
 with two explicitly authorized disposable Studio places before this repository
-was prepared. The 0.3.0-rc.1 work changes packaging, architecture enforcement,
-update, audit, and CI behavior. Its release proof runs in an isolated temporary
-home and does not open Studio or repeat live place edits.
+was prepared. The 0.3.0-rc.2 work changes packaging, architecture enforcement,
+proxy isolation, update, audit, and CI behavior. Its release proof runs in an
+isolated temporary home and does not open Studio or repeat live place edits.
 
 ## Known limitations
 

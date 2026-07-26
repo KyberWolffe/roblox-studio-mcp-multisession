@@ -2,21 +2,29 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import http.server
 import json
+import os
 import threading
 import unittest
 import urllib.error
 import urllib.request
 import uuid
+from unittest import mock
 
 from studio_mcp_v2.auth import Principal
-from studio_mcp_v2.frontend import HubClient
+from studio_mcp_v2.frontend import (
+    HubClient,
+    HubClientError,
+    _NoRedirectHandler,
+)
 from studio_mcp_v2.http_api import (
     HubSecurityConfig,
     create_http_server,
     submit_to_loop,
 )
 from studio_mcp_v2.mcp_stdio import MCPStdioServer
+from studio_mcp_v2.mock_studio import MockStudioClient
 from studio_mcp_v2.service import ProxyService
 
 from .helpers import CATALOG_PATH
@@ -104,6 +112,168 @@ class HTTPBoundaryTests(unittest.IsolatedAsyncioTestCase):
         names = {tool["name"] for tool in payload["result"]["tools"]}
         self.assertIn("list_roblox_studios_v2", names)
         self.assertNotIn("set_active_studio", names)
+
+    async def test_frontend_loopback_auth_ignores_ambient_proxies(self):
+        hostile_proxy = "http://127.0.0.1:9"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HTTP_PROXY": hostile_proxy,
+                "HTTPS_PROXY": hostile_proxy,
+                "ALL_PROXY": hostile_proxy,
+                "NO_PROXY": "",
+                "http_proxy": hostile_proxy,
+                "https_proxy": hostile_proxy,
+                "all_proxy": hostile_proxy,
+                "no_proxy": "",
+            },
+            clear=False,
+        ):
+            client = HubClient(self.url, CLIENT_TOKEN, timeout_seconds=3)
+            result = await asyncio.to_thread(client.lifecycle_status)
+        self.assertEqual("studio-mcp-v2", result["service"])
+        self.assertTrue(
+            any(
+                isinstance(handler, _NoRedirectHandler)
+                for handler in client._opener.handlers
+            )
+        )
+
+    async def test_mock_studio_loopback_auth_ignores_ambient_proxies(self):
+        hostile_proxy = "http://127.0.0.1:9"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HTTP_PROXY": hostile_proxy,
+                "HTTPS_PROXY": hostile_proxy,
+                "ALL_PROXY": hostile_proxy,
+                "NO_PROXY": "",
+            },
+            clear=False,
+        ):
+            client = MockStudioClient(
+                self.url,
+                STUDIO_TOKEN,
+                "Proxy-isolated mock",
+                [],
+            )
+            await asyncio.to_thread(client.connect)
+        self.assertIsNotNone(client.studio_id)
+
+    async def test_mock_studio_rejects_non_loopback_hub(self):
+        with self.assertRaisesRegex(ValueError, "explicit loopback"):
+            MockStudioClient(
+                "https://example.invalid",
+                STUDIO_TOKEN,
+                "unsafe mock",
+                [],
+            )
+
+    async def test_frontend_never_redirects_bearer_request(self):
+        redirected = threading.Event()
+
+        class Sink(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                redirected.set()
+                self.send_response(204)
+                self.end_headers()
+
+            do_GET = do_POST
+
+            def log_message(self, *_args):
+                return
+
+        sink = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Sink)
+        sink_thread = threading.Thread(target=sink.serve_forever, daemon=True)
+        sink_thread.start()
+        sink_port = sink.server_address[1]
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header(
+                    "Location",
+                    f"http://127.0.0.1:{sink_port}/capture",
+                )
+                self.end_headers()
+
+            def log_message(self, *_args):
+                return
+
+        redirector = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), Redirector
+        )
+        redirect_thread = threading.Thread(
+            target=redirector.serve_forever, daemon=True
+        )
+        redirect_thread.start()
+        try:
+            client = HubClient(
+                "http://127.0.0.1:"
+                + str(redirector.server_address[1]),
+                CLIENT_TOKEN,
+                timeout_seconds=3,
+            )
+            with self.assertRaises(HubClientError):
+                await asyncio.to_thread(client.lifecycle_status)
+            self.assertFalse(redirected.wait(0.1))
+        finally:
+            redirector.shutdown()
+            redirector.server_close()
+            redirect_thread.join(timeout=2)
+            sink.shutdown()
+            sink.server_close()
+            sink_thread.join(timeout=2)
+
+    async def test_frontend_bounds_malformed_http_error_envelopes(self):
+        malformed_bodies = [
+            b"[]",
+            b"null",
+            b'{"error":"bad"}',
+            b'{"error":null}',
+        ]
+
+        for body in malformed_bodies:
+            with self.subTest(body=body):
+                class MalformedError(http.server.BaseHTTPRequestHandler):
+                    def do_POST(self):
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+
+                    def log_message(self, *_args):
+                        return
+
+                server = http.server.ThreadingHTTPServer(
+                    ("127.0.0.1", 0), MalformedError
+                )
+                thread = threading.Thread(
+                    target=server.serve_forever, daemon=True
+                )
+                thread.start()
+                try:
+                    client = HubClient(
+                        "http://127.0.0.1:"
+                        + str(server.server_address[1]),
+                        CLIENT_TOKEN,
+                        timeout_seconds=3,
+                    )
+                    with self.assertRaises(HubClientError) as raised:
+                        await asyncio.to_thread(client.lifecycle_status)
+                    self.assertEqual(
+                        "v2 hub returned an HTTP error",
+                        raised.exception.message,
+                    )
+                    self.assertNotIn(
+                        body.decode("utf-8"), str(raised.exception)
+                    )
+                    self.assertNotIn(CLIENT_TOKEN, str(raised.exception))
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
 
     async def test_lifecycle_status_is_authenticated_and_secret_free(self):
         status, _ = await self._request(

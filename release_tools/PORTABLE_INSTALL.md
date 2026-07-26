@@ -20,7 +20,7 @@ two hashes published with that GitHub Release. The repository README contains
 the copy/paste one-command form. Its trust sequence is:
 
 1. download
-   `roblox-studio-mcp-v2-bootstrap-0.3.0-rc.1.py` from tag `v0.3.0-rc.1`;
+   `roblox-studio-mcp-v2-bootstrap-0.3.0-rc.2.py` from tag `v0.3.0-rc.2`;
 2. compare its SHA-256 with the fixed value in the Release;
 3. run the verified bootstrap with `--owner`, `--repo`, exact `--tag`, and the
    Release's archive digest as `--expected-sha256`;
@@ -37,26 +37,26 @@ For a fully manual/offline installation, download and verify these exact
 assets:
 
 ```text
-roblox-studio-mcp-v2-bootstrap-0.3.0-rc.1.py
-roblox-studio-mcp-v2-bootstrap-0.3.0-rc.1.py.sha256
-roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz
-roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256
+roblox-studio-mcp-v2-bootstrap-0.3.0-rc.2.py
+roblox-studio-mcp-v2-bootstrap-0.3.0-rc.2.py.sha256
+roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz
+roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256
 SHA256SUMS
 ```
 
 Then either extract the verified archive and run:
 
 ```bash
-python3 roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64/install.py install
+python3 roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64/install.py install
 ```
 
 or use the verified bootstrap offline:
 
 ```bash
-python3 ./roblox-studio-mcp-v2-bootstrap-0.3.0-rc.1.py \
-  --tag v0.3.0-rc.1 \
-  --archive ./roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz \
-  --checksum-file ./roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256 \
+python3 ./roblox-studio-mcp-v2-bootstrap-0.3.0-rc.2.py \
+  --tag v0.3.0-rc.2 \
+  --archive ./roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz \
+  --checksum-file ./roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256 \
   --expected-sha256 ARCHIVE_SHA256_FROM_RELEASE
 ```
 
@@ -145,8 +145,8 @@ There is no automatic release update. For a public exact-tag update:
 
 ```bash
 "$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" update \
-  --owner OWNER \
-  --repo roblox-studio-mcp-v2 \
+  --owner KyberWolffe \
+  --repo roblox-studio-mcp-multisession \
   --tag vNEXT_VERSION \
   --expected-sha256 ARCHIVE_SHA256_FROM_RELEASE
 ```

@@ -19,6 +19,8 @@ jobs:
     name: Python ${{ matrix.python }} / Apple Silicon
     runs-on: macos-15
     timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -48,29 +50,36 @@ jobs:
             echo "Rosetta execution is unsupported." >&2
             exit 1
           fi
-          python3 -c 'import platform_support; platform_support.require_supported_platform(); platform_support.require_supported_runtime()'
+          python3 -B -c 'import platform_support; platform_support.require_supported_platform(); platform_support.require_supported_runtime()'
 
       - name: Validate JSON catalogs
         shell: bash
         run: |
           set -euo pipefail
           for file in config/*.json tests/fixtures/*.json; do
-            python3 -m json.tool "$file" >/dev/null
+            python3 -B -m json.tool "$file" >/dev/null
           done
 
       - name: Enforce 25-tool capability parity gate
-        run: python3 scripts/validate_capability_parity.py
+        run: python3 -B scripts/validate_capability_parity.py
+
+      - name: Audit clean source tree before tests
+        run: python3 -B scripts/audit_release.py --repo .
 
       - name: Run complete test suite
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 -m unittest discover -v
+        run: python3 -B -m unittest discover -v
+
+      - name: Audit source tree after tests
+        if: always()
+        run: python3 -B scripts/audit_release.py --repo .
 
   release-proof:
     name: Deterministic release proof
     runs-on: macos-15
     timeout-minutes: 25
     needs: test
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
       - name: Check out source
@@ -96,7 +105,7 @@ jobs:
           fi
 
       - name: Audit repository
-        run: python3 scripts/audit_release.py --repo .
+        run: python3 -B scripts/audit_release.py --repo .
 
       - name: Build twice and compare
         shell: bash
@@ -114,14 +123,14 @@ jobs:
           set -euo pipefail
           archive="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print)"
           test -n "$archive"
-          python3 scripts/audit_release.py --archive "$archive"
+          python3 -B scripts/audit_release.py --archive "$archive"
 
       - name: Prove isolated install lifecycle
         shell: bash
         run: |
           set -euo pipefail
           archive="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print)"
-          python3 scripts/prove_release.py \
+          python3 -B scripts/prove_release.py \
             --archive "$archive" \
             --checksum-file "${archive}.sha256"
 

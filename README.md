@@ -9,7 +9,7 @@ multiple Studio sessions from concurrent Codex tasks. Every Studio-bound tool
 requires an explicit, server-assigned `studio_id`. There is no active Studio
 pointer, implicit single-session choice, or default-session fallback.
 
-Version `0.3.0-rc.1` is a GitHub-distribution release candidate based on the
+Version `0.3.0-rc.2` is a GitHub-distribution release candidate based on the
 live-validated v2 `0.2.0` broker and Studio plugin.
 
 > **Experimental prerelease:** the safe v2 surface does not yet cover all 25
@@ -94,8 +94,8 @@ be isolated before an intentional v1 fallback.
 The repository has no third-party Python dependency:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v
-python3 scripts/release_dry_run.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -v
+python3 -B scripts/release_dry_run.py
 ```
 
 The release dry run audits the repository, builds the deterministic archive
@@ -121,11 +121,12 @@ cross-version replacement is refused unless it is the exact candidate inside
 that live, nonce-fenced update transaction.
 
 The release publishes a small versioned bootstrap separately. The following is
-one command: it downloads from an exact tag, verifies both fixed published
-digests, then runs the verified bootstrap. Replace the owner and two digests:
+one command: it downloads from an exact tag, verifies both fixed release
+digests, then runs the verified bootstrap. The owner, repository, tag, and
+digests below are pinned to this release:
 
 ```bash
-/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- OWNER roblox-studio-mcp-v2 v0.3.0-rc.1 PUBLISHED_BOOTSTRAP_SHA256 PUBLISHED_ARCHIVE_SHA256
+/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.2 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
 ```
 
 The command deliberately does not pipe network content into a shell. The
@@ -136,17 +137,17 @@ The explicit archive path is:
 
 ```bash
 curl --fail --location --remote-name \
-  "https://github.com/OWNER/roblox-studio-mcp-v2/releases/download/v0.3.0-rc.1/roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.3.0-rc.2/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz"
 curl --fail --location --remote-name \
-  "https://github.com/OWNER/roblox-studio-mcp-v2/releases/download/v0.3.0-rc.1/roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.3.0-rc.2/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256"
 shasum -a 256 --check \
-  roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256
-tar -xzf roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz
-python3 roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64/install.py install
+  roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256
+tar -xzf roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz
+python3 roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64/install.py install
 ```
 
-GitHub release assets are not available until a repository owner publishes the
-candidate. Local builds use `dist/` and the same archive format.
+The GitHub release assets use the same deterministic archive format as local
+builds under `dist/`.
 
 ## Installed layout
 
@@ -183,10 +184,10 @@ task; do not manually select a broker session.
 MANAGER="$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage"
 "$MANAGER" repair
 "$MANAGER" update \
-  --owner OWNER \
-  --repo roblox-studio-mcp-v2 \
-  --tag v0.3.0-rc.1 \
-  --expected-sha256 PUBLISHED_ARCHIVE_SHA256
+  --owner KyberWolffe \
+  --repo roblox-studio-mcp-multisession \
+  --tag v0.3.0-rc.2 \
+  --expected-sha256 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
 "$MANAGER" rollback --to-version PREVIOUS_VERSION --accept-current-version CURRENT_VERSION
 "$MANAGER" uninstall
 ```
@@ -219,10 +220,10 @@ archive and checksum, then use:
 
 ```bash
 "$MANAGER" update \
-  --tag v0.3.0-rc.1 \
+  --tag v0.3.0-rc.2 \
   --archive /path/to/release.tar.gz \
   --checksum-file /path/to/release.tar.gz.sha256 \
-  --expected-sha256 PUBLISHED_ARCHIVE_SHA256
+  --expected-sha256 8ba8797cda606c0e5f54cc5447ced92a7ef2a7bc4f3d91d180bc03a363e49d57
 ```
 
 V2 never asks for or stores GitHub credentials. See
@@ -256,6 +257,6 @@ hash-fenced.
 - [Testing and release proof](docs/TESTING.md)
 - [GitHub distribution](docs/GITHUB_DISTRIBUTION.md)
 - [Design provenance and source limits](docs/SOURCE_AUDIT.md)
-- [Release notes](docs/RELEASE_NOTES_0.3.0-rc.1.md)
+- [Release notes](docs/RELEASE_NOTES_0.3.0-rc.2.md)
 - [Changelog](CHANGELOG.md)
 - [License status](LICENSE_STATUS.md)

@@ -106,7 +106,7 @@ covered by:
 Review an explicit local artifact:
 
 ```sh
-python3 -m scripts.review_upstream_catalog \
+python3 -B -m scripts.review_upstream_catalog \
   /absolute/path/to/upstream-tool-catalog.json
 ```
 
@@ -116,7 +116,7 @@ current-user-owned file at
 `Library/Application Support/StudioMCP/tools-cache.json`:
 
 ```sh
-python3 -m scripts.review_upstream_catalog \
+python3 -B -m scripts.review_upstream_catalog \
   --installed-v1-cache
 ```
 
@@ -124,7 +124,7 @@ Run the full generation and publication contracts without writing anything
 before asking the lifecycle manager to stop the v2 broker:
 
 ```sh
-python3 -m scripts.review_upstream_catalog \
+python3 -B -m scripts.review_upstream_catalog \
   --installed-v1-cache \
   --prepare-import \
   --regenerate-durable
@@ -134,7 +134,7 @@ After reviewing the report, atomically import the upstream snapshot and
 regenerate only exact mapped durable schemas:
 
 ```sh
-python3 -m scripts.review_upstream_catalog \
+python3 -B -m scripts.review_upstream_catalog \
   /absolute/path/to/upstream-tool-catalog.json \
   --apply \
   --approve-reviewed-changes \
@@ -149,7 +149,7 @@ hash-named backups and a transaction receipt. If a multi-file replacement
 fails, it restores the prior bytes. Roll back a completed import with:
 
 ```sh
-python3 -m scripts.review_upstream_catalog \
+python3 -B -m scripts.review_upstream_catalog \
   --rollback-receipt /absolute/path/to/catalog-import-receipt-XXXXXXXXXXXX.json
 ```
 

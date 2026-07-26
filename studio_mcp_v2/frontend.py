@@ -10,6 +10,24 @@ from typing import Any, Dict
 from .errors import ProxyError
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """A loopback bearer request must never follow a redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
+def _direct_loopback_opener() -> urllib.request.OpenerDirector:
+    # Never inherit HTTP(S)_PROXY for authenticated loopback traffic. An
+    # ambient proxy must not receive a local bearer token or make local broker
+    # readiness depend on NO_PROXY configuration.
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirectHandler(),
+    )
+
+
 class HubClientError(ProxyError):
     code = "hub_client_error"
     http_status = 502
@@ -33,6 +51,7 @@ class HubClient:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout_seconds = timeout_seconds
+        self._opener = _direct_loopback_opener()
 
     @classmethod
     def from_environment(cls) -> "HubClient":
@@ -58,20 +77,28 @@ class HubClient:
             },
         )
         try:
-            with urllib.request.urlopen(
+            with self._opener.open(
                 request, timeout=self.timeout_seconds
             ) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             try:
-                result = json.loads(exc.read().decode("utf-8"))
-                error = result.get("error", {})
-                raise HubClientError(
-                    str(error.get("message", "v2 hub rejected request")),
-                    details={"remote_code": error.get("code")},
-                )
-            except (json.JSONDecodeError, UnicodeDecodeError):
+                error_payload = json.loads(exc.read().decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 raise HubClientError("v2 hub returned an HTTP error")
+            if not isinstance(error_payload, dict):
+                raise HubClientError("v2 hub returned an HTTP error")
+            error = error_payload.get("error")
+            if not isinstance(error, dict):
+                raise HubClientError("v2 hub returned an HTTP error")
+            message = error.get("message")
+            if not isinstance(message, str) or not message:
+                message = "v2 hub rejected request"
+            details: Dict[str, Any] = {}
+            remote_code = error.get("code")
+            if isinstance(remote_code, str):
+                details["remote_code"] = remote_code
+            raise HubClientError(message, details=details)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise HubTransportError(
                 "Could not reach the isolated v2 hub: " + str(exc)

@@ -4,10 +4,25 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.3.0-rc.2 — 2026-07-26
+
+Security and CI correction to the unpublished `0.3.0-rc.1` candidate.
+
+### Fixed
+
+- Authenticated loopback HTTP now uses a direct, proxy-free opener and refuses
+  redirects. Ambient proxy variables can no longer receive bearer credentials
+  or prevent local broker readiness.
+- The disposable mock Studio applies the same loopback-only, proxy-free,
+  no-redirect transport boundary.
+- GitHub workflows suppress bytecode for every project Python command and
+  audit the checkout before and after tests, preventing `__pycache__` from
+  contaminating deterministic source audits.
+
 ## 0.3.0-rc.1 — 2026-07-26
 
-Release-candidate packaging of the live-validated 0.2.0 multi-session
-architecture.
+Unpublished initial release-candidate packaging of the live-validated 0.2.0
+multi-session architecture.
 
 ### Added
 

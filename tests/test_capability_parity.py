@@ -25,7 +25,7 @@ class CapabilityParityTests(unittest.TestCase):
             "config/durable-tool-catalog.json",
             "config/v1-capability-parity.json",
             "docs/CAPABILITY_PARITY.md",
-            "docs/RELEASE_NOTES_0.3.0-rc.1.md",
+            "docs/RELEASE_NOTES_0.3.0-rc.2.md",
         ):
             source = ROOT / relative
             destination = target / relative
@@ -36,7 +36,7 @@ class CapabilityParityTests(unittest.TestCase):
     def test_current_matrix_is_exact_referenced_and_prerelease_gated(self) -> None:
         result = validate_capability_parity(
             ROOT,
-            expected_tag="v0.3.0-rc.1",
+            expected_tag="v0.3.0-rc.2",
         )
         self.assertTrue(result["ok"])
         self.assertEqual(25, result["modern_tool_count"])
@@ -66,7 +66,7 @@ class CapabilityParityTests(unittest.TestCase):
             with self.assertRaisesRegex(ParityValidationError, "exact ordered"):
                 validate_capability_parity(
                     root,
-                    release_version="0.3.0-rc.1",
+                    release_version="0.3.0-rc.2",
                 )
 
     def test_unknown_v2_reference_fails_closed(self) -> None:
@@ -83,7 +83,7 @@ class CapabilityParityTests(unittest.TestCase):
             with self.assertRaisesRegex(ParityValidationError, "unknown durable"):
                 validate_capability_parity(
                     root,
-                    release_version="0.3.0-rc.1",
+                    release_version="0.3.0-rc.2",
                 )
 
     def test_p0_gaps_reject_stable_version_or_tag(self) -> None:
@@ -91,9 +91,9 @@ class CapabilityParityTests(unittest.TestCase):
             validate_version_policy("0.3.0", p0_incomplete=True)
         with self.assertRaisesRegex(ParityValidationError, "exactly equal"):
             validate_version_policy(
-                "0.3.0-rc.1",
+                "0.3.0-rc.2",
                 p0_incomplete=True,
-                expected_tag="v0.3.0-rc.2",
+                expected_tag="v0.3.0-rc.1",
             )
 
     def test_positive_full_parity_claim_fails_document_gate(self) -> None:
@@ -109,7 +109,7 @@ class CapabilityParityTests(unittest.TestCase):
             with self.assertRaisesRegex(ParityValidationError, "positive"):
                 validate_capability_parity(
                     root,
-                    release_version="0.3.0-rc.1",
+                    release_version="0.3.0-rc.2",
                 )
 
     def test_tampered_route_p0_flag_gap_or_deleted_row_fails(self) -> None:
@@ -157,7 +157,7 @@ class CapabilityParityTests(unittest.TestCase):
                     ):
                         validate_capability_parity(
                             root,
-                            release_version="0.3.0-rc.1",
+                            release_version="0.3.0-rc.2",
                         )
 
     def test_readme_and_release_note_markers_are_mandatory(self) -> None:
@@ -168,7 +168,7 @@ class CapabilityParityTests(unittest.TestCase):
         )
         for relative in (
             "README.md",
-            "docs/RELEASE_NOTES_0.3.0-rc.1.md",
+            "docs/RELEASE_NOTES_0.3.0-rc.2.md",
         ):
             for marker in markers:
                 with self.subTest(relative=relative, marker=marker):
@@ -188,7 +188,7 @@ class CapabilityParityTests(unittest.TestCase):
                         ):
                             validate_capability_parity(
                                 root,
-                                release_version="0.3.0-rc.1",
+                                release_version="0.3.0-rc.2",
                             )
 
 

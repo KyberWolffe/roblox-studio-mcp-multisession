@@ -5,9 +5,9 @@
 On a native Apple Silicon Mac:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v
-python3 scripts/validate_capability_parity.py
-python3 scripts/release_dry_run.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -v
+python3 -B scripts/validate_capability_parity.py
+python3 -B scripts/release_dry_run.py
 ```
 
 The unit suite uses only the Python standard library. HTTP tests bind an
@@ -34,13 +34,13 @@ plugin, or installed v1/v2 files.
 Individual stages:
 
 ```bash
-python3 scripts/audit_release.py --repo .
+python3 -B scripts/audit_release.py --repo .
 python3 -B scripts/build_durable_release.py --output-dir dist
-python3 scripts/audit_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz
-python3 scripts/prove_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz \
-  --checksum-file dist/roblox-studio-mcp-v2-0.3.0-rc.1-macos-arm64.tar.gz.sha256
+python3 -B scripts/audit_release.py \
+  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz
+python3 -B scripts/prove_release.py \
+  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz \
+  --checksum-file dist/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256
 ```
 
 ## Test matrix

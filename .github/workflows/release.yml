@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact existing version tag, for example v0.3.0-rc.1
+        description: Exact existing version tag, for example v0.3.0-rc.2
         required: true
         type: string
 
@@ -20,6 +20,8 @@ jobs:
     name: Validate exact tag and build
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -59,24 +61,23 @@ jobs:
           commit_sha="$(git rev-parse HEAD)"
           tag_commit="$(git rev-parse "${RELEASE_TAG}^{}")"
           test "$tag_commit" = "$commit_sha"
-          version="$(python3 -c 'from release_tools.installer import VERSION; print(VERSION)')"
+          version="$(python3 -B -c 'from release_tools.installer import VERSION; print(VERSION)')"
           test "$RELEASE_TAG" = "v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
 
       - name: Run complete test suite
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 -m unittest discover -v
+        run: python3 -B -m unittest discover -v
 
       - name: Enforce tagged 25-tool capability parity gate
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        run: python3 scripts/validate_capability_parity.py --tag "$RELEASE_TAG"
+        run: python3 -B scripts/validate_capability_parity.py --tag "$RELEASE_TAG"
 
       - name: Audit repository
-        run: python3 scripts/audit_release.py --repo .
+        if: always()
+        run: python3 -B scripts/audit_release.py --repo .
 
       - name: Build twice and compare
         shell: bash
@@ -94,8 +95,8 @@ jobs:
           set -euo pipefail
           archive="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print)"
           test -n "$archive"
-          python3 scripts/audit_release.py --archive "$archive"
-          python3 scripts/prove_release.py \
+          python3 -B scripts/audit_release.py --archive "$archive"
+          python3 -B scripts/prove_release.py \
             --archive "$archive" \
             --checksum-file "${archive}.sha256"
 

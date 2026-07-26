@@ -6,16 +6,31 @@ import os
 import secrets
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from .frontend import _direct_loopback_opener
 
 
 class MockStudioClient:
     """Disposable protocol peer. It never opens Roblox Studio or executes payloads."""
 
     def __init__(self, base_url: str, token: str, name: str, capabilities):
+        parsed = urllib.parse.urlparse(base_url)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "::1"}
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "The mock Studio only connects to an explicit loopback HTTP hub"
+            )
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.name = name
@@ -26,6 +41,7 @@ class MockStudioClient:
         self.studio_id: Optional[str] = None
         self.generation: Optional[int] = None
         self.resume_token: Optional[str] = None
+        self._opener = _direct_loopback_opener()
 
     def _post(self, path: str, body: Dict[str, Any]) -> Any:
         encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -38,7 +54,7 @@ class MockStudioClient:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with self._opener.open(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
         if payload.get("ok") is not True:
             raise RuntimeError("v2 hub rejected mock Studio")

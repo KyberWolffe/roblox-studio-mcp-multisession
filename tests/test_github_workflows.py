@@ -24,6 +24,37 @@ class GitHubWorkflowContractTests(unittest.TestCase):
                     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$",
                 )
 
+    def test_workflow_python_cannot_contaminate_the_source_tree(self) -> None:
+        workflows = {
+            "ci.yml": (
+                ROOT / ".github" / "workflows" / "ci.yml"
+            ).read_text(encoding="utf-8"),
+            "release.yml": (
+                ROOT / ".github" / "workflows" / "release.yml"
+            ).read_text(encoding="utf-8"),
+        }
+        self.assertGreaterEqual(
+            workflows["ci.yml"].count(
+                'PYTHONDONTWRITEBYTECODE: "1"'
+            ),
+            2,
+        )
+        self.assertGreaterEqual(
+            workflows["release.yml"].count(
+                'PYTHONDONTWRITEBYTECODE: "1"'
+            ),
+            1,
+        )
+        for name, source in workflows.items():
+            self.assertIsNone(
+                re.search(r"\bpython3\s+(?!-B\b)", source),
+                name + " has a project Python command without -B",
+            )
+            self.assertIn(
+                "python3 -B scripts/audit_release.py --repo .",
+                source,
+            )
+
     def test_release_publish_is_commit_pinned_and_refetches_tag(self) -> None:
         source = (
             ROOT / ".github" / "workflows" / "release.yml"

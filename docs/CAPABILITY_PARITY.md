@@ -4,7 +4,7 @@
 <!-- p0-parity: incomplete -->
 <!-- full-parity-claimed: false -->
 
-Version `0.3.0-rc.1` is an experimental prerelease. Full 25-tool parity is not
+Version `0.3.0-rc.2` is an experimental prerelease. Full 25-tool parity is not
 claimed. It preserves safe multi-session routing for its closed v2 surface
 while Phase 2 addresses the 12 P0 gaps below.
 
