@@ -2728,7 +2728,7 @@
     },
     {
       "name": "studio_recover_multi_edit",
-      "description": "Recover one exact, previously accepted multi-edit transaction for the explicitly targeted Studio session. The original studio_id, client_instance_id, document_epoch, transaction ID, prepare generation, prepare request, revisions, and prepare receipt remain immutable. After an authenticated same-runtime, same-document reconnect, recovery may run under the new fenced generation and its recovery receipt binds that current generation; it never adopts another runtime, document, or transaction. Recovery never guesses success: it proves the current revision of every target, performs only the transaction's pre-authorized compensating action when safe, and otherwise returns recovery_required while mutation remains quarantined.",
+      "description": "Recover one exact, previously accepted multi-edit transaction for the explicitly targeted Studio session. The original studio_id, client_instance_id, document_epoch, transaction ID, prepare generation, prepare request, revisions, and prepare receipt remain immutable. Recovery is admitted only while that exact generation remains current; any reconnect changes the generation and therefore leaves the mutation quarantined and fails closed rather than rebinding the transaction. Recovery never guesses success: it proves the current revision of every target, performs only the transaction's pre-authorized compensating action when safe, and otherwise returns recovery_required while mutation remains quarantined.",
       "inputSchema": {
         "type": "object",
         "properties": {
