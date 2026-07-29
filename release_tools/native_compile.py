@@ -681,13 +681,13 @@ def _running_studio_processes(executable: Path) -> list[int]:
     processes = []
     for line in result.stdout.splitlines():
         stripped = line.strip()
-        if target not in stripped:
-            continue
-        first, separator, _ = stripped.partition(b" ")
+        first, separator, command = stripped.partition(b" ")
         if not separator:
-            raise NativeCompileError(
-                "running Studio process audit returned invalid output"
-            )
+            continue
+        command = command.lstrip()
+        process_executable, _, _arguments = command.partition(b" ")
+        if process_executable != target:
+            continue
         try:
             processes.append(int(first))
         except ValueError as exc:

@@ -944,6 +944,36 @@ class NativeCompileTests(unittest.TestCase):
             {"HOME": "/safe/home", "PATH": "/usr/bin"},
         )
 
+    def test_process_audit_matches_only_the_actual_studio_executable(
+        self,
+    ) -> None:
+        studio = Path(
+            "/Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio"
+        )
+        process_list = subprocess.CompletedProcess(
+            [],
+            0,
+            (
+                b"101 /usr/bin/python3 native_studio_compile_smoke.py "
+                b"--studio-executable "
+                b"/Applications/RobloxStudio.app/Contents/MacOS/"
+                b"RobloxStudio\n"
+                b"202 /Applications/RobloxStudio.app/Contents/MacOS/"
+                b"RobloxStudio --task RunScript\n"
+                b"303 /Applications/RobloxStudio.app/Contents/MacOS/"
+                b"RobloxStudioHelper\n"
+            ),
+            b"",
+        )
+        with mock.patch(
+            "release_tools.native_compile._bounded_completed_process",
+            return_value=process_list,
+        ):
+            self.assertEqual(
+                [202],
+                native_compile._running_studio_processes(studio),
+            )
+
     def test_native_process_runner_uses_disk_backed_bounded_evidence(
         self,
     ) -> None:
