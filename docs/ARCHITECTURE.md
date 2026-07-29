@@ -193,14 +193,22 @@ References:
 ## Tool catalog
 
 `config/durable-tool-catalog.json` is the default runtime catalog. It exposes
-exactly eleven audited operations: state, tree, script-name search, literal
-cross-script grep, script read/update, attribute update, console, screenshot,
-Scriptable `InputBinding`, and Play/Stop. At the public MCP boundary the
-catalog:
+exactly twelve audited operations: state, tree, fixed-allowlist instance
+inspection, script-name search, literal cross-script grep, script read/update,
+attribute update, console, screenshot, Scriptable `InputBinding`, and
+Play/Stop. Instance inspection is an Edit-only observational snapshot of one
+exact unambiguous path. It uses bounded closed value encoding and does not
+reflect arbitrary properties, read source, or expose security identities. At
+the public MCP boundary the catalog:
 
 1. preserves descriptions and annotations;
 2. injects a required UUID `studio_id`;
 3. maps only to an exact implemented Studio-side handler.
+
+The bounded instance metadata operations use the documented
+[Roblox Instance API](https://create.roblox.com/docs/reference/engine/classes/Instance)
+for children, attributes, and tags. The adapter sorts returned collections
+itself and does not treat API enumeration order as a durable contract.
 
 A Studio registers only a list of capabilities. It cannot define a new public
 tool. A call is rejected if the target Studio did not advertise that approved

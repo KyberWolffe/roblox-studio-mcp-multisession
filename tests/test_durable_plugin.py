@@ -43,6 +43,7 @@ RUN_ID = "0123456789abcdef0123456789abcdef"
 DURABLE_OPERATIONS = {
     "studio_get_state",
     "studio_list_tree",
+    "studio_inspect_instance",
     "studio_search_scripts",
     "studio_grep_scripts",
     "studio_read_script",
@@ -58,7 +59,7 @@ DURABLE_OPERATIONS = {
 class DurableCatalogTests(unittest.TestCase):
     def test_catalog_is_versioned_closed_and_explicitly_targeted(self):
         payload = json.loads(DURABLE_CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual(payload["catalog_version"], "0.4.0-dev.1")
+        self.assertEqual(payload["catalog_version"], "0.4.0-dev.2")
         self.assertEqual(
             payload["upstream"]["compatibility"],
             "reviewed-local-subset-only",
@@ -139,11 +140,11 @@ class DurableRendererTests(unittest.TestCase):
             base_url=base_url,
         )
 
-    def test_render_matches_phase2_0_4_0_dev_1_contract(self):
+    def test_render_matches_phase2_0_4_0_dev_2_contract(self):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),
-            "ced4942580301d657aa43870c47f4cb92d07742ffa613f6151e1823dd47a6650",
+            "e0cdbef6b9ebd9874345c93477e5186847df12231f88d01a2b2dab58726ed20d",
         )
 
     def test_render_has_no_two_place_or_session_count_limit(self):

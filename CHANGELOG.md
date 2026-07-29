@@ -4,6 +4,30 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.4.0-dev.2 — unreleased
+
+Phase 2 instance-inspection development on the isolated parity line. The
+immutable `v0.3.0-rc.4` restore checkpoint and installed bytes remain
+unchanged, and rc.4 remains the immediate guarded rollback target.
+
+### Phase 2 instance-inspection slice
+
+- Added `studio_inspect_instance`, an Edit-only exact-path observation
+  operation with a fixed 34-selector safe property allowlist.
+- Properties and attributes use a closed, bounded value encoding. Tags,
+  immediate children, and descendant class counts are deterministically
+  ordered and bounded by explicit depth, scan, time, and output budgets.
+- Host validation rejects authenticated responses that the fixed Studio codec
+  cannot produce, including incompatible selector groups, malformed value
+  encodings, unsafe truncated-child paths, and incoherent traversal counts.
+- Input and output schemas are pinned independently in the compatibility
+  manifest. The official `inspect_instance` alias remains unexposed and its
+  broader dot-path, multi-match, reflection, and `UniqueId` behavior remains
+  review-only and incompatible.
+- Parity remains honestly partial and all operational routes continue to
+  require explicit `studio_id`; no global/default route or silent v1 fallback
+  was added.
+
 ## 0.4.0-dev.1 — unreleased
 
 Phase 2 capability-parity development based on the immutable

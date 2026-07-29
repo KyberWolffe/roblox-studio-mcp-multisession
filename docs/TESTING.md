@@ -37,10 +37,10 @@ Individual stages:
 python3 -B scripts/audit_release.py --repo .
 python3 -B scripts/build_durable_release.py --output-dir dist
 python3 -B scripts/audit_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-dev.1-macos-arm64.tar.gz
+  --archive dist/roblox-studio-mcp-v2-0.4.0-dev.2-macos-arm64.tar.gz
 python3 -B scripts/prove_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-dev.1-macos-arm64.tar.gz \
-  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-dev.1-macos-arm64.tar.gz.sha256
+  --archive dist/roblox-studio-mcp-v2-0.4.0-dev.2-macos-arm64.tar.gz \
+  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-dev.2-macos-arm64.tar.gz.sha256
 ```
 
 ## Test matrix
@@ -70,6 +70,7 @@ python3 -B scripts/prove_release.py \
 | Tree/state same-session serialization, cross-session isolation, and reconnect fencing | `test_phase2_tree_state_isolation.py` |
 | Phase 2 script-name search and cross-script literal grep schemas, cursor domains, deterministic pagination, traversal/source/output bounds, upstream quarantine, and malicious connected-result rejection | `test_phase2_script_catalog_contract.py`, `test_phase2_script_luau.py`, `test_phase2_script_pagination_model.py`, `test_phase2_script_response_validation.py` |
 | Script search/grep same-session serialization, cross-session isolation, reconnect fencing, and explicit-target stripping | `test_phase2_script_isolation.py` |
+| Phase 2 dev.2 detailed instance inspection schema, fixed value codec, bounded tree summaries, malicious-result rejection, same-session FIFO, cross-session overlap/isolation, and reconnect-generation fencing | `test_phase2_instance_inspect_contract.py`, `test_phase2_inspect_luau.py`, `test_phase2_inspect_response_validation.py`, `test_phase2_inspect_isolation.py` |
 
 ## Explicit-targeting contract
 

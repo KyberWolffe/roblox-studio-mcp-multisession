@@ -1,6 +1,6 @@
 {
   "format": "studio-mcp-v2-durable-catalog",
-  "catalog_version": "0.4.0-dev.1",
+  "catalog_version": "0.4.0-dev.2",
   "upstream": {
     "version": "production-v1-snapshot-2026-07-26",
     "source_sha256": "96130d76240be565f98417414f86e0776a5b73d880f4fadbc5de0bd1c915535b",
@@ -96,6 +96,508 @@
       },
       "annotations": {
         "title": "List Studio Tree",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_inspect_instance",
+      "description": "Inspect one exact, unambiguous Studio instance in Edit mode through a fixed reviewed property allowlist. The closed response includes safely encoded allowlisted properties, bounded attributes and tags, a deterministically sorted immediate-child summary, and a depth-, scan-, time-, and output-bounded descendant class count. It never reflects arbitrary properties, reads script source, accepts dot-path expressions, or exposes Roblox security identities.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64,
+            "description": "Exact child-name segments from the DataModel root. Duplicate sibling names make the path ambiguous and fail closed."
+          },
+          "child_limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200,
+            "description": "Maximum immediate-child summaries returned. Default: 50."
+          },
+          "descendant_max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64,
+            "description": "Maximum descendant depth included in the bounded count. The target path segment count plus this value must not exceed 64. Default: 64 minus the target path segment count."
+          },
+          "descendant_scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum descendants examined for class counts. Default: 2000."
+          },
+          "time_limit_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10000,
+            "description": "Internal cooperative work budget including exact-path resolution. Default: 3000."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "$defs": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "safeValue": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "nil",
+                  "unavailable",
+                  "unsupported",
+                  "boolean",
+                  "number",
+                  "string",
+                  "enum",
+                  "vector2",
+                  "vector3",
+                  "color3",
+                  "cframe",
+                  "udim",
+                  "udim2",
+                  "rect",
+                  "brick_color",
+                  "number_range",
+                  "number_sequence",
+                  "color_sequence",
+                  "font"
+                ]
+              },
+              "boolean_value": {
+                "type": "boolean"
+              },
+              "number_value": {
+                "type": "number"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "numbers": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 256
+              },
+              "labels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                "maxItems": 3
+              },
+              "byte_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "boolean_value",
+              "number_value",
+              "text",
+              "numbers",
+              "labels",
+              "byte_length",
+              "truncated"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "v": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation": {
+            "type": "string",
+            "const": "studio_inspect_instance"
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "datamodel_type": {
+            "type": "string",
+            "const": "Edit"
+          },
+          "path": {
+            "$ref": "#/$defs/path"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "class_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "snapshot_contract": {
+            "type": "string",
+            "const": "path-edit-generation-fenced-observational-v1"
+          },
+          "property_allowlist_version": {
+            "type": "string",
+            "const": "instance-property-allowlist-v1"
+          },
+          "value_encoding_version": {
+            "type": "string",
+            "const": "instance-value-v1"
+          },
+          "sort_version": {
+            "type": "string",
+            "const": "name-class-original-v1"
+          },
+          "child_limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200
+          },
+          "descendant_max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "descendant_scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000
+          },
+          "time_limit_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10000
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "selector": {
+                  "type": "string",
+                  "enum": [
+                    "BasePart.Anchored",
+                    "BasePart.CFrame",
+                    "BasePart.CanCollide",
+                    "BasePart.CanQuery",
+                    "BasePart.CanTouch",
+                    "BasePart.CastShadow",
+                    "BasePart.CollisionGroup",
+                    "BasePart.Color",
+                    "BasePart.Locked",
+                    "BasePart.Massless",
+                    "BasePart.Material",
+                    "BasePart.MaterialVariant",
+                    "BasePart.Reflectance",
+                    "BasePart.Size",
+                    "BasePart.Transparency",
+                    "BaseScript.Enabled",
+                    "BaseScript.RunContext",
+                    "GuiObject.Active",
+                    "GuiObject.AnchorPoint",
+                    "GuiObject.BackgroundColor3",
+                    "GuiObject.BackgroundTransparency",
+                    "GuiObject.BorderColor3",
+                    "GuiObject.BorderSizePixel",
+                    "GuiObject.ClipsDescendants",
+                    "GuiObject.LayoutOrder",
+                    "GuiObject.Position",
+                    "GuiObject.Rotation",
+                    "GuiObject.Size",
+                    "GuiObject.Visible",
+                    "GuiObject.ZIndex",
+                    "Instance.Archivable",
+                    "LayerCollector.Enabled",
+                    "LayerCollector.ResetOnSpawn",
+                    "LayerCollector.ZIndexBehavior"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/safeValue"
+                }
+              },
+              "required": [
+                "selector",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 34
+          },
+          "property_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 34
+          },
+          "properties_complete": {
+            "type": "boolean"
+          },
+          "attributes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "value": {
+                  "$ref": "#/$defs/safeValue"
+                }
+              },
+              "required": [
+                "name",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 64
+          },
+          "attributes_total": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1024
+          },
+          "attributes_returned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "attributes_truncated": {
+            "type": "boolean"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "maxItems": 128
+          },
+          "tags_total": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1024
+          },
+          "tags_returned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128
+          },
+          "tags_truncated": {
+            "type": "boolean"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "class_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "addressable": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "minItems": 0,
+                  "maxItems": 64
+                }
+              },
+              "required": [
+                "name",
+                "class_name",
+                "addressable",
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 200
+          },
+          "children_total": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "children_returned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200
+          },
+          "children_truncated": {
+            "type": "boolean"
+          },
+          "children_truncation_reason": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "child_limit",
+              "output_bytes"
+            ]
+          },
+          "descendant_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "descendant_count_complete": {
+            "type": "boolean"
+          },
+          "descendant_truncation_reason": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "scan_limit",
+              "time_limit",
+              "depth_limit"
+            ]
+          },
+          "descendant_class_counts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "class_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 5000
+                }
+              },
+              "required": [
+                "class_name",
+                "count"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 256
+          },
+          "output_limit_bytes": {
+            "type": "integer",
+            "const": 500000
+          }
+        },
+        "required": [
+          "adapter",
+          "v",
+          "operation",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "request_id",
+          "datamodel_type",
+          "path",
+          "name",
+          "class_name",
+          "snapshot_contract",
+          "property_allowlist_version",
+          "value_encoding_version",
+          "sort_version",
+          "child_limit",
+          "descendant_max_depth",
+          "descendant_scan_limit",
+          "time_limit_ms",
+          "properties",
+          "property_count",
+          "properties_complete",
+          "attributes",
+          "attributes_total",
+          "attributes_returned",
+          "attributes_truncated",
+          "tags",
+          "tags_total",
+          "tags_returned",
+          "tags_truncated",
+          "children",
+          "children_total",
+          "children_returned",
+          "children_truncated",
+          "children_truncation_reason",
+          "descendant_count",
+          "descendant_count_complete",
+          "descendant_truncation_reason",
+          "descendant_class_counts",
+          "output_limit_bytes"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Inspect Studio Instance",
         "readOnlyHint": true,
         "destructiveHint": false,
         "idempotentHint": true,

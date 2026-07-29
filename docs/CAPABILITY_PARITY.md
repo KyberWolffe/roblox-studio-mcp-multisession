@@ -4,7 +4,7 @@
 <!-- p0-parity: incomplete -->
 <!-- full-parity-claimed: false -->
 
-Version `0.4.0-dev.1` is an isolated experimental development line. Full
+Version `0.4.0-dev.2` is an isolated experimental development line. Full
 25-tool parity is not claimed. It preserves the frozen rc.4 multi-session
 architecture while Phase 2 addresses the 12 P0 gaps below.
 
@@ -55,7 +55,7 @@ delegates automatically.
 | `user_keyboard_input` | P0 | v2 partial | **Yes** | `studio_fire_input_binding_v2` | V2 can fire an existing Scriptable InputBinding but cannot inject arbitrary keyboard or Studio UI input. |
 | `start_stop_play` | P0 | v2 full | No | `studio_start_stop_play_v2` | None |
 | `generate_mesh` | P1 | deferred | No | None | No reviewed mesh-generation adapter exists. |
-| `inspect_instance` | P0 | v2 partial | **Yes** | `studio_list_tree_v2` | Tree metadata is available, but the full property, attribute, and child inspection shape is not. |
+| `inspect_instance` | P0 | v2 partial | **Yes** | `studio_inspect_instance_v2` | V2 inspects one exact unambiguous path through a fixed 34-selector safe property allowlist with bounded attributes, tags, immediate children, and descendant class counts. It intentionally does not claim the upstream all-readable-property reflection, case-insensitive dot-path multi-match, UniqueId, or unbounded recursive-summary shape. |
 | `store_image` | P1 | deferred | No | None | No safe equivalent of the upstream local-file IMAGEID storage mechanism exists. |
 
 ## Publication gate

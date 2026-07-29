@@ -68,6 +68,31 @@ local SCRIPT_SEARCH_QUERY_VERSION = "script-name-query-v1"
 local SCRIPT_GREP_QUERY_VERSION = "script-grep-query-v1"
 local SCRIPT_SEARCH_MATCH_SEMANTICS =
 	"all_keywords_ascii_case_insensitive_literal_subsequence"
+local MAX_INSPECT_CHILD_LIMIT = 200
+local DEFAULT_INSPECT_CHILD_LIMIT = 50
+local MAX_INSPECT_DESCENDANT_DEPTH = 64
+local MAX_INSPECT_DESCENDANT_SCAN_LIMIT = 5_000
+local DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT = 2_000
+local MIN_INSPECT_TIME_LIMIT_MS = 100
+local MAX_INSPECT_TIME_LIMIT_MS = 10_000
+local DEFAULT_INSPECT_TIME_LIMIT_MS = 3_000
+local MAX_INSPECT_ATTRIBUTES_RAW = 1_024
+local MAX_INSPECT_ATTRIBUTES_RETURNED = 64
+local MAX_INSPECT_TAGS_RAW = 1_024
+local MAX_INSPECT_TAGS_RETURNED = 128
+local MAX_INSPECT_SEQUENCE_KEYPOINTS = 64
+local MAX_INSPECT_CLASS_COUNTS = 256
+local MAX_INSPECT_STRING_RAW_BYTES = 262_144
+local MAX_INSPECT_STRING_PREFIX_BYTES = 1_024
+local MAX_INSPECT_CHILD_OUTPUT_BYTES = 300_000
+local MAX_INSPECT_RESULT_BYTES = 500_000
+local INSPECT_COOPERATIVE_YIELD_INTERVAL = 100
+local INSPECT_SNAPSHOT_CONTRACT =
+	"path-edit-generation-fenced-observational-v1"
+local INSPECT_PROPERTY_ALLOWLIST_VERSION =
+	"instance-property-allowlist-v1"
+local INSPECT_VALUE_ENCODING_VERSION = "instance-value-v1"
+local INSPECT_SORT_VERSION = "name-class-original-v1"
 
 local OPERATION_ARG_KEYS = table.freeze({
 	studio_get_state = table.freeze({}),
@@ -81,6 +106,13 @@ local OPERATION_ARG_KEYS = table.freeze({
 		scan_limit = true,
 		page_size = true,
 		continuation_cursor = true,
+	}),
+	studio_inspect_instance = table.freeze({
+		path = true,
+		child_limit = true,
+		descendant_max_depth = true,
+		descendant_scan_limit = true,
+		time_limit_ms = true,
 	}),
 	studio_search_scripts = table.freeze({
 		keywords = true,
@@ -619,6 +651,49 @@ local function validateDurableArgs(operation, args, deadlineMs)
 				MIN_SCRIPT_SOURCE_BUDGET,
 				MAX_SCRIPT_SOURCE_BUDGET,
 				"source_byte_limit"
+			)
+		end
+	elseif operation == "studio_inspect_instance" then
+		local path = validatePath(args.path, false, "path")
+		if args.child_limit ~= nil then
+			validateIntegerRange(
+				args.child_limit,
+				0,
+				MAX_INSPECT_CHILD_LIMIT,
+				"child_limit"
+			)
+		end
+		if args.descendant_max_depth ~= nil then
+			validateIntegerRange(
+				args.descendant_max_depth,
+				0,
+				MAX_INSPECT_DESCENDANT_DEPTH,
+				"descendant_max_depth"
+			)
+		end
+		local descendantMaxDepth = args.descendant_max_depth
+			or (MAX_PATH_SEGMENTS - #path)
+		if #path + descendantMaxDepth > MAX_PATH_SEGMENTS then
+			adapterError(
+				"invalid_args",
+				"path plus descendant_max_depth exceeds the reusable path bound",
+				false
+			)
+		end
+		if args.descendant_scan_limit ~= nil then
+			validateIntegerRange(
+				args.descendant_scan_limit,
+				1,
+				MAX_INSPECT_DESCENDANT_SCAN_LIMIT,
+				"descendant_scan_limit"
+			)
+		end
+		if args.time_limit_ms ~= nil then
+			validateIntegerRange(
+				args.time_limit_ms,
+				MIN_INSPECT_TIME_LIMIT_MS,
+				MAX_INSPECT_TIME_LIMIT_MS,
+				"time_limit_ms"
 			)
 		end
 	elseif operation == "studio_read_script" then
@@ -2454,6 +2529,1198 @@ local function grepScripts(args, requestId)
 	return result
 end
 
+local function newInspectionValue(valueType)
+	return {
+		type = valueType,
+		boolean_value = false,
+		number_value = 0,
+		text = "",
+		numbers = {},
+		labels = {},
+		byte_length = 0,
+		truncated = false,
+	}
+end
+
+local function inspectionUtf8Prefix(value)
+	if type(value) ~= "string"
+		or #value > MAX_INSPECT_STRING_RAW_BYTES
+		or utf8.len(value) == nil
+	then
+		return nil
+	end
+	if #value <= MAX_INSPECT_STRING_PREFIX_BYTES then
+		return value
+	end
+	local boundary = utf8.offset(
+		value,
+		0,
+		MAX_INSPECT_STRING_PREFIX_BYTES + 1
+	)
+	if boundary == nil or boundary < 1 then
+		return nil
+	end
+	return string.sub(value, 1, boundary - 1)
+end
+
+local function boundedInspectionLabel(value)
+	if type(value) ~= "string"
+		or #value > MAX_INSPECT_STRING_PREFIX_BYTES
+		or utf8.len(value) == nil
+	then
+		return nil
+	end
+	return value
+end
+
+local function hasInspectionControlCharacter(value)
+	for _, codepoint in utf8.codes(value) do
+		if codepoint <= 31
+			or (codepoint >= 127 and codepoint <= 159)
+		then
+			return true
+		end
+	end
+	return false
+end
+
+local function isInspectionName(value)
+	return type(value) == "string"
+		and #value >= 1
+		and #value <= MAX_PATH_SEGMENT_BYTES
+		and utf8.len(value) ~= nil
+		and not hasInspectionControlCharacter(value)
+end
+
+local function isInspectionAttributeName(value)
+	return type(value) == "string"
+		and #value >= 1
+		and #value <= MAX_PATH_SEGMENT_BYTES
+		and string.find(value, "^[A-Za-z0-9._/%-]+$") ~= nil
+end
+
+local function isInspectionIdentifier(value)
+	return type(value) == "string"
+		and #value >= 1
+		and #value <= MAX_PATH_SEGMENT_BYTES
+		and string.find(value, "^[A-Za-z][A-Za-z0-9_]*$") ~= nil
+end
+
+local function isInspectionFontUri(value)
+	if boundedInspectionLabel(value) == nil
+		or value == ""
+		or string.find(value, "[%c%s]") ~= nil
+		or hasInspectionControlCharacter(value)
+	then
+		return false
+	end
+	for index = 1, #value do
+		local byte = string.byte(value, index)
+		if byte < 33 or byte > 126 then
+			return false
+		end
+	end
+	return string.find(value, "^rbxasset://.+$") ~= nil
+		or string.find(value, "^rbxassetid://.+$") ~= nil
+		or string.find(value, "^http://.+$") ~= nil
+		or string.find(value, "^https://.+$") ~= nil
+end
+
+local function finiteInspectionNumbers(values)
+	for _, value in ipairs(values) do
+		if not isFiniteNumber(value) then
+			return nil
+		end
+	end
+	return values
+end
+
+local function encodeInspectionEnumItem(value)
+	local enumText = tostring(value.EnumType)
+	local enumName = string.match(enumText, "^Enum%.([%a_][%w_]*)$")
+	local itemName = value.Name
+	if enumName == nil
+		or not isInspectionIdentifier(enumName)
+		or not isInspectionIdentifier(itemName)
+		or not isInteger(value.Value)
+	then
+		return nil
+	end
+	local encoded = newInspectionValue("enum")
+	encoded.number_value = value.Value
+	encoded.labels = { enumName, itemName }
+	return encoded
+end
+
+local function encodeInspectionNumberSequence(value)
+	local keypoints = value.Keypoints
+	if type(keypoints) ~= "table"
+		or #keypoints < 2
+		or #keypoints > MAX_INSPECT_SEQUENCE_KEYPOINTS
+	then
+		return nil
+	end
+	local numbers = table.create(#keypoints * 3)
+	local previousTime = nil
+	for index, keypoint in ipairs(keypoints) do
+		if not isFiniteNumber(keypoint.Time)
+			or not isFiniteNumber(keypoint.Value)
+			or not isFiniteNumber(keypoint.Envelope)
+			or keypoint.Time < 0
+			or keypoint.Time > 1
+			or keypoint.Envelope < 0
+			or (previousTime ~= nil and keypoint.Time <= previousTime)
+		then
+			return nil
+		end
+		if (index == 1 and keypoint.Time ~= 0)
+			or (index == #keypoints and keypoint.Time ~= 1)
+		then
+			return nil
+		end
+		table.insert(numbers, keypoint.Time)
+		table.insert(numbers, keypoint.Value)
+		table.insert(numbers, keypoint.Envelope)
+		previousTime = keypoint.Time
+	end
+	local encoded = newInspectionValue("number_sequence")
+	encoded.numbers = numbers
+	return encoded
+end
+
+local function encodeInspectionColorSequence(value)
+	local keypoints = value.Keypoints
+	if type(keypoints) ~= "table"
+		or #keypoints < 2
+		or #keypoints > MAX_INSPECT_SEQUENCE_KEYPOINTS
+	then
+		return nil
+	end
+	local numbers = table.create(#keypoints * 4)
+	local previousTime = nil
+	for index, keypoint in ipairs(keypoints) do
+		local color = keypoint.Value
+		if not isFiniteNumber(keypoint.Time)
+			or typeof(color) ~= "Color3"
+			or finiteInspectionNumbers({
+				color.R,
+				color.G,
+				color.B,
+			}) == nil
+			or keypoint.Time < 0
+			or keypoint.Time > 1
+			or color.R < 0
+			or color.R > 1
+			or color.G < 0
+			or color.G > 1
+			or color.B < 0
+			or color.B > 1
+			or (previousTime ~= nil and keypoint.Time <= previousTime)
+		then
+			return nil
+		end
+		if (index == 1 and keypoint.Time ~= 0)
+			or (index == #keypoints and keypoint.Time ~= 1)
+		then
+			return nil
+		end
+		table.insert(numbers, keypoint.Time)
+		table.insert(numbers, color.R)
+		table.insert(numbers, color.G)
+		table.insert(numbers, color.B)
+		previousTime = keypoint.Time
+	end
+	local encoded = newInspectionValue("color_sequence")
+	encoded.numbers = numbers
+	return encoded
+end
+
+local function encodeInspectionFont(value)
+	local family = value.Family
+	if typeof(family) ~= "Content"
+		or family.SourceType ~= Enum.ContentSourceType.Uri
+	then
+		return nil
+	end
+	local familyUri = family.Uri
+	local weightName = value.Weight.Name
+	local styleName = value.Style.Name
+	if not isInspectionFontUri(familyUri)
+		or not isInspectionIdentifier(weightName)
+		or not isInspectionIdentifier(styleName)
+		or type(value.Bold) ~= "boolean"
+		or not isInteger(value.Weight.Value)
+	then
+		return nil
+	end
+	local encoded = newInspectionValue("font")
+	encoded.boolean_value = value.Bold
+	encoded.number_value = value.Weight.Value
+	encoded.labels = { familyUri, weightName, styleName }
+	return encoded
+end
+
+local function encodeInspectionValue(value)
+	if value == nil then
+		return newInspectionValue("nil")
+	end
+	local valueType = typeof(value)
+	if valueType == "boolean" then
+		local encoded = newInspectionValue("boolean")
+		encoded.boolean_value = value
+		return encoded
+	elseif valueType == "number" then
+		if not isFiniteNumber(value) then
+			return nil
+		end
+		local encoded = newInspectionValue("number")
+		encoded.number_value = value
+		return encoded
+	elseif valueType == "string" then
+		local prefix = inspectionUtf8Prefix(value)
+		if prefix == nil then
+			return nil
+		end
+		local encoded = newInspectionValue("string")
+		encoded.text = prefix
+		encoded.byte_length = #value
+		encoded.truncated = #prefix < #value
+		return encoded
+	elseif valueType == "EnumItem" then
+		return encodeInspectionEnumItem(value)
+	elseif valueType == "Vector2" then
+		local numbers = finiteInspectionNumbers({ value.X, value.Y })
+		if numbers == nil then
+			return nil
+		end
+		local encoded = newInspectionValue("vector2")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "Vector3" then
+		local numbers = finiteInspectionNumbers({
+			value.X,
+			value.Y,
+			value.Z,
+		})
+		if numbers == nil then
+			return nil
+		end
+		local encoded = newInspectionValue("vector3")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "Color3" then
+		local numbers = finiteInspectionNumbers({
+			value.R,
+			value.G,
+			value.B,
+		})
+		if numbers == nil
+			or value.R < 0
+			or value.R > 1
+			or value.G < 0
+			or value.G > 1
+			or value.B < 0
+			or value.B > 1
+		then
+			return nil
+		end
+		local encoded = newInspectionValue("color3")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "CFrame" then
+		local x,
+			y,
+			z,
+			r00,
+			r01,
+			r02,
+			r10,
+			r11,
+			r12,
+			r20,
+			r21,
+			r22 = value:GetComponents()
+		local numbers = {
+			x,
+			y,
+			z,
+			r00,
+			r01,
+			r02,
+			r10,
+			r11,
+			r12,
+			r20,
+			r21,
+			r22,
+		}
+		if #numbers ~= 12 or finiteInspectionNumbers(numbers) == nil then
+			return nil
+		end
+		local encoded = newInspectionValue("cframe")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "UDim" then
+		local numbers = finiteInspectionNumbers({
+			value.Scale,
+			value.Offset,
+		})
+		if numbers == nil or not isInteger(value.Offset) then
+			return nil
+		end
+		local encoded = newInspectionValue("udim")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "UDim2" then
+		local numbers = finiteInspectionNumbers({
+			value.X.Scale,
+			value.X.Offset,
+			value.Y.Scale,
+			value.Y.Offset,
+		})
+		if numbers == nil
+			or not isInteger(value.X.Offset)
+			or not isInteger(value.Y.Offset)
+		then
+			return nil
+		end
+		local encoded = newInspectionValue("udim2")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "Rect" then
+		local numbers = finiteInspectionNumbers({
+			value.Min.X,
+			value.Min.Y,
+			value.Max.X,
+			value.Max.Y,
+		})
+		if numbers == nil
+			or value.Min.X > value.Max.X
+			or value.Min.Y > value.Max.Y
+		then
+			return nil
+		end
+		local encoded = newInspectionValue("rect")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "BrickColor" then
+		local color = value.Color
+		local name = boundedInspectionLabel(value.Name)
+		local numbers = finiteInspectionNumbers({
+			color.R,
+			color.G,
+			color.B,
+		})
+		if not isInspectionName(name)
+			or not isInteger(value.Number)
+			or numbers == nil
+			or color.R < 0
+			or color.R > 1
+			or color.G < 0
+			or color.G > 1
+			or color.B < 0
+			or color.B > 1
+		then
+			return nil
+		end
+		local encoded = newInspectionValue("brick_color")
+		encoded.number_value = value.Number
+		encoded.numbers = numbers
+		encoded.labels = { name }
+		return encoded
+	elseif valueType == "NumberRange" then
+		local numbers = finiteInspectionNumbers({ value.Min, value.Max })
+		if numbers == nil or value.Min > value.Max then
+			return nil
+		end
+		local encoded = newInspectionValue("number_range")
+		encoded.numbers = numbers
+		return encoded
+	elseif valueType == "NumberSequence" then
+		return encodeInspectionNumberSequence(value)
+	elseif valueType == "ColorSequence" then
+		return encodeInspectionColorSequence(value)
+	elseif valueType == "Font" then
+		return encodeInspectionFont(value)
+	end
+	return nil
+end
+
+local INSPECT_PROPERTY_ALLOWLIST = table.freeze({
+	table.freeze({
+		selector = "BasePart.Anchored",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Anchored
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.CFrame",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.CFrame
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.CanCollide",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.CanCollide
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.CanQuery",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.CanQuery
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.CanTouch",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.CanTouch
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.CastShadow",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.CastShadow
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.CollisionGroup",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.CollisionGroup
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.Color",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Color
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.Locked",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Locked
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.Massless",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Massless
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.Material",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Material
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.MaterialVariant",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.MaterialVariant
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.Reflectance",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Reflectance
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.Size",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Size
+		end,
+	}),
+	table.freeze({
+		selector = "BasePart.Transparency",
+		class_name = "BasePart",
+		getter = function(target)
+			return target.Transparency
+		end,
+	}),
+	table.freeze({
+		selector = "BaseScript.Enabled",
+		class_name = "BaseScript",
+		getter = function(target)
+			return target.Enabled
+		end,
+	}),
+	table.freeze({
+		selector = "BaseScript.RunContext",
+		class_name = "BaseScript",
+		getter = function(target)
+			return target.RunContext
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.Active",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.Active
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.AnchorPoint",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.AnchorPoint
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.BackgroundColor3",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.BackgroundColor3
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.BackgroundTransparency",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.BackgroundTransparency
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.BorderColor3",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.BorderColor3
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.BorderSizePixel",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.BorderSizePixel
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.ClipsDescendants",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.ClipsDescendants
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.LayoutOrder",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.LayoutOrder
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.Position",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.Position
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.Rotation",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.Rotation
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.Size",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.Size
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.Visible",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.Visible
+		end,
+	}),
+	table.freeze({
+		selector = "GuiObject.ZIndex",
+		class_name = "GuiObject",
+		getter = function(target)
+			return target.ZIndex
+		end,
+	}),
+	table.freeze({
+		selector = "Instance.Archivable",
+		class_name = "Instance",
+		getter = function(target)
+			return target.Archivable
+		end,
+	}),
+	table.freeze({
+		selector = "LayerCollector.Enabled",
+		class_name = "LayerCollector",
+		getter = function(target)
+			return target.Enabled
+		end,
+	}),
+	table.freeze({
+		selector = "LayerCollector.ResetOnSpawn",
+		class_name = "LayerCollector",
+		getter = function(target)
+			return target.ResetOnSpawn
+		end,
+	}),
+	table.freeze({
+		selector = "LayerCollector.ZIndexBehavior",
+		class_name = "LayerCollector",
+		getter = function(target)
+			return target.ZIndexBehavior
+		end,
+	}),
+})
+
+local function inspectProperties(target)
+	local properties = {}
+	local complete = true
+	for _, property in ipairs(INSPECT_PROPERTY_ALLOWLIST) do
+		local classOk, applies = pcall(function()
+			return target:IsA(property.class_name)
+		end)
+		if not classOk or type(applies) ~= "boolean" then
+			adapterError(
+				"inspection_class_check_failed",
+				"Studio could not evaluate the fixed property allowlist",
+				false
+			)
+		end
+		if applies then
+			local readOk, rawValue = pcall(property.getter, target)
+			local encodedValue = nil
+			if readOk then
+				local encodeOk, candidate = pcall(
+					encodeInspectionValue,
+					rawValue
+				)
+				if encodeOk then
+					encodedValue = candidate
+				end
+			end
+			if encodedValue == nil then
+				complete = false
+				encodedValue = newInspectionValue(
+					readOk and "unsupported" or "unavailable"
+				)
+			end
+			table.insert(properties, {
+				selector = property.selector,
+				value = encodedValue,
+			})
+		end
+	end
+	return properties, complete
+end
+
+local function inspectAttributes(target)
+	local readOk, attributes = pcall(function()
+		return target:GetAttributes()
+	end)
+	if not readOk or type(attributes) ~= "table" then
+		adapterError(
+			"inspection_attributes_failed",
+			"Studio could not read the target's attributes",
+			false
+		)
+	end
+	local names = {}
+	for name in pairs(attributes) do
+		if not isInspectionAttributeName(name) then
+			adapterError(
+				"inspection_attribute_name_unsupported",
+				"An attribute name is outside the inspection encoding",
+				false
+			)
+		end
+		table.insert(names, name)
+		if #names > MAX_INSPECT_ATTRIBUTES_RAW then
+			adapterError(
+				"inspection_attributes_oversize",
+				"Target attribute cardinality exceeds the raw inspection bound",
+				false
+			)
+		end
+	end
+	table.sort(names)
+	local returned = {}
+	for index = 1, math.min(#names, MAX_INSPECT_ATTRIBUTES_RETURNED) do
+		local name = names[index]
+		local encodeOk, encodedValue = pcall(
+			encodeInspectionValue,
+			attributes[name]
+		)
+		if not encodeOk or encodedValue == nil then
+			adapterError(
+				"inspection_attribute_value_unsupported",
+				"An attribute value is outside the reviewed inspection encoding",
+				false
+			)
+		end
+		table.insert(returned, {
+			name = name,
+			value = encodedValue,
+		})
+	end
+	return returned, #names
+end
+
+local function inspectTags(target)
+	local readOk, tags = pcall(function()
+		return target:GetTags()
+	end)
+	if not readOk or type(tags) ~= "table" then
+		adapterError(
+			"inspection_tags_failed",
+			"Studio could not read the target's tags",
+			false
+		)
+	end
+	local count = #tags
+	if count > MAX_INSPECT_TAGS_RAW then
+		adapterError(
+			"inspection_tags_oversize",
+			"Target tag cardinality exceeds the raw inspection bound",
+			false
+		)
+	end
+	for key in pairs(tags) do
+		if not isInteger(key) or key < 1 or key > count then
+			adapterError(
+				"inspection_tags_invalid",
+				"Studio returned a non-array tag collection",
+				false
+			)
+		end
+	end
+	local copied = table.create(count)
+	local seen = {}
+	for index, tag in ipairs(tags) do
+		if not isInspectionName(tag) or seen[tag] == true then
+			adapterError(
+				"inspection_tag_unsupported",
+				"A tag is invalid, duplicated, or outside the inspection encoding",
+				false
+			)
+		end
+		seen[tag] = true
+		copied[index] = tag
+	end
+	table.sort(copied)
+	local returned = {}
+	for index = 1, math.min(#copied, MAX_INSPECT_TAGS_RETURNED) do
+		returned[index] = copied[index]
+	end
+	return returned, #copied
+end
+
+local function isReusableInspectionSegment(name)
+	return isInspectionName(name)
+end
+
+local function sortedInspectionChildren(instance)
+	local readOk, children = pcall(function()
+		return instance:GetChildren()
+	end)
+	if not readOk or type(children) ~= "table" then
+		adapterError(
+			"inspection_children_failed",
+			"Studio could not read one bounded child collection",
+			false
+		)
+	end
+	if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+		adapterError(
+			"inspection_width_unsupported",
+			"One instance exceeds the inspection child-width bound",
+			false
+		)
+	end
+	local decorated = table.create(#children)
+	for index, child in ipairs(children) do
+		local name = child.Name
+		local className = child.ClassName
+		if not isInspectionName(name)
+			or not isInspectionIdentifier(className)
+		then
+			adapterError(
+				"inspection_child_identity_unsupported",
+				"One child identity is outside the inspection encoding",
+				false
+			)
+		end
+		decorated[index] = {
+			instance = child,
+			name = name,
+			class_name = className,
+			original_index = index,
+		}
+	end
+	table.sort(decorated, function(left, right)
+		if left.name == right.name then
+			if left.class_name == right.class_name then
+				return left.original_index < right.original_index
+			end
+			return left.class_name < right.class_name
+		end
+		return left.name < right.name
+	end)
+	return decorated
+end
+
+local function inspectImmediateChildren(children, path, childLimit)
+	local duplicateNames = {}
+	for _, child in ipairs(children) do
+		duplicateNames[child.name] =
+			(duplicateNames[child.name] or 0) + 1
+	end
+	local returned = {}
+	local encodedBytes = 0
+	local reason = "complete"
+	local maximum = math.min(#children, childLimit)
+	for index = 1, maximum do
+		local child = children[index]
+		local addressable = #path < MAX_PATH_SEGMENTS
+			and duplicateNames[child.name] == 1
+			and isReusableInspectionSegment(child.name)
+		local childPath = addressable
+			and appendPath(path, child.name) or {}
+		local item = {
+			name = child.name,
+			class_name = child.class_name,
+			addressable = addressable,
+			path = childPath,
+		}
+		local encodeOk, encoded = pcall(function()
+			return HttpService:JSONEncode(item)
+		end)
+		if not encodeOk or type(encoded) ~= "string" then
+			adapterError(
+				"inspection_child_encoding_failed",
+				"Studio could not encode a bounded child summary",
+				false
+			)
+		end
+		if encodedBytes + #encoded + 1 > MAX_INSPECT_CHILD_OUTPUT_BYTES then
+			reason = "output_bytes"
+			break
+		end
+		table.insert(returned, item)
+		encodedBytes = encodedBytes + #encoded + 1
+	end
+	if reason == "complete" and #returned < #children then
+		reason = "child_limit"
+	end
+	if reason ~= "complete" and #returned > 0 then
+		local boundary = returned[#returned]
+		boundary.addressable = false
+		boundary.path = {}
+	end
+	return returned, reason
+end
+
+local function assertInspectionFrontierBound(frames, newChildren)
+	local retained = #newChildren
+	for _, frame in ipairs(frames) do
+		if frame.children ~= nil then
+			retained = retained + #frame.children
+		end
+	end
+	if retained > MAX_TREE_RETAINED_CHILDREN then
+		adapterError(
+			"inspection_frontier_unsupported",
+			"Inspection traversal exceeds the retained-child frontier bound",
+			false
+		)
+	end
+end
+
+local function newInspectionTraversal(root, rootChildren)
+	assertInspectionFrontierBound({}, rootChildren)
+	return {
+		{
+			instance = root,
+			depth = 0,
+			emitted = true,
+			children = rootChildren,
+			next_child = 1,
+			depth_checked = false,
+		},
+	}
+end
+
+local function nextInspectionDescendant(frames, maxDepth, traversalState)
+	while #frames > 0 do
+		local frame = frames[#frames]
+		if not frame.emitted then
+			frame.emitted = true
+			return frame.instance, frame.depth
+		end
+		if frame.depth < maxDepth then
+			if frame.children == nil then
+				local children = sortedInspectionChildren(frame.instance)
+				assertInspectionFrontierBound(frames, children)
+				frame.children = children
+			end
+			local ordinal = frame.next_child
+			if ordinal <= #frame.children then
+				frame.next_child = ordinal + 1
+				local child = frame.children[ordinal]
+				table.insert(frames, {
+					instance = child.instance,
+					depth = frame.depth + 1,
+					emitted = false,
+					children = nil,
+					next_child = 1,
+					depth_checked = false,
+				})
+			else
+				table.remove(frames)
+			end
+		else
+			if not frame.depth_checked then
+				frame.depth_checked = true
+				local children = sortedInspectionChildren(frame.instance)
+				if #children > 0 then
+					traversalState.depth_limited = true
+				end
+			end
+			table.remove(frames)
+		end
+	end
+	return nil, nil
+end
+
+local function fenceInspectionSnapshot(path, target, generation)
+	assertExpectedDocument()
+	requireEditMode()
+	if peer.generation ~= generation then
+		adapterError(
+			"inspection_generation_changed",
+			"Session generation changed during instance inspection",
+			false
+		)
+	end
+	local observed = resolveExactPath(path, false)
+	if observed ~= target then
+		adapterError(
+			"inspection_target_changed",
+			"Exact inspection path no longer resolves to the same target",
+			false
+		)
+	end
+end
+
+local function inspectDescendants(
+	target,
+	rootChildren,
+	maxDepth,
+	scanLimit,
+	timeLimitMs,
+	startedAt,
+	fence
+)
+	if #rootChildren == 0 then
+		return 0, true, "complete", {}
+	end
+	if (os.clock() - startedAt) * 1_000 >= timeLimitMs then
+		return 0, false, "time_limit", {}
+	end
+	if maxDepth == 0 then
+		return 0, false, "depth_limit", {}
+	end
+	local frames = newInspectionTraversal(target, rootChildren)
+	local traversalState = { depth_limited = false }
+	local descendantCount = 0
+	local classCountMap = {}
+	local classNameCount = 0
+	local reason = "complete"
+
+	while true do
+		if (os.clock() - startedAt) * 1_000 >= timeLimitMs then
+			reason = "time_limit"
+			break
+		end
+		local instance = nextInspectionDescendant(
+			frames,
+			maxDepth,
+			traversalState
+		)
+		if instance == nil then
+			if traversalState.depth_limited then
+				reason = "depth_limit"
+			end
+			break
+		end
+		descendantCount = descendantCount + 1
+		local className = instance.ClassName
+		if not isInspectionIdentifier(className) then
+			adapterError(
+				"inspection_descendant_class_unsupported",
+				"One descendant class is outside the inspection encoding",
+				false
+			)
+		end
+		if classCountMap[className] == nil then
+			classNameCount = classNameCount + 1
+			if classNameCount > MAX_INSPECT_CLASS_COUNTS then
+				adapterError(
+					"inspection_class_counts_oversize",
+					"Observed descendant classes exceed the bounded summary",
+					false
+				)
+			end
+			classCountMap[className] = 1
+		else
+			classCountMap[className] = classCountMap[className] + 1
+		end
+
+		if descendantCount
+			% INSPECT_COOPERATIVE_YIELD_INTERVAL == 0
+		then
+			task.wait()
+			fence()
+		end
+		if (os.clock() - startedAt) * 1_000 >= timeLimitMs then
+			reason = "time_limit"
+			break
+		end
+		if descendantCount >= scanLimit then
+			local following = nextInspectionDescendant(
+				frames,
+				maxDepth,
+				traversalState
+			)
+			if (os.clock() - startedAt) * 1_000 >= timeLimitMs then
+				reason = "time_limit"
+			elseif following ~= nil then
+				reason = "scan_limit"
+			elseif traversalState.depth_limited then
+				reason = "depth_limit"
+			end
+			break
+		end
+	end
+
+	local classNames = {}
+	for className in pairs(classCountMap) do
+		table.insert(classNames, className)
+	end
+	table.sort(classNames)
+	local classCounts = table.create(#classNames)
+	for index, className in ipairs(classNames) do
+		classCounts[index] = {
+			class_name = className,
+			count = classCountMap[className],
+		}
+	end
+	return descendantCount, reason == "complete", reason, classCounts
+end
+
+local function inspectInstance(args, requestId)
+	local startedAt = os.clock()
+	requireEditMode()
+	local generation = peer.generation
+	local path = copyPath(args.path)
+	local childLimit = args.child_limit or DEFAULT_INSPECT_CHILD_LIMIT
+	local descendantMaxDepth = args.descendant_max_depth
+		or (MAX_PATH_SEGMENTS - #path)
+	local descendantScanLimit = args.descendant_scan_limit
+		or DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT
+	local timeLimitMs = args.time_limit_ms or DEFAULT_INSPECT_TIME_LIMIT_MS
+	local target = resolveExactPath(path, false)
+	local fence = function()
+		fenceInspectionSnapshot(path, target, generation)
+	end
+	local properties, propertiesComplete = inspectProperties(target)
+	local attributes, attributesTotal = inspectAttributes(target)
+	local tags, tagsTotal = inspectTags(target)
+	local sortedChildren = sortedInspectionChildren(target)
+	local children, childrenReason = inspectImmediateChildren(
+		sortedChildren,
+		path,
+		childLimit
+	)
+	local descendantCount,
+		descendantCountComplete,
+		descendantReason,
+		descendantClassCounts = inspectDescendants(
+			target,
+			sortedChildren,
+			descendantMaxDepth,
+			descendantScanLimit,
+			timeLimitMs,
+			startedAt,
+			fence
+		)
+	fence()
+
+	local result = newScriptResult("studio_inspect_instance", requestId)
+	result.datamodel_type = "Edit"
+	result.path = path
+	result.name = target.Name
+	result.class_name = target.ClassName
+	result.snapshot_contract = INSPECT_SNAPSHOT_CONTRACT
+	result.property_allowlist_version = INSPECT_PROPERTY_ALLOWLIST_VERSION
+	result.value_encoding_version = INSPECT_VALUE_ENCODING_VERSION
+	result.sort_version = INSPECT_SORT_VERSION
+	result.child_limit = childLimit
+	result.descendant_max_depth = descendantMaxDepth
+	result.descendant_scan_limit = descendantScanLimit
+	result.time_limit_ms = timeLimitMs
+	result.properties = properties
+	result.property_count = #properties
+	result.properties_complete = propertiesComplete
+	result.attributes = attributes
+	result.attributes_total = attributesTotal
+	result.attributes_returned = #attributes
+	result.attributes_truncated = #attributes < attributesTotal
+	result.tags = tags
+	result.tags_total = tagsTotal
+	result.tags_returned = #tags
+	result.tags_truncated = #tags < tagsTotal
+	result.children = children
+	result.children_total = #sortedChildren
+	result.children_returned = #children
+	result.children_truncated = childrenReason ~= "complete"
+	result.children_truncation_reason = childrenReason
+	result.descendant_count = descendantCount
+	result.descendant_count_complete = descendantCountComplete
+	result.descendant_truncation_reason = descendantReason
+	result.descendant_class_counts = descendantClassCounts
+	result.output_limit_bytes = MAX_INSPECT_RESULT_BYTES
+
+	local encodeOk, encoded = pcall(function()
+		return HttpService:JSONEncode(result)
+	end)
+	if not encodeOk
+		or type(encoded) ~= "string"
+		or #encoded > MAX_INSPECT_RESULT_BYTES
+	then
+		adapterError(
+			"inspection_result_oversize",
+			"Instance inspection exceeds its encoded result bound",
+			false
+		)
+	end
+	return result
+end
+
 local function readScript(args)
 	requireEditMode()
 	local target = requireLuaSourceContainer(args.path)
@@ -2806,6 +4073,8 @@ local function dispatch(request)
 		return searchScripts(request.args, request.request_id)
 	elseif request.operation == "studio_grep_scripts" then
 		return grepScripts(request.args, request.request_id)
+	elseif request.operation == "studio_inspect_instance" then
+		return inspectInstance(request.args, request.request_id)
 	elseif request.operation == "studio_read_script" then
 		return readScript(request.args)
 	elseif request.operation == "studio_update_script" then

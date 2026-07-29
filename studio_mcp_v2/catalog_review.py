@@ -41,6 +41,7 @@ INSTALLED_V1_CACHE_PARTS = (
 FAMILY_TO_DURABLE_HANDLER = {
     "state_read": "studio_get_state",
     "tree_read": "studio_list_tree",
+    "instance_inspection": "studio_inspect_instance",
     "script_name_search": "studio_search_scripts",
     "script_content_search": "studio_grep_scripts",
     "script_read": "studio_read_script",
@@ -65,6 +66,15 @@ FAMILY_ALLOWED_ARGUMENTS = {
             "scan_limit",
             "page_size",
             "continuation_cursor",
+        }
+    ),
+    "instance_inspection": frozenset(
+        {
+            "path",
+            "child_limit",
+            "descendant_max_depth",
+            "descendant_scan_limit",
+            "time_limit_ms",
         }
     ),
     "script_name_search": frozenset(

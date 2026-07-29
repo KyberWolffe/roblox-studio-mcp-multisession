@@ -1,11 +1,12 @@
 {
   "format": "studio-mcp-v2-upstream-compatibility-map",
   "manifest_version": "3",
-  "durable_catalog_version": "0.4.0-dev.1",
+  "durable_catalog_version": "0.4.0-dev.2",
   "schema_policy": "exact_handler_contract",
   "durable_handler_schema_sha256": {
     "studio_get_state": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
     "studio_list_tree": "61e32a503d1202b42ef7937d4e1590bf4487fccbbb1dd82778a3aae5944c798f",
+    "studio_inspect_instance": "18fba542143527784264838012e190379aacb63ca0bf9d21034c4fa4d506ec4c",
     "studio_search_scripts": "eec3c7b7b2c04ffc6c9f4f22932b4dbcd46e7967f29c3ab06ad6d19c93a8b7fd",
     "studio_grep_scripts": "3b2ebad80c2b07e5b2619262d60e3cac021675c36c7d673f3fb7b3c55922ab65",
     "studio_read_script": "eb92debbb23d9c64fd08daf5fc1feadc776dc38db808f488168651792f74d1ae",
@@ -19,6 +20,7 @@
   "durable_handler_output_schema_sha256": {
     "studio_get_state": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
     "studio_list_tree": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "studio_inspect_instance": "9b85bb8dcb98dbe1ebdac79b2b4e80959dfc1fae515a590b5418d50980bf139f",
     "studio_search_scripts": "524dc67bf7cca18e9b471e704e3df71e07889a56efa8ffb3bcfb6c714e9140ce",
     "studio_grep_scripts": "52c5ade61f08d7e2f083e0a44536093adecbcf45d8293a3bdc072547a03ad1e1",
     "studio_read_script": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
@@ -44,6 +46,11 @@
       "upstream_name": "search_game_tree",
       "family": "tree_read",
       "durable_handler": "studio_list_tree"
+    },
+    {
+      "upstream_name": "inspect_instance",
+      "family": "instance_inspection",
+      "durable_handler": "studio_inspect_instance"
     },
     {
       "upstream_name": "script_search",

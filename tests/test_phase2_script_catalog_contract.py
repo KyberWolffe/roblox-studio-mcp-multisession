@@ -680,31 +680,45 @@ class Phase2ScriptCatalogContractTests(unittest.TestCase):
         cases = []
 
         input_tamper = copy.deepcopy(self.durable)
-        input_tamper["tools"][2]["inputSchema"]["properties"][
-            "page_size"
-        ]["maximum"] = 11
+        next(
+            tool
+            for tool in input_tamper["tools"]
+            if tool["name"] == "studio_search_scripts"
+        )["inputSchema"]["properties"]["page_size"]["maximum"] = 11
         cases.append(("input", input_tamper, "input schema"))
 
         output_add = copy.deepcopy(self.durable)
-        output_add["tools"][2]["outputSchema"]["properties"]["extra"] = {
+        output_add_search = next(
+            tool
+            for tool in output_add["tools"]
+            if tool["name"] == "studio_search_scripts"
+        )
+        output_add_search["outputSchema"]["properties"]["extra"] = {
             "type": "boolean"
         }
-        output_add["tools"][2]["outputSchema"]["required"].append("extra")
+        output_add_search["outputSchema"]["required"].append("extra")
         cases.append(("output_add", output_add, "output schema"))
 
         output_remove = copy.deepcopy(self.durable)
-        del output_remove["tools"][3]["outputSchema"]["properties"][
-            "returned"
-        ]
-        output_remove["tools"][3]["outputSchema"]["required"].remove(
+        output_remove_grep = next(
+            tool
+            for tool in output_remove["tools"]
+            if tool["name"] == "studio_grep_scripts"
+        )
+        del output_remove_grep["outputSchema"]["properties"]["returned"]
+        output_remove_grep["outputSchema"]["required"].remove(
             "returned"
         )
         cases.append(("output_remove", output_remove, "output schema"))
 
         output_tamper = copy.deepcopy(self.durable)
-        output_tamper["tools"][3]["outputSchema"]["properties"][
-            "output_limit_bytes"
-        ]["const"] = 500001
+        next(
+            tool
+            for tool in output_tamper["tools"]
+            if tool["name"] == "studio_grep_scripts"
+        )["outputSchema"]["properties"]["output_limit_bytes"][
+            "const"
+        ] = 500001
         cases.append(("output_tamper", output_tamper, "output schema"))
 
         for label, payload, expected in cases:

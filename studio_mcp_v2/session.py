@@ -5,6 +5,7 @@ import base64
 import binascii
 import copy
 import json
+import math
 import re
 import time
 import unicodedata
@@ -206,6 +207,244 @@ _DURABLE_SCRIPT_CURSOR_RE = re.compile(
     r"^([A-Za-z0-9+/]+={0,2})\.([0-9a-f]{64})$"
 )
 _DURABLE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DURABLE_CLASS_IDENTIFIER_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]{0,99}$"
+)
+_DURABLE_ATTRIBUTE_NAME_RE = re.compile(
+    r"^[A-Za-z0-9._/-]{1,100}$"
+)
+_DURABLE_INSPECT_ARGUMENT_KEYS = frozenset(
+    {
+        "path",
+        "child_limit",
+        "descendant_max_depth",
+        "descendant_scan_limit",
+        "time_limit_ms",
+    }
+)
+_DURABLE_INSPECT_RESULT_KEYS = frozenset(
+    {
+        "adapter",
+        "v",
+        "operation",
+        "studio_id",
+        "client_instance_id",
+        "document_epoch",
+        "generation",
+        "request_id",
+        "datamodel_type",
+        "path",
+        "name",
+        "class_name",
+        "snapshot_contract",
+        "property_allowlist_version",
+        "value_encoding_version",
+        "sort_version",
+        "child_limit",
+        "descendant_max_depth",
+        "descendant_scan_limit",
+        "time_limit_ms",
+        "properties",
+        "property_count",
+        "properties_complete",
+        "attributes",
+        "attributes_total",
+        "attributes_returned",
+        "attributes_truncated",
+        "tags",
+        "tags_total",
+        "tags_returned",
+        "tags_truncated",
+        "children",
+        "children_total",
+        "children_returned",
+        "children_truncated",
+        "children_truncation_reason",
+        "descendant_count",
+        "descendant_count_complete",
+        "descendant_truncation_reason",
+        "descendant_class_counts",
+        "output_limit_bytes",
+    }
+)
+_DURABLE_INSPECT_PROPERTY_KEYS = frozenset({"selector", "value"})
+_DURABLE_INSPECT_ATTRIBUTE_KEYS = frozenset({"name", "value"})
+_DURABLE_INSPECT_CHILD_KEYS = frozenset(
+    {"name", "class_name", "addressable", "path"}
+)
+_DURABLE_INSPECT_CLASS_COUNT_KEYS = frozenset(
+    {"class_name", "count"}
+)
+_DURABLE_INSPECT_VALUE_KEYS = frozenset(
+    {
+        "type",
+        "boolean_value",
+        "number_value",
+        "text",
+        "numbers",
+        "labels",
+        "byte_length",
+        "truncated",
+    }
+)
+_DURABLE_INSPECT_VALUE_TYPES = frozenset(
+    {
+        "nil",
+        "unavailable",
+        "unsupported",
+        "boolean",
+        "number",
+        "string",
+        "enum",
+        "vector2",
+        "vector3",
+        "color3",
+        "cframe",
+        "udim",
+        "udim2",
+        "rect",
+        "brick_color",
+        "number_range",
+        "number_sequence",
+        "color_sequence",
+        "font",
+    }
+)
+_DURABLE_INSPECT_PROPERTY_SELECTORS = frozenset(
+    {
+        "Instance.Archivable",
+        "BasePart.Anchored",
+        "BasePart.CanCollide",
+        "BasePart.CanQuery",
+        "BasePart.CanTouch",
+        "BasePart.CastShadow",
+        "BasePart.CFrame",
+        "BasePart.CollisionGroup",
+        "BasePart.Color",
+        "BasePart.Locked",
+        "BasePart.Massless",
+        "BasePart.Material",
+        "BasePart.MaterialVariant",
+        "BasePart.Reflectance",
+        "BasePart.Size",
+        "BasePart.Transparency",
+        "BaseScript.Enabled",
+        "BaseScript.RunContext",
+        "GuiObject.Active",
+        "GuiObject.AnchorPoint",
+        "GuiObject.BackgroundColor3",
+        "GuiObject.BackgroundTransparency",
+        "GuiObject.BorderColor3",
+        "GuiObject.BorderSizePixel",
+        "GuiObject.ClipsDescendants",
+        "GuiObject.LayoutOrder",
+        "GuiObject.Position",
+        "GuiObject.Rotation",
+        "GuiObject.Size",
+        "GuiObject.Visible",
+        "GuiObject.ZIndex",
+        "LayerCollector.Enabled",
+        "LayerCollector.ResetOnSpawn",
+        "LayerCollector.ZIndexBehavior",
+    }
+)
+_DURABLE_INSPECT_PROPERTY_VALUE_TYPES = {
+    "Instance.Archivable": "boolean",
+    "BasePart.Anchored": "boolean",
+    "BasePart.CanCollide": "boolean",
+    "BasePart.CanQuery": "boolean",
+    "BasePart.CanTouch": "boolean",
+    "BasePart.CastShadow": "boolean",
+    "BasePart.CFrame": "cframe",
+    "BasePart.CollisionGroup": "string",
+    "BasePart.Color": "color3",
+    "BasePart.Locked": "boolean",
+    "BasePart.Massless": "boolean",
+    "BasePart.Material": "enum",
+    "BasePart.MaterialVariant": "string",
+    "BasePart.Reflectance": "number",
+    "BasePart.Size": "vector3",
+    "BasePart.Transparency": "number",
+    "BaseScript.Enabled": "boolean",
+    "BaseScript.RunContext": "enum",
+    "GuiObject.Active": "boolean",
+    "GuiObject.AnchorPoint": "vector2",
+    "GuiObject.BackgroundColor3": "color3",
+    "GuiObject.BackgroundTransparency": "number",
+    "GuiObject.BorderColor3": "color3",
+    "GuiObject.BorderSizePixel": "number",
+    "GuiObject.ClipsDescendants": "boolean",
+    "GuiObject.LayoutOrder": "number",
+    "GuiObject.Position": "udim2",
+    "GuiObject.Rotation": "number",
+    "GuiObject.Size": "udim2",
+    "GuiObject.Visible": "boolean",
+    "GuiObject.ZIndex": "number",
+    "LayerCollector.Enabled": "boolean",
+    "LayerCollector.ResetOnSpawn": "boolean",
+    "LayerCollector.ZIndexBehavior": "enum",
+}
+_DURABLE_INSPECT_PROPERTY_ENUM_FAMILIES = {
+    "BasePart.Material": "Material",
+    "BaseScript.RunContext": "RunContext",
+    "LayerCollector.ZIndexBehavior": "ZIndexBehavior",
+}
+_DURABLE_INSPECT_PROPERTY_GROUPS = (
+    frozenset(
+        {
+            "BasePart.Anchored",
+            "BasePart.CanCollide",
+            "BasePart.CanQuery",
+            "BasePart.CanTouch",
+            "BasePart.CastShadow",
+            "BasePart.CFrame",
+            "BasePart.CollisionGroup",
+            "BasePart.Color",
+            "BasePart.Locked",
+            "BasePart.Massless",
+            "BasePart.Material",
+            "BasePart.MaterialVariant",
+            "BasePart.Reflectance",
+            "BasePart.Size",
+            "BasePart.Transparency",
+        }
+    ),
+    frozenset({"BaseScript.Enabled", "BaseScript.RunContext"}),
+    frozenset(
+        {
+            "GuiObject.Active",
+            "GuiObject.AnchorPoint",
+            "GuiObject.BackgroundColor3",
+            "GuiObject.BackgroundTransparency",
+            "GuiObject.BorderColor3",
+            "GuiObject.BorderSizePixel",
+            "GuiObject.ClipsDescendants",
+            "GuiObject.LayoutOrder",
+            "GuiObject.Position",
+            "GuiObject.Rotation",
+            "GuiObject.Size",
+            "GuiObject.Visible",
+            "GuiObject.ZIndex",
+        }
+    ),
+    frozenset(
+        {
+            "LayerCollector.Enabled",
+            "LayerCollector.ResetOnSpawn",
+            "LayerCollector.ZIndexBehavior",
+        }
+    ),
+)
+_DURABLE_INSPECT_SENTINELS = {
+    "boolean_value": False,
+    "number_value": 0,
+    "text": "",
+    "numbers": [],
+    "labels": [],
+    "byte_length": 0,
+    "truncated": False,
+}
+_DURABLE_INSPECT_OUTPUT_LIMIT_BYTES = 500_000
 
 
 class LongPollTransport:
@@ -716,6 +955,748 @@ class StudioSession:
                 return None
             normalized.append(segment)
         return tuple(normalized)
+
+    @staticmethod
+    def _finite_inspection_number(value: Any) -> bool:
+        if type(value) is float:
+            return math.isfinite(value)
+        if type(value) is not int:
+            return False
+        try:
+            float_value = float(value)
+            return (
+                math.isfinite(float_value)
+                and int(float_value) == value
+            )
+        except (OverflowError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _inspection_identifier(value: Any) -> bool:
+        return (
+            type(value) is str
+            and _DURABLE_CLASS_IDENTIFIER_RE.fullmatch(value) is not None
+        )
+
+    @staticmethod
+    def _inspection_attribute_name(value: Any) -> bool:
+        return (
+            type(value) is str
+            and value.isascii()
+            and _DURABLE_ATTRIBUTE_NAME_RE.fullmatch(value)
+            is not None
+        )
+
+    @staticmethod
+    def _inspection_name(value: Any, maximum: int = 100) -> bool:
+        if type(value) is not str:
+            return False
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return (
+            1 <= len(encoded) <= maximum
+            and not any(
+                unicodedata.category(character) == "Cc"
+                for character in value
+            )
+        )
+
+    @staticmethod
+    def _inspection_uri(value: Any) -> bool:
+        if type(value) is not str:
+            return False
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        if (
+            not 1 <= len(encoded) <= 1_024
+            or not value.isascii()
+            or any(not 33 <= byte <= 126 for byte in encoded)
+        ):
+            return False
+        return re.fullmatch(
+            r"(?:rbxasset|rbxassetid|https?)://"
+            r"[^\s\x00-\x1f\x7f]+",
+            value,
+        ) is not None
+
+    @staticmethod
+    def _inspection_inactive_fields(
+        value: Dict[str, Any], active: frozenset[str]
+    ) -> bool:
+        for field_name, sentinel in _DURABLE_INSPECT_SENTINELS.items():
+            if field_name in active:
+                continue
+            field_value = value[field_name]
+            if field_name == "number_value":
+                if type(field_value) is not int or field_value != 0:
+                    return False
+            elif field_value != sentinel:
+                return False
+        return True
+
+    def _valid_inspection_value(
+        self, value: Any, *, property_value: bool
+    ) -> bool:
+        if (
+            type(value) is not dict
+            or frozenset(value) != _DURABLE_INSPECT_VALUE_KEYS
+        ):
+            return False
+        value_type = value.get("type")
+        if (
+            type(value_type) is not str
+            or value_type not in _DURABLE_INSPECT_VALUE_TYPES
+            or type(value.get("boolean_value")) is not bool
+            or not self._finite_inspection_number(
+                value.get("number_value")
+            )
+            or type(value.get("text")) is not str
+            or type(value.get("numbers")) is not list
+            or len(value["numbers"]) > 256
+            or any(
+                not self._finite_inspection_number(number)
+                for number in value["numbers"]
+            )
+            or type(value.get("labels")) is not list
+            or len(value["labels"]) > 3
+            or any(
+                type(label) is not str
+                or not self._bounded_text(
+                    label, 1_024, allow_empty=True
+                )
+                for label in value["labels"]
+            )
+            or not self._bounded_integer(
+                value.get("byte_length"), 0, 262_144
+            )
+            or type(value.get("truncated")) is not bool
+        ):
+            return False
+        try:
+            text_length = len(value["text"].encode("utf-8"))
+        except UnicodeEncodeError:
+            return False
+        if text_length > 1_024:
+            return False
+
+        inactive_only = {"nil", "unavailable", "unsupported"}
+        if value_type in inactive_only:
+            return (
+                property_value
+                and self._inspection_inactive_fields(
+                    value, frozenset()
+                )
+            )
+        if value_type == "boolean":
+            return self._inspection_inactive_fields(
+                value, frozenset({"boolean_value"})
+            )
+        if value_type == "number":
+            return self._inspection_inactive_fields(
+                value, frozenset({"number_value"})
+            )
+        if value_type == "string":
+            if not self._inspection_inactive_fields(
+                value,
+                frozenset({"text", "byte_length", "truncated"}),
+            ):
+                return False
+            if value["truncated"]:
+                return (
+                    value["byte_length"] > 1_024
+                    and 1_021 <= text_length <= 1_024
+                )
+            return value["byte_length"] == text_length
+        if value_type == "enum":
+            return (
+                property_value
+                and self._inspection_inactive_fields(
+                    value,
+                    frozenset({"number_value", "labels"}),
+                )
+                and type(value["number_value"]) is int
+                and len(value["labels"]) == 2
+                and all(
+                    self._inspection_identifier(label)
+                    for label in value["labels"]
+                )
+            )
+
+        dimensions = {
+            "vector2": 2,
+            "vector3": 3,
+            "color3": 3,
+            "cframe": 12,
+            "udim": 2,
+            "udim2": 4,
+            "rect": 4,
+            "number_range": 2,
+        }
+        if value_type in dimensions:
+            numbers = value["numbers"]
+            if (
+                not self._inspection_inactive_fields(
+                    value, frozenset({"numbers"})
+                )
+                or len(numbers) != dimensions[value_type]
+            ):
+                return False
+            if value_type == "color3" and any(
+                not 0 <= number <= 1 for number in numbers
+            ):
+                return False
+            if value_type == "udim" and type(numbers[1]) is not int:
+                return False
+            if value_type == "udim2" and (
+                type(numbers[1]) is not int
+                or type(numbers[3]) is not int
+            ):
+                return False
+            if value_type == "rect" and (
+                numbers[0] > numbers[2]
+                or numbers[1] > numbers[3]
+            ):
+                return False
+            if (
+                value_type == "number_range"
+                and numbers[0] > numbers[1]
+            ):
+                return False
+            return True
+
+        if value_type == "brick_color":
+            return (
+                self._inspection_inactive_fields(
+                    value,
+                    frozenset(
+                        {"number_value", "numbers", "labels"}
+                    ),
+                )
+                and type(value["number_value"]) is int
+                and len(value["numbers"]) == 3
+                and all(
+                    0 <= number <= 1
+                    for number in value["numbers"]
+                )
+                and len(value["labels"]) == 1
+                and self._inspection_name(value["labels"][0])
+            )
+
+        if value_type in {"number_sequence", "color_sequence"}:
+            width = 3 if value_type == "number_sequence" else 4
+            numbers = value["numbers"]
+            keypoint_count, remainder = divmod(len(numbers), width)
+            if (
+                not self._inspection_inactive_fields(
+                    value, frozenset({"numbers"})
+                )
+                or remainder != 0
+                or not 2 <= keypoint_count <= 64
+            ):
+                return False
+            previous_time: Optional[float] = None
+            for index in range(keypoint_count):
+                offset = index * width
+                keypoint_time = numbers[offset]
+                if (
+                    not 0 <= keypoint_time <= 1
+                    or (
+                        previous_time is not None
+                        and keypoint_time <= previous_time
+                    )
+                ):
+                    return False
+                previous_time = keypoint_time
+                if value_type == "number_sequence":
+                    if numbers[offset + 2] < 0:
+                        return False
+                elif any(
+                    not 0 <= channel <= 1
+                    for channel in numbers[offset + 1 : offset + 4]
+                ):
+                    return False
+            return numbers[0] == 0 and numbers[-width] == 1
+
+        if value_type == "font":
+            return (
+                self._inspection_inactive_fields(
+                    value,
+                    frozenset(
+                        {
+                            "boolean_value",
+                            "number_value",
+                            "labels",
+                        }
+                    ),
+                )
+                and type(value["number_value"]) is int
+                and len(value["labels"]) == 3
+                and self._inspection_uri(value["labels"][0])
+                and self._inspection_identifier(
+                    value["labels"][1]
+                )
+                and self._inspection_identifier(
+                    value["labels"][2]
+                )
+            )
+        return False
+
+    def _normalized_inspection_request(
+        self, arguments: Any
+    ) -> Optional[Dict[str, Any]]:
+        if (
+            type(arguments) is not dict
+            or not frozenset(arguments).issubset(
+                _DURABLE_INSPECT_ARGUMENT_KEYS
+            )
+            or "path" not in arguments
+        ):
+            return None
+        path = self._normalized_script_path(
+            arguments.get("path"), allow_empty=False
+        )
+        if path is None:
+            return None
+        child_limit = arguments.get("child_limit", 50)
+        descendant_max_depth = arguments.get(
+            "descendant_max_depth", 64 - len(path)
+        )
+        descendant_scan_limit = arguments.get(
+            "descendant_scan_limit", 2_000
+        )
+        time_limit_ms = arguments.get("time_limit_ms", 3_000)
+        if (
+            not self._bounded_integer(child_limit, 0, 200)
+            or not self._bounded_integer(
+                descendant_max_depth, 0, 64
+            )
+            or len(path) + descendant_max_depth > 64
+            or not self._bounded_integer(
+                descendant_scan_limit, 1, 5_000
+            )
+            or not self._bounded_integer(
+                time_limit_ms, 100, 10_000
+            )
+        ):
+            return None
+        return {
+            "path": path,
+            "child_limit": child_limit,
+            "descendant_max_depth": descendant_max_depth,
+            "descendant_scan_limit": descendant_scan_limit,
+            "time_limit_ms": time_limit_ms,
+        }
+
+    def _valid_durable_inspection_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        expected = self._normalized_inspection_request(
+            pending.arguments
+        )
+        if expected is None:
+            return False
+        if (
+            type(result) is not dict
+            or frozenset(result) != _DURABLE_INSPECT_RESULT_KEYS
+            or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
+            or type(result.get("v")) is not int
+            or result.get("v") != 1
+            or result.get("operation") != "studio_inspect_instance"
+            or result.get("operation") != pending.remote_tool
+            or result.get("studio_id") != self.studio_id
+            or result.get("client_instance_id")
+            != self.client_instance_id
+            or result.get("document_epoch") != self.document_epoch
+            or type(result.get("generation")) is not int
+            or result.get("generation") != pending.generation
+            or result.get("generation") != self.generation
+            or result.get("request_id") != pending.request_id
+            or result.get("datamodel_type") != "Edit"
+            or result.get("snapshot_contract")
+            != "path-edit-generation-fenced-observational-v1"
+            or result.get("property_allowlist_version")
+            != "instance-property-allowlist-v1"
+            or result.get("value_encoding_version")
+            != "instance-value-v1"
+            or result.get("sort_version")
+            != "name-class-original-v1"
+            or result.get("output_limit_bytes")
+            != _DURABLE_INSPECT_OUTPUT_LIMIT_BYTES
+            or type(result.get("output_limit_bytes")) is not int
+        ):
+            return False
+
+        path = self._normalized_script_path(
+            result.get("path"), allow_empty=False
+        )
+        if (
+            path is None
+            or path != expected["path"]
+            or result.get("name") != path[-1]
+            or not self._inspection_identifier(
+                result.get("class_name")
+            )
+        ):
+            return False
+        for field_name in (
+            "child_limit",
+            "descendant_max_depth",
+            "descendant_scan_limit",
+            "time_limit_ms",
+        ):
+            if (
+                type(result.get(field_name)) is not int
+                or result[field_name] != expected[field_name]
+            ):
+                return False
+
+        properties = result.get("properties")
+        property_count = result.get("property_count")
+        if (
+            type(properties) is not list
+            or not self._bounded_integer(
+                property_count,
+                0,
+                len(_DURABLE_INSPECT_PROPERTY_SELECTORS),
+            )
+            or property_count != len(properties)
+            or type(result.get("properties_complete")) is not bool
+        ):
+            return False
+        previous_selector: Optional[str] = None
+        incomplete_property = False
+        saw_archivable = False
+        observed_selectors: Set[str] = set()
+        for entry in properties:
+            if (
+                type(entry) is not dict
+                or frozenset(entry)
+                != _DURABLE_INSPECT_PROPERTY_KEYS
+            ):
+                return False
+            selector = entry.get("selector")
+            inspection_value = entry.get("value")
+            if (
+                type(selector) is not str
+                or selector
+                not in _DURABLE_INSPECT_PROPERTY_SELECTORS
+                or (
+                    previous_selector is not None
+                    and selector <= previous_selector
+                )
+                or not self._valid_inspection_value(
+                    inspection_value, property_value=True
+                )
+                or inspection_value["type"]
+                not in {
+                    _DURABLE_INSPECT_PROPERTY_VALUE_TYPES[selector],
+                    "unavailable",
+                    "unsupported",
+                }
+            ):
+                return False
+            expected_enum_family = (
+                _DURABLE_INSPECT_PROPERTY_ENUM_FAMILIES.get(
+                    selector
+                )
+            )
+            if (
+                inspection_value["type"] == "enum"
+                and inspection_value["labels"][0]
+                != expected_enum_family
+            ):
+                return False
+            previous_selector = selector
+            observed_selectors.add(selector)
+            if selector == "Instance.Archivable":
+                saw_archivable = True
+            if inspection_value["type"] in {
+                "unavailable",
+                "unsupported",
+            }:
+                incomplete_property = True
+        if (
+            not saw_archivable
+            or result["properties_complete"] is incomplete_property
+        ):
+            return False
+        present_group_count = 0
+        for property_group in _DURABLE_INSPECT_PROPERTY_GROUPS:
+            present = observed_selectors & property_group
+            if present and present != property_group:
+                return False
+            if present:
+                present_group_count += 1
+        if present_group_count > 1:
+            return False
+
+        attributes = result.get("attributes")
+        attributes_total = result.get("attributes_total")
+        attributes_returned = result.get("attributes_returned")
+        if (
+            type(attributes) is not list
+            or not self._bounded_integer(
+                attributes_total, 0, 1_024
+            )
+            or attributes_returned != min(attributes_total, 64)
+            or type(attributes_returned) is not int
+            or len(attributes) != attributes_returned
+            or result.get("attributes_truncated")
+            is not (attributes_total > 64)
+        ):
+            return False
+        previous_name_bytes: Optional[bytes] = None
+        for entry in attributes:
+            if (
+                type(entry) is not dict
+                or frozenset(entry)
+                != _DURABLE_INSPECT_ATTRIBUTE_KEYS
+                or not self._inspection_attribute_name(
+                    entry.get("name")
+                )
+                or not self._valid_inspection_value(
+                    entry.get("value"), property_value=False
+                )
+            ):
+                return False
+            name_bytes = entry["name"].encode("utf-8")
+            if (
+                previous_name_bytes is not None
+                and name_bytes <= previous_name_bytes
+            ):
+                return False
+            previous_name_bytes = name_bytes
+
+        tags = result.get("tags")
+        tags_total = result.get("tags_total")
+        tags_returned = result.get("tags_returned")
+        if (
+            type(tags) is not list
+            or not self._bounded_integer(tags_total, 0, 1_024)
+            or tags_returned != min(tags_total, 128)
+            or type(tags_returned) is not int
+            or len(tags) != tags_returned
+            or result.get("tags_truncated") is not (tags_total > 128)
+        ):
+            return False
+        previous_tag_bytes: Optional[bytes] = None
+        for tag in tags:
+            if not self._inspection_name(tag):
+                return False
+            tag_bytes = tag.encode("utf-8")
+            if (
+                previous_tag_bytes is not None
+                and tag_bytes <= previous_tag_bytes
+            ):
+                return False
+            previous_tag_bytes = tag_bytes
+
+        children = result.get("children")
+        children_total = result.get("children_total")
+        children_returned = result.get("children_returned")
+        child_limit = expected["child_limit"]
+        reason = result.get("children_truncation_reason")
+        if (
+            type(children) is not list
+            or not self._bounded_integer(children_total, 0, 10_000)
+            or not self._bounded_integer(
+                children_returned, 0, child_limit
+            )
+            or len(children) != children_returned
+            or type(result.get("children_truncated")) is not bool
+            or result["children_truncated"]
+            is not (children_returned < children_total)
+            or type(reason) is not str
+            or reason not in {
+                "complete",
+                "child_limit",
+                "output_bytes",
+            }
+        ):
+            return False
+        if reason == "complete":
+            if children_returned != children_total:
+                return False
+        elif reason == "child_limit":
+            if not (
+                children_total > child_limit
+                and children_returned == child_limit
+            ):
+                return False
+        elif not (
+            1 <= children_returned < children_total
+            and children_returned
+            < min(children_total, child_limit)
+        ):
+            return False
+
+        child_name_counts: Dict[str, int] = {}
+        previous_child_key: Optional[tuple[bytes, bytes]] = None
+        for child in children:
+            if (
+                type(child) is not dict
+                or frozenset(child) != _DURABLE_INSPECT_CHILD_KEYS
+                or not self._inspection_name(child.get("name"))
+                or not self._inspection_identifier(
+                    child.get("class_name")
+                )
+                or type(child.get("addressable")) is not bool
+            ):
+                return False
+            child_key = (
+                child["name"].encode("utf-8"),
+                child["class_name"].encode("ascii"),
+            )
+            if (
+                previous_child_key is not None
+                and child_key < previous_child_key
+            ):
+                return False
+            previous_child_key = child_key
+            child_name_counts[child["name"]] = (
+                child_name_counts.get(child["name"], 0) + 1
+            )
+            child_path = self._normalized_script_path(
+                child.get("path"),
+                allow_empty=not child["addressable"],
+            )
+            if child["addressable"]:
+                if (
+                    child_path is None
+                    or len(path) >= 64
+                    or child_path != path + (child["name"],)
+                ):
+                    return False
+            elif child.get("path") != []:
+                return False
+        for index, child in enumerate(children):
+            expected_addressable = (
+                len(path) < 64
+                and child_name_counts[child["name"]] == 1
+                and not (
+                    result["children_truncated"]
+                    and index == len(children) - 1
+                )
+            )
+            if child["addressable"] is not expected_addressable:
+                return False
+
+        descendant_count = result.get("descendant_count")
+        descendant_complete = result.get(
+            "descendant_count_complete"
+        )
+        descendant_reason = result.get(
+            "descendant_truncation_reason"
+        )
+        if (
+            not self._bounded_integer(
+                descendant_count,
+                0,
+                expected["descendant_scan_limit"],
+            )
+            or type(descendant_complete) is not bool
+            or type(descendant_reason) is not str
+            or descendant_reason not in {
+                "complete",
+                "scan_limit",
+                "time_limit",
+                "depth_limit",
+            }
+            or descendant_complete
+            is not (descendant_reason == "complete")
+            or (
+                descendant_reason == "scan_limit"
+                and descendant_count
+                != expected["descendant_scan_limit"]
+            )
+        ):
+            return False
+
+        class_counts = result.get("descendant_class_counts")
+        if type(class_counts) is not list or len(class_counts) > 256:
+            return False
+        previous_class_name: Optional[str] = None
+        counted_descendants = 0
+        for entry in class_counts:
+            if (
+                type(entry) is not dict
+                or frozenset(entry)
+                != _DURABLE_INSPECT_CLASS_COUNT_KEYS
+                or not self._inspection_identifier(
+                    entry.get("class_name")
+                )
+                or (
+                    previous_class_name is not None
+                    and entry["class_name"] <= previous_class_name
+                )
+                or not self._bounded_integer(
+                    entry.get("count"), 1, descendant_count
+                )
+            ):
+                return False
+            previous_class_name = entry["class_name"]
+            counted_descendants += entry["count"]
+        if counted_descendants != descendant_count:
+            return False
+        if children_total == 0:
+            if (
+                descendant_count != 0
+                or descendant_complete is not True
+                or descendant_reason != "complete"
+                or class_counts
+            ):
+                return False
+        elif expected["descendant_max_depth"] == 0:
+            if (
+                descendant_count != 0
+                or descendant_complete is not False
+                or descendant_reason
+                not in {"depth_limit", "time_limit"}
+                or class_counts
+            ):
+                return False
+        elif expected["descendant_max_depth"] == 1:
+            if (
+                descendant_count > children_total
+                or (
+                    descendant_reason in {
+                        "complete",
+                        "depth_limit",
+                    }
+                    and descendant_count != children_total
+                )
+                or (
+                    descendant_reason == "scan_limit"
+                    and descendant_count >= children_total
+                )
+            ):
+                return False
+        elif (
+            descendant_reason in {"complete", "depth_limit"}
+            and descendant_count < children_total
+        ):
+            return False
+
+        try:
+            encoded = json.dumps(
+                result,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (
+            TypeError,
+            ValueError,
+            UnicodeEncodeError,
+            RecursionError,
+        ):
+            return False
+        return len(encoded) <= _DURABLE_INSPECT_OUTPUT_LIMIT_BYTES
 
     def _normalized_script_request(
         self, remote_tool: str, arguments: Any
@@ -1520,6 +2501,19 @@ class StudioSession:
                     RemoteToolError(
                         "Targeted Studio returned an invalid script "
                         "query response"
+                    )
+                )
+                return True
+            if (
+                pending.remote_tool == "studio_inspect_instance"
+                and not self._valid_durable_inspection_result(
+                    pending, result
+                )
+            ):
+                pending.future.set_exception(
+                    RemoteToolError(
+                        "Targeted Studio returned an invalid instance "
+                        "inspection response"
                     )
                 )
                 return True

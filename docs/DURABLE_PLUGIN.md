@@ -14,11 +14,12 @@ resume credential, generation, and authorization policy remain separate checks.
 
 ## Durable operation surface
 
-The isolated 0.4.0 development catalog exposes exactly these Studio-side
+The isolated 0.4.0-dev.2 development catalog exposes exactly these Studio-side
 handlers. The live-installed rc.4 catalog remains unchanged:
 
 - `studio_get_state`
 - `studio_list_tree`
+- `studio_inspect_instance`
 - `studio_search_scripts`
 - `studio_grep_scripts`
 - `studio_read_script`
@@ -39,6 +40,17 @@ depth-first ordering, explicit scan/page/output caps, and opaque continuation
 cursors. Cursors are integrity-protected and fenced to the exact Studio,
 document epoch, generation, normalized query, sort version, and continuation
 lineage; a mismatched or stale cursor fails closed.
+
+Detailed instance inspection is Edit-only and accepts one nonempty exact path.
+It reads a fixed reviewed 34-selector allowlist instead of reflecting arbitrary
+properties, encodes supported values through a closed bounded representation,
+and never reads script source or exposes `UniqueId`. Attributes, tags, immediate
+children, and descendant class counts are sorted and bounded independently.
+Duplicate sibling names remain unaddressable and fail closed for the inspected
+target; child summaries mark whether their returned path can be reused. When a
+child summary is truncated, its final visible entry is conservatively
+unaddressable because an omitted same-name sibling cannot be ruled out.
+Descendant traversal has explicit depth, scan, time, and output budgets.
 
 Script-name search uses a separate cursor domain and deterministic all-keyword
 literal-subsequence matching. Keywords are printable ASCII, comma-separated,
@@ -124,7 +136,7 @@ operator-owned mapping is
 operation is compatible only when:
 
 1. its exact upstream name is present in the operator mapping;
-2. the mapping resolves to one of the eleven existing durable handlers;
+2. the mapping resolves to one of the twelve existing durable handlers;
 3. its input schema and declared-or-absent output schema exactly match that
    handler's current locally pinned contracts; and
 4. the generated catalog still passes the explicit-`studio_id`, handler-source,
