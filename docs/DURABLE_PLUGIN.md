@@ -14,7 +14,7 @@ resume credential, generation, and authorization policy remain separate checks.
 
 ## Durable operation surface
 
-The isolated 0.4.0-rc.1 candidate catalog exposes exactly these Studio-side
+The isolated 0.4.0-rc.2 candidate catalog exposes exactly these Studio-side
 handlers. The live-installed rc.4 catalog remains unchanged:
 
 - `studio_get_state`

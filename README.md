@@ -9,12 +9,14 @@ multiple Studio sessions from concurrent Codex tasks. Every Studio-bound tool
 requires an explicit, server-assigned `studio_id`. There is no active Studio
 pointer, implicit single-session choice, or default-session fallback.
 
-Version `0.4.0-rc.1` is the first isolated Phase 2 release candidate based on
-the frozen, live-validated `0.3.0-rc.4` checkpoint. It is not installed and has
-not been published to GitHub. It carries the bounded tree, state, script
-search, literal grep, and instance-inspection slices; adds revision-protected
-multi-edit plus exact recovery; and closes direct/job identity, schema,
-result, ordering, and retention contracts for the accumulated workflow tools.
+Version `0.4.0-rc.2` is the corrected isolated Phase 2 release candidate based
+on the frozen, live-validated `0.3.0-rc.4` checkpoint. It is not installed and
+has not been published to GitHub. It retains rc.1's bounded workflow and
+revision-protected multi-edit slices, fixes the rendered plugin's Luau
+local-register overflow and the live-gate public-name boundary, and requires a
+receipt-bound native Studio compilation proof before any future live gate.
+The failed rc.1 commit and artifact remain immutable and are explicitly
+rejected rather than rewritten.
 
 > **Experimental prerelease:** the safe v2 surface does not yet cover all 25
 > modern v1 capabilities. Twelve P0 rows remain partial or deferred. Publication
@@ -106,6 +108,15 @@ The release dry run audits the repository, builds the deterministic archive
 twice, compares it byte-for-byte, audits the archive, and exercises the
 installer in a temporary home. It does not touch real Codex, Roblox Studio, or
 installed v1/v2 files.
+
+Before a rendered candidate may be used for a live Studio gate, its exact
+hashed `.rbxmx` source must also pass
+`scripts/native_studio_compile_smoke.py` against a strictly verified signed
+Roblox Studio installation. Missing or invalid native evidence is a hard
+failure, never a skipped check. The isolated read-only harness additionally
+binds the complete extracted release and runtime/config provenance and has no
+unqualified operational loader; see `docs/TESTING.md` for the mandatory
+prepare, compile, qualify, and start order.
 
 To build only the portable release:
 

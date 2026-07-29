@@ -62,17 +62,17 @@ class Phase2ScriptLuauTests(unittest.TestCase):
             set(re.findall(r"\n\t\t([a-z_]+) = true,", grep_keys)),
         )
         for marker in (
-            "local MAX_SCRIPT_QUERY_BYTES = 256",
-            "local MAX_SCRIPT_KEYWORDS = 8",
-            "local MAX_SCRIPT_CURSOR_BYTES = 2_048",
-            "local MAX_SCRIPT_SCAN_LIMIT = 5_000",
-            "local MAX_SCRIPT_SEARCH_PAGE_SIZE = 10",
-            "local MAX_SCRIPT_GREP_PAGE_SIZE = 50",
-            "local MAX_SCRIPT_SOURCE_BUDGET = 4_194_304",
-            "local MAX_SCRIPT_SOURCE_LINES = 20_000",
-            "local MAX_SCRIPT_PREVIEW_BYTES = 512",
-            "local MAX_SCRIPT_SEARCH_OUTPUT_BYTES = 200_000",
-            "local MAX_SCRIPT_GREP_OUTPUT_BYTES = 500_000",
+            "MAX_SCRIPT_QUERY_BYTES = 256",
+            "MAX_SCRIPT_KEYWORDS = 8",
+            "MAX_SCRIPT_CURSOR_BYTES = 2_048",
+            "MAX_SCRIPT_SCAN_LIMIT = 5_000",
+            "MAX_SCRIPT_SEARCH_PAGE_SIZE = 10",
+            "MAX_SCRIPT_GREP_PAGE_SIZE = 50",
+            "MAX_SCRIPT_SOURCE_BUDGET = 4_194_304",
+            "MAX_SCRIPT_SOURCE_LINES = 20_000",
+            "MAX_SCRIPT_PREVIEW_BYTES = 512",
+            "MAX_SCRIPT_SEARCH_OUTPUT_BYTES = 200_000",
+            "MAX_SCRIPT_GREP_OUTPUT_BYTES = 500_000",
         ):
             self.assertIn(marker, self.source)
 
@@ -169,16 +169,18 @@ class Phase2ScriptLuauTests(unittest.TestCase):
         ):
             self.assertIn(field, envelope)
         self.assertIn(
-            "assertBoundedScriptResult(result, MAX_SCRIPT_SEARCH_OUTPUT_BYTES)",
+            "assertBoundedScriptResult("
+            "result, DURABLE_BOUNDS.MAX_SCRIPT_SEARCH_OUTPUT_BYTES)",
             self.search,
         )
         self.assertIn(
-            "assertBoundedScriptResult(result, MAX_SCRIPT_GREP_OUTPUT_BYTES)",
+            "assertBoundedScriptResult("
+            "result, DURABLE_BOUNDS.MAX_SCRIPT_GREP_OUTPUT_BYTES)",
             self.grep,
         )
 
     def test_traversal_frontier_and_cooperative_checks_are_bounded(self) -> None:
-        self.assertIn("local MAX_TREE_RETAINED_CHILDREN = 20_000", self.source)
+        self.assertIn("MAX_TREE_RETAINED_CHILDREN = 20_000", self.source)
         self.assertIn("local function assertTreeFrontierBound(", self.source)
         self.assertIn("assertTreeFrontierBound(frames, children)", self.source)
         resolver = self.source[
@@ -186,7 +188,7 @@ class Phase2ScriptLuauTests(unittest.TestCase):
             self.source.index("local function requireLuaSourceContainer(")
         ]
         self.assertIn(
-            "#children > MAX_TREE_CHILDREN_PER_INSTANCE",
+            "#children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE",
             resolver,
         )
         for operation in (self.search, self.grep):

@@ -17,98 +17,104 @@ end
 
 -- Optional/version-gated APIs are resolved without preventing the core
 -- session from registering. Their handlers fail closed when unavailable.
-local ScriptEditorService = optionalService("ScriptEditorService")
-local LogService = optionalService("LogService")
-local StudioCaptureService = optionalService("StudioCaptureService")
-local EncodingService = optionalService("EncodingService")
+local OPTIONAL_SERVICES = table.freeze({
+	ScriptEditorService = optionalService("ScriptEditorService"),
+	LogService = optionalService("LogService"),
+	StudioCaptureService = optionalService("StudioCaptureService"),
+	EncodingService = optionalService("EncodingService"),
+})
 
-local MAX_PATH_SEGMENTS = 64
-local MAX_PATH_SEGMENT_BYTES = 100
-local MAX_SOURCE_BYTES = 262_144
-local MAX_ATTRIBUTE_STRING_BYTES = 4_096
-local MAX_CONSOLE_MESSAGE_BYTES = 2_000
-local MAX_SCREENSHOT_BYTES = 600_000
-local SCREENSHOT_READY_SECONDS = 5
-local MAX_TREE_FILTER_BYTES = 100
-local MAX_TREE_CURSOR_BYTES = 512
-local MAX_TREE_SCAN_LIMIT = 5_000
-local DEFAULT_TREE_SCAN_LIMIT = 2_000
-local MAX_TREE_PAGE_SIZE = 500
-local MAX_TREE_CHILDREN_PER_INSTANCE = 10_000
-local MAX_TREE_RETAINED_CHILDREN = 20_000
-local MAX_TREE_OUTPUT_BYTES = 600_000
-local TREE_COOPERATIVE_YIELD_INTERVAL = 100
-local TREE_CURSOR_VERSION = 1
-local TREE_SORT_VERSION = "name-class-v1"
-local MAX_SCRIPT_QUERY_BYTES = 256
-local MAX_SCRIPT_KEYWORDS = 8
-local MAX_SCRIPT_KEYWORD_BYTES = 64
-local MAX_SCRIPT_CURSOR_BYTES = 2_048
-local MAX_SCRIPT_SCAN_LIMIT = 5_000
-local DEFAULT_SCRIPT_SCAN_LIMIT = 2_000
-local MAX_SCRIPT_SEARCH_PAGE_SIZE = 10
-local DEFAULT_SCRIPT_SEARCH_PAGE_SIZE = 10
-local MAX_SCRIPT_GREP_PAGE_SIZE = 50
-local DEFAULT_SCRIPT_GREP_PAGE_SIZE = 50
-local MIN_SCRIPT_TIME_LIMIT_MS = 100
-local MAX_SCRIPT_TIME_LIMIT_MS = 10_000
-local DEFAULT_SCRIPT_SEARCH_TIME_LIMIT_MS = 3_000
-local DEFAULT_SCRIPT_GREP_TIME_LIMIT_MS = 5_000
-local MIN_SCRIPT_SOURCE_BUDGET = MAX_SOURCE_BYTES
-local MAX_SCRIPT_SOURCE_BUDGET = 4_194_304
-local DEFAULT_SCRIPT_SOURCE_BUDGET = 1_048_576
-local MAX_SCRIPT_SOURCE_LINES = 20_000
-local MAX_SCRIPT_PREVIEW_BYTES = 512
-local MAX_SCRIPT_SEARCH_OUTPUT_BYTES = 200_000
-local MAX_SCRIPT_GREP_OUTPUT_BYTES = 500_000
-local SCRIPT_SEARCH_ITEM_BUDGET = 160_000
-local SCRIPT_GREP_ITEM_BUDGET = 450_000
-local SCRIPT_CURSOR_VERSION = 1
-local SCRIPT_SEARCH_QUERY_VERSION = "script-name-query-v1"
-local SCRIPT_GREP_QUERY_VERSION = "script-grep-query-v1"
-local SCRIPT_SEARCH_MATCH_SEMANTICS =
-	"all_keywords_ascii_case_insensitive_literal_subsequence"
-local MAX_INSPECT_CHILD_LIMIT = 200
-local DEFAULT_INSPECT_CHILD_LIMIT = 50
-local MAX_INSPECT_DESCENDANT_DEPTH = 64
-local MAX_INSPECT_DESCENDANT_SCAN_LIMIT = 5_000
-local DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT = 2_000
-local MIN_INSPECT_TIME_LIMIT_MS = 100
-local MAX_INSPECT_TIME_LIMIT_MS = 10_000
-local DEFAULT_INSPECT_TIME_LIMIT_MS = 3_000
-local MAX_INSPECT_ATTRIBUTES_RAW = 1_024
-local MAX_INSPECT_ATTRIBUTES_RETURNED = 64
-local MAX_INSPECT_TAGS_RAW = 1_024
-local MAX_INSPECT_TAGS_RETURNED = 128
-local MAX_INSPECT_SEQUENCE_KEYPOINTS = 64
-local MAX_INSPECT_CLASS_COUNTS = 256
-local MAX_INSPECT_STRING_RAW_BYTES = 262_144
-local MAX_INSPECT_STRING_PREFIX_BYTES = 1_024
-local MAX_INSPECT_CHILD_OUTPUT_BYTES = 300_000
-local MAX_INSPECT_RESULT_BYTES = 500_000
-local INSPECT_COOPERATIVE_YIELD_INTERVAL = 100
-local MAX_MULTI_EDIT_TARGETS = 16
-local MAX_MULTI_EDIT_EDITS_PER_TARGET = 64
-local MAX_MULTI_EDIT_EDITS = 128
-local MAX_MULTI_EDIT_LITERAL_BYTES = 262_144
-local MAX_MULTI_EDIT_SOURCE_BYTES = 262_144
-local MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES = 1_048_576
-local MAX_MULTI_EDIT_REPLACEMENT_SPANS = 1_024
-local MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES = 8_192
-local MAX_MULTI_EDIT_RECEIPT_BYTES = 100_000
-local MULTI_EDIT_PREPARE_TTL_SECONDS = 120
-local MULTI_EDIT_ORDERING_VERSION =
-	"target-input-edit-input-v1"
-local MULTI_EDIT_ATOMICITY =
-	"preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1"
-local MULTI_EDIT_RECEIPT_CONTRACT =
-	"broker-validated-downstream-ack-v1"
-local INSPECT_SNAPSHOT_CONTRACT =
-	"path-edit-generation-fenced-observational-v1"
-local INSPECT_PROPERTY_ALLOWLIST_VERSION =
-	"instance-property-allowlist-v1"
-local INSPECT_VALUE_ENCODING_VERSION = "instance-value-v1"
-local INSPECT_SORT_VERSION = "name-class-original-v1"
+local DURABLE_BOUNDS = table.freeze({
+	MAX_PATH_SEGMENTS = 64,
+	MAX_PATH_SEGMENT_BYTES = 100,
+	MAX_SOURCE_BYTES = 262_144,
+	MAX_ATTRIBUTE_STRING_BYTES = 4_096,
+	MAX_CONSOLE_MESSAGE_BYTES = 2_000,
+	MAX_SCREENSHOT_BYTES = 600_000,
+	SCREENSHOT_READY_SECONDS = 5,
+	MAX_TREE_FILTER_BYTES = 100,
+	MAX_TREE_CURSOR_BYTES = 512,
+	MAX_TREE_SCAN_LIMIT = 5_000,
+	DEFAULT_TREE_SCAN_LIMIT = 2_000,
+	MAX_TREE_PAGE_SIZE = 500,
+	MAX_TREE_CHILDREN_PER_INSTANCE = 10_000,
+	MAX_TREE_RETAINED_CHILDREN = 20_000,
+	MAX_TREE_OUTPUT_BYTES = 600_000,
+	TREE_COOPERATIVE_YIELD_INTERVAL = 100,
+	MAX_SCRIPT_QUERY_BYTES = 256,
+	MAX_SCRIPT_KEYWORDS = 8,
+	MAX_SCRIPT_KEYWORD_BYTES = 64,
+	MAX_SCRIPT_CURSOR_BYTES = 2_048,
+	MAX_SCRIPT_SCAN_LIMIT = 5_000,
+	DEFAULT_SCRIPT_SCAN_LIMIT = 2_000,
+	MAX_SCRIPT_SEARCH_PAGE_SIZE = 10,
+	DEFAULT_SCRIPT_SEARCH_PAGE_SIZE = 10,
+	MAX_SCRIPT_GREP_PAGE_SIZE = 50,
+	DEFAULT_SCRIPT_GREP_PAGE_SIZE = 50,
+	MIN_SCRIPT_TIME_LIMIT_MS = 100,
+	MAX_SCRIPT_TIME_LIMIT_MS = 10_000,
+	DEFAULT_SCRIPT_SEARCH_TIME_LIMIT_MS = 3_000,
+	DEFAULT_SCRIPT_GREP_TIME_LIMIT_MS = 5_000,
+	MIN_SCRIPT_SOURCE_BUDGET = 262_144,
+	MAX_SCRIPT_SOURCE_BUDGET = 4_194_304,
+	DEFAULT_SCRIPT_SOURCE_BUDGET = 1_048_576,
+	MAX_SCRIPT_SOURCE_LINES = 20_000,
+	MAX_SCRIPT_PREVIEW_BYTES = 512,
+	MAX_SCRIPT_SEARCH_OUTPUT_BYTES = 200_000,
+	MAX_SCRIPT_GREP_OUTPUT_BYTES = 500_000,
+	SCRIPT_SEARCH_ITEM_BUDGET = 160_000,
+	SCRIPT_GREP_ITEM_BUDGET = 450_000,
+	MAX_INSPECT_CHILD_LIMIT = 200,
+	DEFAULT_INSPECT_CHILD_LIMIT = 50,
+	MAX_INSPECT_DESCENDANT_DEPTH = 64,
+	MAX_INSPECT_DESCENDANT_SCAN_LIMIT = 5_000,
+	DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT = 2_000,
+	MIN_INSPECT_TIME_LIMIT_MS = 100,
+	MAX_INSPECT_TIME_LIMIT_MS = 10_000,
+	DEFAULT_INSPECT_TIME_LIMIT_MS = 3_000,
+	MAX_INSPECT_ATTRIBUTES_RAW = 1_024,
+	MAX_INSPECT_ATTRIBUTES_RETURNED = 64,
+	MAX_INSPECT_TAGS_RAW = 1_024,
+	MAX_INSPECT_TAGS_RETURNED = 128,
+	MAX_INSPECT_SEQUENCE_KEYPOINTS = 64,
+	MAX_INSPECT_CLASS_COUNTS = 256,
+	MAX_INSPECT_STRING_RAW_BYTES = 262_144,
+	MAX_INSPECT_STRING_PREFIX_BYTES = 1_024,
+	MAX_INSPECT_CHILD_OUTPUT_BYTES = 300_000,
+	MAX_INSPECT_RESULT_BYTES = 500_000,
+	INSPECT_COOPERATIVE_YIELD_INTERVAL = 100,
+	MAX_MULTI_EDIT_TARGETS = 16,
+	MAX_MULTI_EDIT_EDITS_PER_TARGET = 64,
+	MAX_MULTI_EDIT_EDITS = 128,
+	MAX_MULTI_EDIT_LITERAL_BYTES = 262_144,
+	MAX_MULTI_EDIT_SOURCE_BYTES = 262_144,
+	MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES = 1_048_576,
+	MAX_MULTI_EDIT_REPLACEMENT_SPANS = 1_024,
+	MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES = 8_192,
+	MAX_MULTI_EDIT_RECEIPT_BYTES = 100_000,
+	MULTI_EDIT_PREPARE_TTL_SECONDS = 120,
+})
+local PROTOCOL_METADATA = table.freeze({
+	TREE_CURSOR_VERSION = 1,
+	TREE_SORT_VERSION = "name-class-v1",
+	SCRIPT_CURSOR_VERSION = 1,
+	SCRIPT_SEARCH_QUERY_VERSION = "script-name-query-v1",
+	SCRIPT_GREP_QUERY_VERSION = "script-grep-query-v1",
+	SCRIPT_SEARCH_MATCH_SEMANTICS =
+		"all_keywords_ascii_case_insensitive_literal_subsequence",
+	MULTI_EDIT_ORDERING_VERSION =
+		"target-input-edit-input-v1",
+	MULTI_EDIT_ATOMICITY =
+		"preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1",
+	MULTI_EDIT_RECEIPT_CONTRACT =
+		"broker-validated-downstream-ack-v1",
+	INSPECT_SNAPSHOT_CONTRACT =
+		"path-edit-generation-fenced-observational-v1",
+	INSPECT_PROPERTY_ALLOWLIST_VERSION =
+		"instance-property-allowlist-v1",
+	INSPECT_VALUE_ENCODING_VERSION = "instance-value-v1",
+	INSPECT_SORT_VERSION = "name-class-original-v1",
+})
 
 local OPERATION_ARG_KEYS = table.freeze({
 	studio_get_state = table.freeze({}),
@@ -221,7 +227,7 @@ local function validatePath(path, allowEmpty, label)
 		adapterError("invalid_args", label .. " must be a path array", false)
 	end
 	local count = #path
-	if (not allowEmpty and count < 1) or count > MAX_PATH_SEGMENTS then
+	if (not allowEmpty and count < 1) or count > DURABLE_BOUNDS.MAX_PATH_SEGMENTS then
 		adapterError("invalid_args", label .. " has an invalid length", false)
 	end
 	for key in pairs(path) do
@@ -237,7 +243,7 @@ local function validatePath(path, allowEmpty, label)
 		local segment = path[index]
 		if type(segment) ~= "string"
 			or #segment < 1
-			or #segment > MAX_PATH_SEGMENT_BYTES
+			or #segment > DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES
 			or string.find(segment, "[%c]") ~= nil
 		then
 			adapterError(
@@ -253,7 +259,7 @@ end
 local function validateTreeFilter(value, label)
 	if type(value) ~= "string"
 		or #value < 1
-		or #value > MAX_TREE_FILTER_BYTES
+		or #value > DURABLE_BOUNDS.MAX_TREE_FILTER_BYTES
 		or string.find(value, "[%c]") ~= nil
 	then
 		adapterError(
@@ -268,12 +274,12 @@ end
 local function validatePrintableAsciiScriptText(value, label)
 	if type(value) ~= "string"
 		or #value < 1
-		or #value > MAX_SCRIPT_QUERY_BYTES
+		or #value > DURABLE_BOUNDS.MAX_SCRIPT_QUERY_BYTES
 	then
 		adapterError(
 			"invalid_args",
 			label .. " must be 1 to "
-				.. tostring(MAX_SCRIPT_QUERY_BYTES)
+				.. tostring(DURABLE_BOUNDS.MAX_SCRIPT_QUERY_BYTES)
 				.. " printable ASCII bytes",
 			false
 		)
@@ -301,11 +307,11 @@ local function normalizeScriptKeywords(value)
 		local finishIndex = commaIndex ~= nil and commaIndex - 1 or #value
 		local token = string.sub(value, startIndex, finishIndex)
 		token = string.match(token, "^ *(.-) *$") or ""
-		if #token < 1 or #token > MAX_SCRIPT_KEYWORD_BYTES then
+		if #token < 1 or #token > DURABLE_BOUNDS.MAX_SCRIPT_KEYWORD_BYTES then
 			adapterError(
 				"invalid_args",
 				"Each comma-separated keyword must be 1 to "
-					.. tostring(MAX_SCRIPT_KEYWORD_BYTES)
+					.. tostring(DURABLE_BOUNDS.MAX_SCRIPT_KEYWORD_BYTES)
 					.. " bytes after ASCII-space trimming",
 				false
 			)
@@ -320,7 +326,7 @@ local function normalizeScriptKeywords(value)
 		end
 		seen[folded] = true
 		table.insert(normalized, folded)
-		if #normalized > MAX_SCRIPT_KEYWORDS then
+		if #normalized > DURABLE_BOUNDS.MAX_SCRIPT_KEYWORDS then
 			adapterError(
 				"invalid_args",
 				"keywords contains too many comma-separated tokens",
@@ -345,7 +351,7 @@ end
 local function validateScriptCursor(value)
 	if type(value) ~= "string"
 		or #value < 1
-		or #value > MAX_SCRIPT_CURSOR_BYTES
+		or #value > DURABLE_BOUNDS.MAX_SCRIPT_CURSOR_BYTES
 		or string.find(value, "[%c%s]") ~= nil
 	then
 		adapterError(
@@ -359,11 +365,11 @@ end
 local function validateScriptTraversalArgs(args, maximumPageSize)
 	local rootPath = validatePath(args.root_path or {}, true, "root_path")
 	if args.max_depth ~= nil then
-		validateIntegerRange(args.max_depth, 0, MAX_PATH_SEGMENTS, "max_depth")
+		validateIntegerRange(args.max_depth, 0, DURABLE_BOUNDS.MAX_PATH_SEGMENTS, "max_depth")
 	end
 	local maxDepth = args.max_depth
-		or (MAX_PATH_SEGMENTS - #rootPath)
-	if #rootPath + maxDepth > MAX_PATH_SEGMENTS then
+		or (DURABLE_BOUNDS.MAX_PATH_SEGMENTS - #rootPath)
+	if #rootPath + maxDepth > DURABLE_BOUNDS.MAX_PATH_SEGMENTS then
 		adapterError(
 			"invalid_args",
 			"root_path plus max_depth exceeds the reusable path bound",
@@ -374,7 +380,7 @@ local function validateScriptTraversalArgs(args, maximumPageSize)
 		validateIntegerRange(
 			args.scan_limit,
 			1,
-			MAX_SCRIPT_SCAN_LIMIT,
+			DURABLE_BOUNDS.MAX_SCRIPT_SCAN_LIMIT,
 			"scan_limit"
 		)
 	end
@@ -389,8 +395,8 @@ local function validateScriptTraversalArgs(args, maximumPageSize)
 	if args.time_limit_ms ~= nil then
 		validateIntegerRange(
 			args.time_limit_ms,
-			MIN_SCRIPT_TIME_LIMIT_MS,
-			MAX_SCRIPT_TIME_LIMIT_MS,
+			DURABLE_BOUNDS.MIN_SCRIPT_TIME_LIMIT_MS,
+			DURABLE_BOUNDS.MAX_SCRIPT_TIME_LIMIT_MS,
 			"time_limit_ms"
 		)
 	end
@@ -420,7 +426,7 @@ local function resolveExactPath(path, allowRoot)
 	for _, segment in ipairs(path) do
 		local match = nil
 		local children = current:GetChildren()
-		if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+		if #children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE then
 			adapterError(
 				"tree_width_unsupported",
 				"Exact-path resolution exceeds the bounded child width",
@@ -453,7 +459,7 @@ end
 
 local function sourceSha256(source)
 	local ok, binaryDigest = pcall(function()
-		return EncodingService:ComputeStringHash(
+		return OPTIONAL_SERVICES.EncodingService:ComputeStringHash(
 			source,
 			Enum.HashAlgorithm.Sha256
 		)
@@ -492,9 +498,9 @@ end
 
 local function readEditorSource(target)
 	local ok, source = pcall(function()
-		return ScriptEditorService:GetEditorSource(target)
+		return OPTIONAL_SERVICES.ScriptEditorService:GetEditorSource(target)
 	end)
-	if not ok or type(source) ~= "string" or #source > MAX_SOURCE_BYTES then
+	if not ok or type(source) ~= "string" or #source > DURABLE_BOUNDS.MAX_SOURCE_BYTES then
 		adapterError(
 			"script_source_unavailable",
 			"Editor source is unavailable or exceeds the durable limit",
@@ -511,7 +517,7 @@ local function validatePrimitive(valueType, value, label, allowNone)
 		end
 		return nil
 	elseif valueType == "string" then
-		if type(value) ~= "string" or #value > MAX_ATTRIBUTE_STRING_BYTES then
+		if type(value) ~= "string" or #value > DURABLE_BOUNDS.MAX_ATTRIBUTE_STRING_BYTES then
 			adapterError(
 				"invalid_args",
 				label .. " string is invalid or too large",
@@ -619,7 +625,7 @@ end
 local function validateMultiEditTargets(targets)
 	if type(targets) ~= "table"
 		or #targets < 1
-		or #targets > MAX_MULTI_EDIT_TARGETS
+		or #targets > DURABLE_BOUNDS.MAX_MULTI_EDIT_TARGETS
 	then
 		adapterError(
 			"invalid_args",
@@ -659,7 +665,7 @@ local function validateMultiEditTargets(targets)
 			table.insert(pathSignatureParts, segment)
 			table.insert(pathSignatureParts, ";")
 		end
-		if aggregatePathBytes > MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES then
+		if aggregatePathBytes > DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES then
 			adapterError(
 				"invalid_args",
 				"Aggregate multi-edit target paths exceed 8192 UTF-8 bytes",
@@ -682,7 +688,7 @@ local function validateMultiEditTargets(targets)
 		local edits = target.edits
 		if type(edits) ~= "table"
 			or #edits < 1
-			or #edits > MAX_MULTI_EDIT_EDITS_PER_TARGET
+			or #edits > DURABLE_BOUNDS.MAX_MULTI_EDIT_EDITS_PER_TARGET
 		then
 			adapterError(
 				"invalid_args",
@@ -706,9 +712,9 @@ local function validateMultiEditTargets(targets)
 			assertExactKeys(edit, MULTI_EDIT_EDIT_KEYS, "multi_edit_edit")
 			if not validUtf8(edit.old_string)
 				or #edit.old_string < 1
-				or #edit.old_string > MAX_MULTI_EDIT_LITERAL_BYTES
+				or #edit.old_string > DURABLE_BOUNDS.MAX_MULTI_EDIT_LITERAL_BYTES
 				or not validUtf8(edit.new_string)
-				or #edit.new_string > MAX_MULTI_EDIT_LITERAL_BYTES
+				or #edit.new_string > DURABLE_BOUNDS.MAX_MULTI_EDIT_LITERAL_BYTES
 				or edit.old_string == edit.new_string
 			then
 				adapterError(
@@ -740,7 +746,7 @@ local function validateMultiEditTargets(targets)
 					or not isInteger(edit.end_byte)
 					or edit.start_byte < 0
 					or edit.end_byte <= edit.start_byte
-					or edit.end_byte > MAX_MULTI_EDIT_SOURCE_BYTES
+					or edit.end_byte > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 					or edit.end_byte - edit.start_byte ~= #edit.old_string
 				then
 					adapterError(
@@ -754,8 +760,8 @@ local function validateMultiEditTargets(targets)
 				+ #edit.old_string
 				+ #edit.new_string
 			totalEdits = totalEdits + 1
-			if literalBytes > MAX_MULTI_EDIT_LITERAL_BYTES
-				or totalEdits > MAX_MULTI_EDIT_EDITS
+			if literalBytes > DURABLE_BOUNDS.MAX_MULTI_EDIT_LITERAL_BYTES
+				or totalEdits > DURABLE_BOUNDS.MAX_MULTI_EDIT_EDITS
 			then
 				adapterError(
 					"invalid_args",
@@ -771,7 +777,7 @@ end
 local function validatePreparedTargets(targets)
 	if type(targets) ~= "table"
 		or #targets < 1
-		or #targets > MAX_MULTI_EDIT_TARGETS
+		or #targets > DURABLE_BOUNDS.MAX_MULTI_EDIT_TARGETS
 	then
 		adapterError("invalid_args", "prepared_targets is invalid", false)
 	end
@@ -789,16 +795,16 @@ local function validatePreparedTargets(targets)
 			or target.status ~= "prepared"
 			or not isInteger(target.source_length)
 			or target.source_length < 0
-			or target.source_length > MAX_MULTI_EDIT_SOURCE_BYTES
+			or target.source_length > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 			or not isInteger(target.planned_source_length)
 			or target.planned_source_length < 0
-			or target.planned_source_length > MAX_MULTI_EDIT_SOURCE_BYTES
+			or target.planned_source_length > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 			or not isInteger(target.edit_count)
 			or target.edit_count < 1
-			or target.edit_count > MAX_MULTI_EDIT_EDITS_PER_TARGET
+			or target.edit_count > DURABLE_BOUNDS.MAX_MULTI_EDIT_EDITS_PER_TARGET
 			or not isInteger(target.replacement_count)
 			or target.replacement_count < target.edit_count
-			or target.replacement_count > MAX_MULTI_EDIT_REPLACEMENT_SPANS
+			or target.replacement_count > DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS
 		then
 			adapterError("invalid_args", "prepared target fields are invalid", false)
 		end
@@ -810,7 +816,7 @@ local function validatePreparedTargets(targets)
 		for _, segment in ipairs(path) do
 			aggregatePathBytes = aggregatePathBytes + #segment
 		end
-		if aggregatePathBytes > MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES then
+		if aggregatePathBytes > DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES then
 			adapterError(
 				"invalid_args",
 				"Prepared target paths exceed the aggregate bound",
@@ -849,7 +855,7 @@ local function validateDurableArgs(operation, args, deadlineMs)
 			validateIntegerRange(args.max_depth, 0, 6, "max_depth")
 		end
 		local maxDepth = args.max_depth or 2
-		if #rootPath + maxDepth > MAX_PATH_SEGMENTS then
+		if #rootPath + maxDepth > DURABLE_BOUNDS.MAX_PATH_SEGMENTS then
 			adapterError(
 				"invalid_args",
 				"root_path plus max_depth exceeds the reusable path bound",
@@ -888,7 +894,7 @@ local function validateDurableArgs(operation, args, deadlineMs)
 			validateIntegerRange(
 				args.scan_limit,
 				1,
-				MAX_TREE_SCAN_LIMIT,
+				DURABLE_BOUNDS.MAX_TREE_SCAN_LIMIT,
 				"scan_limit"
 			)
 		end
@@ -896,7 +902,7 @@ local function validateDurableArgs(operation, args, deadlineMs)
 			validateIntegerRange(
 				args.page_size,
 				1,
-				MAX_TREE_PAGE_SIZE,
+				DURABLE_BOUNDS.MAX_TREE_PAGE_SIZE,
 				"page_size"
 			)
 		end
@@ -910,7 +916,7 @@ local function validateDurableArgs(operation, args, deadlineMs)
 		if args.continuation_cursor ~= nil
 			and (type(args.continuation_cursor) ~= "string"
 				or #args.continuation_cursor < 1
-				or #args.continuation_cursor > MAX_TREE_CURSOR_BYTES
+				or #args.continuation_cursor > DURABLE_BOUNDS.MAX_TREE_CURSOR_BYTES
 				or string.find(args.continuation_cursor, "[%c%s]") ~= nil)
 		then
 			adapterError(
@@ -923,13 +929,13 @@ local function validateDurableArgs(operation, args, deadlineMs)
 		normalizeScriptKeywords(args.keywords)
 		validateScriptTraversalArgs(
 			args,
-			MAX_SCRIPT_SEARCH_PAGE_SIZE
+			DURABLE_BOUNDS.MAX_SCRIPT_SEARCH_PAGE_SIZE
 		)
 	elseif operation == "studio_grep_scripts" then
 		validatePrintableAsciiScriptText(args.query, "query")
 		validateScriptTraversalArgs(
 			args,
-			MAX_SCRIPT_GREP_PAGE_SIZE
+			DURABLE_BOUNDS.MAX_SCRIPT_GREP_PAGE_SIZE
 		)
 		if args.case_sensitive ~= nil
 			and type(args.case_sensitive) ~= "boolean"
@@ -943,8 +949,8 @@ local function validateDurableArgs(operation, args, deadlineMs)
 		if args.source_byte_limit ~= nil then
 			validateIntegerRange(
 				args.source_byte_limit,
-				MIN_SCRIPT_SOURCE_BUDGET,
-				MAX_SCRIPT_SOURCE_BUDGET,
+				DURABLE_BOUNDS.MIN_SCRIPT_SOURCE_BUDGET,
+				DURABLE_BOUNDS.MAX_SCRIPT_SOURCE_BUDGET,
 				"source_byte_limit"
 			)
 		end
@@ -954,7 +960,7 @@ local function validateDurableArgs(operation, args, deadlineMs)
 			validateIntegerRange(
 				args.child_limit,
 				0,
-				MAX_INSPECT_CHILD_LIMIT,
+				DURABLE_BOUNDS.MAX_INSPECT_CHILD_LIMIT,
 				"child_limit"
 			)
 		end
@@ -962,13 +968,13 @@ local function validateDurableArgs(operation, args, deadlineMs)
 			validateIntegerRange(
 				args.descendant_max_depth,
 				0,
-				MAX_INSPECT_DESCENDANT_DEPTH,
+				DURABLE_BOUNDS.MAX_INSPECT_DESCENDANT_DEPTH,
 				"descendant_max_depth"
 			)
 		end
 		local descendantMaxDepth = args.descendant_max_depth
-			or (MAX_PATH_SEGMENTS - #path)
-		if #path + descendantMaxDepth > MAX_PATH_SEGMENTS then
+			or (DURABLE_BOUNDS.MAX_PATH_SEGMENTS - #path)
+		if #path + descendantMaxDepth > DURABLE_BOUNDS.MAX_PATH_SEGMENTS then
 			adapterError(
 				"invalid_args",
 				"path plus descendant_max_depth exceeds the reusable path bound",
@@ -979,22 +985,22 @@ local function validateDurableArgs(operation, args, deadlineMs)
 			validateIntegerRange(
 				args.descendant_scan_limit,
 				1,
-				MAX_INSPECT_DESCENDANT_SCAN_LIMIT,
+				DURABLE_BOUNDS.MAX_INSPECT_DESCENDANT_SCAN_LIMIT,
 				"descendant_scan_limit"
 			)
 		end
 		if args.time_limit_ms ~= nil then
 			validateIntegerRange(
 				args.time_limit_ms,
-				MIN_INSPECT_TIME_LIMIT_MS,
-				MAX_INSPECT_TIME_LIMIT_MS,
+				DURABLE_BOUNDS.MIN_INSPECT_TIME_LIMIT_MS,
+				DURABLE_BOUNDS.MAX_INSPECT_TIME_LIMIT_MS,
 				"time_limit_ms"
 			)
 		end
 	elseif operation == "studio_read_script" then
 		validatePath(args.path, false, "path")
 		if args.max_chars ~= nil then
-			validateIntegerRange(args.max_chars, 1, MAX_SOURCE_BYTES, "max_chars")
+			validateIntegerRange(args.max_chars, 1, DURABLE_BOUNDS.MAX_SOURCE_BYTES, "max_chars")
 		end
 	elseif operation == "studio_update_script" then
 		validatePath(args.path, false, "path")
@@ -1009,7 +1015,7 @@ local function validateDurableArgs(operation, args, deadlineMs)
 			)
 		end
 		if type(args.new_source) ~= "string"
-			or #args.new_source > MAX_SOURCE_BYTES
+			or #args.new_source > DURABLE_BOUNDS.MAX_SOURCE_BYTES
 		then
 			adapterError(
 				"invalid_args",
@@ -1253,7 +1259,7 @@ local function appendCanonicalTreeValue(parts, value)
 end
 
 local function treeSha256(value)
-	if EncodingService == nil then
+	if OPTIONAL_SERVICES.EncodingService == nil then
 		adapterError(
 			"tree_cursor_unavailable",
 			"Studio SHA-256 support is unavailable for tree pagination",
@@ -1261,7 +1267,7 @@ local function treeSha256(value)
 		)
 	end
 	local ok, binaryDigest = pcall(function()
-		return EncodingService:ComputeStringHash(
+		return OPTIONAL_SERVICES.EncodingService:ComputeStringHash(
 			value,
 			Enum.HashAlgorithm.Sha256
 		)
@@ -1287,7 +1293,7 @@ local function treeSha256(value)
 end
 
 local function scriptCursorSha256(value)
-	if EncodingService == nil then
+	if OPTIONAL_SERVICES.EncodingService == nil then
 		adapterError(
 			"script_cursor_unavailable",
 			"Studio SHA-256 support is unavailable for script pagination",
@@ -1295,7 +1301,7 @@ local function scriptCursorSha256(value)
 		)
 	end
 	local ok, binaryDigest = pcall(function()
-		return EncodingService:ComputeStringHash(
+		return OPTIONAL_SERVICES.EncodingService:ComputeStringHash(
 			value,
 			Enum.HashAlgorithm.Sha256
 		)
@@ -1358,7 +1364,7 @@ local function encodeTreeCursorPayload(payload)
 		)
 	end
 	local base64Ok, encodedBuffer = pcall(function()
-		return EncodingService:Base64Encode(buffer.fromstring(json))
+		return OPTIONAL_SERVICES.EncodingService:Base64Encode(buffer.fromstring(json))
 	end)
 	if not base64Ok or typeof(encodedBuffer) ~= "buffer" then
 		adapterError(
@@ -1369,7 +1375,7 @@ local function encodeTreeCursorPayload(payload)
 	end
 	local encoded = buffer.tostring(encodedBuffer)
 	local cursor = encoded .. "." .. treeCursorIntegrity(json)
-	if #cursor > MAX_TREE_CURSOR_BYTES then
+	if #cursor > DURABLE_BOUNDS.MAX_TREE_CURSOR_BYTES then
 		adapterError(
 			"tree_cursor_unavailable",
 			"Encoded tree cursor exceeds its durable bound",
@@ -1398,7 +1404,7 @@ local function decodeTreeCursorPayload(cursor, querySha256, maxDepth)
 	end
 	local encoded = encodedCore .. padding
 	local decodeOk, decodedBuffer = pcall(function()
-		return EncodingService:Base64Decode(buffer.fromstring(encoded))
+		return OPTIONAL_SERVICES.EncodingService:Base64Decode(buffer.fromstring(encoded))
 	end)
 	if not decodeOk or typeof(decodedBuffer) ~= "buffer" then
 		adapterError(
@@ -1453,7 +1459,7 @@ local function decodeTreeCursorPayload(cursor, querySha256, maxDepth)
 			)
 		end
 	end
-	if payload.v ~= TREE_CURSOR_VERSION
+	if payload.v ~= PROTOCOL_METADATA.TREE_CURSOR_VERSION
 		or payload.s ~= peer.studio_id
 		or payload.c ~= CLIENT_INSTANCE_ID
 		or payload.d ~= DOCUMENT_EPOCH
@@ -1497,7 +1503,7 @@ local function decodeTreeCursorPayload(cursor, querySha256, maxDepth)
 	for _, ordinal in ipairs(payload.p) do
 		if not isInteger(ordinal)
 			or ordinal < 1
-			or ordinal > MAX_TREE_CHILDREN_PER_INSTANCE
+			or ordinal > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE
 		then
 			adapterError(
 				"invalid_continuation_cursor",
@@ -1520,7 +1526,7 @@ local function canonicalTreeQuery(
 )
 	local parts = {}
 	appendCanonicalTreeValue(parts, "studio-tree-query-v1")
-	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, PROTOCOL_METADATA.TREE_SORT_VERSION)
 	appendCanonicalTreeValue(parts, maxDepth)
 	appendCanonicalTreeValue(parts, string.lower(nameFilter or ""))
 	appendCanonicalTreeValue(parts, classFilter or "")
@@ -1536,7 +1542,7 @@ end
 
 local function sortedTreeChildren(instance)
 	local children = instance:GetChildren()
-	if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+	if #children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE then
 		adapterError(
 			"tree_width_unsupported",
 			"One tree node exceeds the deterministic child-order bound",
@@ -1547,7 +1553,7 @@ local function sortedTreeChildren(instance)
 	for index, child in ipairs(children) do
 		if type(child.Name) ~= "string"
 			or #child.Name < 1
-			or #child.Name > MAX_PATH_SEGMENT_BYTES
+			or #child.Name > DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES
 			or string.find(child.Name, "[%c]") ~= nil
 		then
 			adapterError(
@@ -1593,7 +1599,7 @@ end
 
 local function boundedTreeChildCount(instance)
 	local children = instance:GetChildren()
-	if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+	if #children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE then
 		adapterError(
 			"tree_width_unsupported",
 			"One tree node exceeds the deterministic child-count bound",
@@ -1606,7 +1612,7 @@ end
 local function treePositionLineage(root, position)
 	local parts = {}
 	appendCanonicalTreeValue(parts, "studio-tree-lineage-v1")
-	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, PROTOCOL_METADATA.TREE_SORT_VERSION)
 	appendCanonicalTreeValue(parts, root.Name)
 	appendCanonicalTreeValue(parts, root.ClassName)
 	local current = root
@@ -1645,7 +1651,7 @@ local function assertTreeFrontierBound(frames, newChildren)
 			retained = retained + #frame.children
 		end
 	end
-	if retained > MAX_TREE_RETAINED_CHILDREN then
+	if retained > DURABLE_BOUNDS.MAX_TREE_RETAINED_CHILDREN then
 		adapterError(
 			"tree_frontier_unsupported",
 			"Deterministic traversal exceeds the retained-child frontier bound",
@@ -1780,7 +1786,7 @@ local function listTree(args, requestId)
 	local root = resolveExactPath(rootPath, true)
 	local maxDepth = args.max_depth or 2
 	local pageSize = args.page_size or args.max_results or 200
-	local scanLimit = args.scan_limit or DEFAULT_TREE_SCAN_LIMIT
+	local scanLimit = args.scan_limit or DURABLE_BOUNDS.DEFAULT_TREE_SCAN_LIMIT
 	local nameFilter = args.name_filter
 	local nameFilterLower = nameFilter ~= nil
 		and string.lower(nameFilter) or nil
@@ -1868,7 +1874,7 @@ local function listTree(args, requestId)
 				)
 			end
 			local encodedBytes = #itemJson + 1
-			if outputBytes + encodedBytes > MAX_TREE_OUTPUT_BYTES then
+			if outputBytes + encodedBytes > DURABLE_BOUNDS.MAX_TREE_OUTPUT_BYTES then
 				nextPosition = copyPath(position)
 				truncationReason = "output_bytes"
 				break
@@ -1887,7 +1893,7 @@ local function listTree(args, requestId)
 			end
 			break
 		end
-		if scanned % TREE_COOPERATIVE_YIELD_INTERVAL == 0 then
+		if scanned % DURABLE_BOUNDS.TREE_COOPERATIVE_YIELD_INTERVAL == 0 then
 			task.wait()
 			assertExpectedDocument()
 		end
@@ -1898,7 +1904,7 @@ local function listTree(args, requestId)
 	if nextPosition ~= nil then
 		querySha256 = querySha256 or treeSha256(queryCanonical)
 		continuationCursor = encodeTreeCursorPayload({
-			v = TREE_CURSOR_VERSION,
+			v = PROTOCOL_METADATA.TREE_CURSOR_VERSION,
 			s = peer.studio_id,
 			c = CLIENT_INSTANCE_ID,
 			d = DOCUMENT_EPOCH,
@@ -1933,15 +1939,15 @@ local function listTree(args, requestId)
 		name_filter = nameFilter or "",
 		class_filter = classFilter or "",
 		class_is_a = classIsA,
-		sort_version = TREE_SORT_VERSION,
-		output_limit_bytes = MAX_TREE_OUTPUT_BYTES,
+		sort_version = PROTOCOL_METADATA.TREE_SORT_VERSION,
+		output_limit_bytes = DURABLE_BOUNDS.MAX_TREE_OUTPUT_BYTES,
 	}
 	local resultOk, encodedResult = pcall(function()
 		return HttpService:JSONEncode(result)
 	end)
 	if not resultOk
 		or type(encodedResult) ~= "string"
-		or #encodedResult > MAX_TREE_OUTPUT_BYTES
+		or #encodedResult > DURABLE_BOUNDS.MAX_TREE_OUTPUT_BYTES
 	then
 		adapterError(
 			"tree_result_oversize",
@@ -2000,7 +2006,7 @@ local function encodeScriptCursorPayload(payload, domain)
 		)
 	end
 	local base64Ok, encodedBuffer = pcall(function()
-		return EncodingService:Base64Encode(buffer.fromstring(json))
+		return OPTIONAL_SERVICES.EncodingService:Base64Encode(buffer.fromstring(json))
 	end)
 	if not base64Ok or typeof(encodedBuffer) ~= "buffer" then
 		adapterError(
@@ -2011,7 +2017,7 @@ local function encodeScriptCursorPayload(payload, domain)
 	end
 	local encoded = buffer.tostring(encodedBuffer)
 	local cursor = encoded .. "." .. scriptCursorIntegrity(domain, json)
-	if #cursor > MAX_SCRIPT_CURSOR_BYTES then
+	if #cursor > DURABLE_BOUNDS.MAX_SCRIPT_CURSOR_BYTES then
 		adapterError(
 			"script_cursor_unavailable",
 			"Encoded script continuation exceeds its durable bound",
@@ -2045,7 +2051,7 @@ local function decodeScriptCursorPayload(
 		)
 	end
 	local decodeOk, decodedBuffer = pcall(function()
-		return EncodingService:Base64Decode(
+		return OPTIONAL_SERVICES.EncodingService:Base64Decode(
 			buffer.fromstring(encodedCore .. padding)
 		)
 	end)
@@ -2102,7 +2108,7 @@ local function decodeScriptCursorPayload(
 			)
 		end
 	end
-	if payload.v ~= SCRIPT_CURSOR_VERSION
+	if payload.v ~= PROTOCOL_METADATA.SCRIPT_CURSOR_VERSION
 		or payload.s ~= peer.studio_id
 		or payload.c ~= CLIENT_INSTANCE_ID
 		or payload.d ~= DOCUMENT_EPOCH
@@ -2146,7 +2152,7 @@ local function decodeScriptCursorPayload(
 	for _, ordinal in ipairs(payload.p) do
 		if not isInteger(ordinal)
 			or ordinal < 1
-			or ordinal > MAX_TREE_CHILDREN_PER_INSTANCE
+			or ordinal > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE
 		then
 			adapterError(
 				"invalid_script_cursor",
@@ -2167,8 +2173,8 @@ local function canonicalScriptSearchQuery(
 	timeLimitMs
 )
 	local parts = {}
-	appendCanonicalTreeValue(parts, SCRIPT_SEARCH_QUERY_VERSION)
-	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, PROTOCOL_METADATA.SCRIPT_SEARCH_QUERY_VERSION)
+	appendCanonicalTreeValue(parts, PROTOCOL_METADATA.TREE_SORT_VERSION)
 	appendCanonicalTreeValue(parts, maxDepth)
 	appendCanonicalTreeValue(parts, scanLimit)
 	appendCanonicalTreeValue(parts, pageSize)
@@ -2195,8 +2201,8 @@ local function canonicalScriptGrepQuery(
 	timeLimitMs
 )
 	local parts = {}
-	appendCanonicalTreeValue(parts, SCRIPT_GREP_QUERY_VERSION)
-	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, PROTOCOL_METADATA.SCRIPT_GREP_QUERY_VERSION)
+	appendCanonicalTreeValue(parts, PROTOCOL_METADATA.TREE_SORT_VERSION)
 	appendCanonicalTreeValue(parts, maxDepth)
 	appendCanonicalTreeValue(parts, query)
 	appendCanonicalTreeValue(parts, caseSensitive and "1" or "0")
@@ -2219,7 +2225,7 @@ local function scriptCursorForPosition(
 	extra
 )
 	local payload = {
-		v = SCRIPT_CURSOR_VERSION,
+		v = PROTOCOL_METADATA.SCRIPT_CURSOR_VERSION,
 		s = peer.studio_id,
 		c = CLIENT_INSTANCE_ID,
 		d = DOCUMENT_EPOCH,
@@ -2301,14 +2307,14 @@ local function searchScripts(args, requestId)
 	local startedAt = os.clock()
 	local rootPath, maxDepth = validateScriptTraversalArgs(
 		args,
-		MAX_SCRIPT_SEARCH_PAGE_SIZE
+		DURABLE_BOUNDS.MAX_SCRIPT_SEARCH_PAGE_SIZE
 	)
 	local root = resolveExactPath(rootPath, true)
 	local keywords = normalizeScriptKeywords(args.keywords)
-	local scanLimit = args.scan_limit or DEFAULT_SCRIPT_SCAN_LIMIT
-	local pageSize = args.page_size or DEFAULT_SCRIPT_SEARCH_PAGE_SIZE
+	local scanLimit = args.scan_limit or DURABLE_BOUNDS.DEFAULT_SCRIPT_SCAN_LIMIT
+	local pageSize = args.page_size or DURABLE_BOUNDS.DEFAULT_SCRIPT_SEARCH_PAGE_SIZE
 	local timeLimitMs = args.time_limit_ms
-		or DEFAULT_SCRIPT_SEARCH_TIME_LIMIT_MS
+		or DURABLE_BOUNDS.DEFAULT_SCRIPT_SEARCH_TIME_LIMIT_MS
 	local queryCanonical = canonicalScriptSearchQuery(
 		rootPath,
 		maxDepth,
@@ -2387,7 +2393,7 @@ local function searchScripts(args, requestId)
 					)
 				end
 				if itemBytes + #itemJson + 1
-					> SCRIPT_SEARCH_ITEM_BUDGET
+					> DURABLE_BOUNDS.SCRIPT_SEARCH_ITEM_BUDGET
 				then
 					continuationCursor = scriptCursorForPosition(
 						root,
@@ -2434,7 +2440,7 @@ local function searchScripts(args, requestId)
 			end
 			break
 		end
-		if scannedInstances % TREE_COOPERATIVE_YIELD_INTERVAL == 0 then
+		if scannedInstances % DURABLE_BOUNDS.TREE_COOPERATIVE_YIELD_INTERVAL == 0 then
 			task.wait()
 			assertExpectedDocument()
 			requireEditMode()
@@ -2446,9 +2452,9 @@ local function searchScripts(args, requestId)
 	local result = newScriptResult("studio_search_scripts", requestId)
 	result.root_path = copyPath(rootPath)
 	result.keywords = copyPath(keywords)
-	result.match_semantics = SCRIPT_SEARCH_MATCH_SEMANTICS
-	result.query_version = SCRIPT_SEARCH_QUERY_VERSION
-	result.sort_version = TREE_SORT_VERSION
+	result.match_semantics = PROTOCOL_METADATA.SCRIPT_SEARCH_MATCH_SEMANTICS
+	result.query_version = PROTOCOL_METADATA.SCRIPT_SEARCH_QUERY_VERSION
+	result.sort_version = PROTOCOL_METADATA.TREE_SORT_VERSION
 	result.max_depth = maxDepth
 	result.scan_limit = scanLimit
 	result.page_size = pageSize
@@ -2461,13 +2467,13 @@ local function searchScripts(args, requestId)
 	result.has_more = continuationCursor ~= ""
 	result.continuation_cursor = continuationCursor
 	result.truncation_reason = truncationReason
-	result.output_limit_bytes = MAX_SCRIPT_SEARCH_OUTPUT_BYTES
-	assertBoundedScriptResult(result, MAX_SCRIPT_SEARCH_OUTPUT_BYTES)
+	result.output_limit_bytes = DURABLE_BOUNDS.MAX_SCRIPT_SEARCH_OUTPUT_BYTES
+	assertBoundedScriptResult(result, DURABLE_BOUNDS.MAX_SCRIPT_SEARCH_OUTPUT_BYTES)
 	return result
 end
 
 local function readGrepSource(target)
-	if ScriptEditorService == nil then
+	if OPTIONAL_SERVICES.ScriptEditorService == nil then
 		adapterError(
 			"script_editor_unavailable",
 			"ScriptEditorService is unavailable for bounded grep",
@@ -2475,7 +2481,7 @@ local function readGrepSource(target)
 		)
 	end
 	local ok, source = pcall(function()
-		return ScriptEditorService:GetEditorSource(target)
+		return OPTIONAL_SERVICES.ScriptEditorService:GetEditorSource(target)
 	end)
 	if not ok or type(source) ~= "string" then
 		adapterError(
@@ -2484,7 +2490,7 @@ local function readGrepSource(target)
 			false
 		)
 	end
-	if #source > MAX_SOURCE_BYTES then
+	if #source > DURABLE_BOUNDS.MAX_SOURCE_BYTES then
 		adapterError(
 			"script_source_oversize",
 			"One script source exceeds the durable per-script grep bound",
@@ -2506,7 +2512,7 @@ local function readGrepSource(target)
 			break
 		end
 		lineCount = lineCount + 1
-		if lineCount > MAX_SCRIPT_SOURCE_LINES then
+		if lineCount > DURABLE_BOUNDS.MAX_SCRIPT_SOURCE_LINES then
 			adapterError(
 				"script_source_line_limit",
 				"One script source exceeds the bounded logical-line count",
@@ -2543,7 +2549,7 @@ local function grepPreview(
 	matchEnd
 )
 	local roomBefore = math.floor(
-		(MAX_SCRIPT_PREVIEW_BYTES - (matchEnd - matchStart + 1)) / 2
+		(DURABLE_BOUNDS.MAX_SCRIPT_PREVIEW_BYTES - (matchEnd - matchStart + 1)) / 2
 	)
 	local previewStart = math.max(lineStart, matchStart - roomBefore)
 	while previewStart > lineStart
@@ -2553,7 +2559,7 @@ local function grepPreview(
 	end
 	local previewEnd = math.min(
 		lineEnd,
-		previewStart + MAX_SCRIPT_PREVIEW_BYTES - 1
+		previewStart + DURABLE_BOUNDS.MAX_SCRIPT_PREVIEW_BYTES - 1
 	)
 	while previewEnd >= previewStart
 		and previewEnd < lineEnd
@@ -2579,17 +2585,17 @@ local function grepScripts(args, requestId)
 	local startedAt = os.clock()
 	local rootPath, maxDepth = validateScriptTraversalArgs(
 		args,
-		MAX_SCRIPT_GREP_PAGE_SIZE
+		DURABLE_BOUNDS.MAX_SCRIPT_GREP_PAGE_SIZE
 	)
 	local root = resolveExactPath(rootPath, true)
 	local query = validatePrintableAsciiScriptText(args.query, "query")
 	local caseSensitive = args.case_sensitive ~= false
-	local scanLimit = args.scan_limit or DEFAULT_SCRIPT_SCAN_LIMIT
+	local scanLimit = args.scan_limit or DURABLE_BOUNDS.DEFAULT_SCRIPT_SCAN_LIMIT
 	local sourceByteLimit = args.source_byte_limit
-		or DEFAULT_SCRIPT_SOURCE_BUDGET
-	local pageSize = args.page_size or DEFAULT_SCRIPT_GREP_PAGE_SIZE
+		or DURABLE_BOUNDS.DEFAULT_SCRIPT_SOURCE_BUDGET
+	local pageSize = args.page_size or DURABLE_BOUNDS.DEFAULT_SCRIPT_GREP_PAGE_SIZE
 	local timeLimitMs = args.time_limit_ms
-		or DEFAULT_SCRIPT_GREP_TIME_LIMIT_MS
+		or DURABLE_BOUNDS.DEFAULT_SCRIPT_GREP_TIME_LIMIT_MS
 	local queryCanonical = canonicalScriptGrepQuery(
 		rootPath,
 		maxDepth,
@@ -2614,7 +2620,7 @@ local function grepScripts(args, requestId)
 		)
 		if not isInteger(payload.b)
 			or payload.b < 1
-			or payload.b > MAX_SOURCE_BYTES + 1
+			or payload.b > DURABLE_BOUNDS.MAX_SOURCE_BYTES + 1
 			or type(payload.h) ~= "string"
 			or (payload.h ~= ""
 				and (#payload.h ~= 64
@@ -2789,7 +2795,7 @@ local function grepScripts(args, requestId)
 						false
 					)
 				end
-				if itemBytes + #itemJson + 1 > SCRIPT_GREP_ITEM_BUDGET then
+				if itemBytes + #itemJson + 1 > DURABLE_BOUNDS.SCRIPT_GREP_ITEM_BUDGET then
 					continuationCursor = scriptCursorForPosition(
 						root,
 						position,
@@ -2866,7 +2872,7 @@ local function grepScripts(args, requestId)
 			break
 		end
 		if not stop
-			and scannedInstances % TREE_COOPERATIVE_YIELD_INTERVAL == 0
+			and scannedInstances % DURABLE_BOUNDS.TREE_COOPERATIVE_YIELD_INTERVAL == 0
 		then
 			task.wait()
 			assertExpectedDocument()
@@ -2881,8 +2887,8 @@ local function grepScripts(args, requestId)
 	result.query = query
 	result.match_mode = "literal"
 	result.case_sensitive = caseSensitive
-	result.query_version = SCRIPT_GREP_QUERY_VERSION
-	result.sort_version = TREE_SORT_VERSION
+	result.query_version = PROTOCOL_METADATA.SCRIPT_GREP_QUERY_VERSION
+	result.sort_version = PROTOCOL_METADATA.TREE_SORT_VERSION
 	result.max_depth = maxDepth
 	result.scan_limit = scanLimit
 	result.source_byte_limit = sourceByteLimit
@@ -2897,8 +2903,8 @@ local function grepScripts(args, requestId)
 	result.has_more = continuationCursor ~= ""
 	result.continuation_cursor = continuationCursor
 	result.truncation_reason = truncationReason
-	result.output_limit_bytes = MAX_SCRIPT_GREP_OUTPUT_BYTES
-	assertBoundedScriptResult(result, MAX_SCRIPT_GREP_OUTPUT_BYTES)
+	result.output_limit_bytes = DURABLE_BOUNDS.MAX_SCRIPT_GREP_OUTPUT_BYTES
+	assertBoundedScriptResult(result, DURABLE_BOUNDS.MAX_SCRIPT_GREP_OUTPUT_BYTES)
 	return result
 end
 
@@ -2917,18 +2923,18 @@ end
 
 local function inspectionUtf8Prefix(value)
 	if type(value) ~= "string"
-		or #value > MAX_INSPECT_STRING_RAW_BYTES
+		or #value > DURABLE_BOUNDS.MAX_INSPECT_STRING_RAW_BYTES
 		or utf8.len(value) == nil
 	then
 		return nil
 	end
-	if #value <= MAX_INSPECT_STRING_PREFIX_BYTES then
+	if #value <= DURABLE_BOUNDS.MAX_INSPECT_STRING_PREFIX_BYTES then
 		return value
 	end
 	local boundary = utf8.offset(
 		value,
 		0,
-		MAX_INSPECT_STRING_PREFIX_BYTES + 1
+		DURABLE_BOUNDS.MAX_INSPECT_STRING_PREFIX_BYTES + 1
 	)
 	if boundary == nil or boundary < 1 then
 		return nil
@@ -2938,7 +2944,7 @@ end
 
 local function boundedInspectionLabel(value)
 	if type(value) ~= "string"
-		or #value > MAX_INSPECT_STRING_PREFIX_BYTES
+		or #value > DURABLE_BOUNDS.MAX_INSPECT_STRING_PREFIX_BYTES
 		or utf8.len(value) == nil
 	then
 		return nil
@@ -2960,7 +2966,7 @@ end
 local function isInspectionName(value)
 	return type(value) == "string"
 		and #value >= 1
-		and #value <= MAX_PATH_SEGMENT_BYTES
+		and #value <= DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES
 		and utf8.len(value) ~= nil
 		and not hasInspectionControlCharacter(value)
 end
@@ -2968,14 +2974,14 @@ end
 local function isInspectionAttributeName(value)
 	return type(value) == "string"
 		and #value >= 1
-		and #value <= MAX_PATH_SEGMENT_BYTES
+		and #value <= DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES
 		and string.find(value, "^[A-Za-z0-9._/%-]+$") ~= nil
 end
 
 local function isInspectionIdentifier(value)
 	return type(value) == "string"
 		and #value >= 1
-		and #value <= MAX_PATH_SEGMENT_BYTES
+		and #value <= DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES
 		and string.find(value, "^[A-Za-z][A-Za-z0-9_]*$") ~= nil
 end
 
@@ -3029,7 +3035,7 @@ local function encodeInspectionNumberSequence(value)
 	local keypoints = value.Keypoints
 	if type(keypoints) ~= "table"
 		or #keypoints < 2
-		or #keypoints > MAX_INSPECT_SEQUENCE_KEYPOINTS
+		or #keypoints > DURABLE_BOUNDS.MAX_INSPECT_SEQUENCE_KEYPOINTS
 	then
 		return nil
 	end
@@ -3065,7 +3071,7 @@ local function encodeInspectionColorSequence(value)
 	local keypoints = value.Keypoints
 	if type(keypoints) ~= "table"
 		or #keypoints < 2
-		or #keypoints > MAX_INSPECT_SEQUENCE_KEYPOINTS
+		or #keypoints > DURABLE_BOUNDS.MAX_INSPECT_SEQUENCE_KEYPOINTS
 	then
 		return nil
 	end
@@ -3622,7 +3628,7 @@ local function inspectAttributes(target)
 			)
 		end
 		table.insert(names, name)
-		if #names > MAX_INSPECT_ATTRIBUTES_RAW then
+		if #names > DURABLE_BOUNDS.MAX_INSPECT_ATTRIBUTES_RAW then
 			adapterError(
 				"inspection_attributes_oversize",
 				"Target attribute cardinality exceeds the raw inspection bound",
@@ -3632,7 +3638,7 @@ local function inspectAttributes(target)
 	end
 	table.sort(names)
 	local returned = {}
-	for index = 1, math.min(#names, MAX_INSPECT_ATTRIBUTES_RETURNED) do
+	for index = 1, math.min(#names, DURABLE_BOUNDS.MAX_INSPECT_ATTRIBUTES_RETURNED) do
 		local name = names[index]
 		local encodeOk, encodedValue = pcall(
 			encodeInspectionValue,
@@ -3665,7 +3671,7 @@ local function inspectTags(target)
 		)
 	end
 	local count = #tags
-	if count > MAX_INSPECT_TAGS_RAW then
+	if count > DURABLE_BOUNDS.MAX_INSPECT_TAGS_RAW then
 		adapterError(
 			"inspection_tags_oversize",
 			"Target tag cardinality exceeds the raw inspection bound",
@@ -3696,7 +3702,7 @@ local function inspectTags(target)
 	end
 	table.sort(copied)
 	local returned = {}
-	for index = 1, math.min(#copied, MAX_INSPECT_TAGS_RETURNED) do
+	for index = 1, math.min(#copied, DURABLE_BOUNDS.MAX_INSPECT_TAGS_RETURNED) do
 		returned[index] = copied[index]
 	end
 	return returned, #copied
@@ -3717,7 +3723,7 @@ local function sortedInspectionChildren(instance)
 			false
 		)
 	end
-	if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+	if #children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE then
 		adapterError(
 			"inspection_width_unsupported",
 			"One instance exceeds the inspection child-width bound",
@@ -3768,7 +3774,7 @@ local function inspectImmediateChildren(children, path, childLimit)
 	local maximum = math.min(#children, childLimit)
 	for index = 1, maximum do
 		local child = children[index]
-		local addressable = #path < MAX_PATH_SEGMENTS
+		local addressable = #path < DURABLE_BOUNDS.MAX_PATH_SEGMENTS
 			and duplicateNames[child.name] == 1
 			and isReusableInspectionSegment(child.name)
 		local childPath = addressable
@@ -3789,7 +3795,7 @@ local function inspectImmediateChildren(children, path, childLimit)
 				false
 			)
 		end
-		if encodedBytes + #encoded + 1 > MAX_INSPECT_CHILD_OUTPUT_BYTES then
+		if encodedBytes + #encoded + 1 > DURABLE_BOUNDS.MAX_INSPECT_CHILD_OUTPUT_BYTES then
 			reason = "output_bytes"
 			break
 		end
@@ -3814,7 +3820,7 @@ local function assertInspectionFrontierBound(frames, newChildren)
 			retained = retained + #frame.children
 		end
 	end
-	if retained > MAX_TREE_RETAINED_CHILDREN then
+	if retained > DURABLE_BOUNDS.MAX_TREE_RETAINED_CHILDREN then
 		adapterError(
 			"inspection_frontier_unsupported",
 			"Inspection traversal exceeds the retained-child frontier bound",
@@ -3951,7 +3957,7 @@ local function inspectDescendants(
 		end
 		if classCountMap[className] == nil then
 			classNameCount = classNameCount + 1
-			if classNameCount > MAX_INSPECT_CLASS_COUNTS then
+			if classNameCount > DURABLE_BOUNDS.MAX_INSPECT_CLASS_COUNTS then
 				adapterError(
 					"inspection_class_counts_oversize",
 					"Observed descendant classes exceed the bounded summary",
@@ -3964,7 +3970,7 @@ local function inspectDescendants(
 		end
 
 		if descendantCount
-			% INSPECT_COOPERATIVE_YIELD_INTERVAL == 0
+			% DURABLE_BOUNDS.INSPECT_COOPERATIVE_YIELD_INTERVAL == 0
 		then
 			task.wait()
 			fence()
@@ -4010,12 +4016,12 @@ local function inspectInstance(args, requestId)
 	requireEditMode()
 	local generation = peer.generation
 	local path = copyPath(args.path)
-	local childLimit = args.child_limit or DEFAULT_INSPECT_CHILD_LIMIT
+	local childLimit = args.child_limit or DURABLE_BOUNDS.DEFAULT_INSPECT_CHILD_LIMIT
 	local descendantMaxDepth = args.descendant_max_depth
-		or (MAX_PATH_SEGMENTS - #path)
+		or (DURABLE_BOUNDS.MAX_PATH_SEGMENTS - #path)
 	local descendantScanLimit = args.descendant_scan_limit
-		or DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT
-	local timeLimitMs = args.time_limit_ms or DEFAULT_INSPECT_TIME_LIMIT_MS
+		or DURABLE_BOUNDS.DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT
+	local timeLimitMs = args.time_limit_ms or DURABLE_BOUNDS.DEFAULT_INSPECT_TIME_LIMIT_MS
 	local target = resolveExactPath(path, false)
 	local fence = function()
 		fenceInspectionSnapshot(path, target, generation)
@@ -4048,10 +4054,10 @@ local function inspectInstance(args, requestId)
 	result.path = path
 	result.name = target.Name
 	result.class_name = target.ClassName
-	result.snapshot_contract = INSPECT_SNAPSHOT_CONTRACT
-	result.property_allowlist_version = INSPECT_PROPERTY_ALLOWLIST_VERSION
-	result.value_encoding_version = INSPECT_VALUE_ENCODING_VERSION
-	result.sort_version = INSPECT_SORT_VERSION
+	result.snapshot_contract = PROTOCOL_METADATA.INSPECT_SNAPSHOT_CONTRACT
+	result.property_allowlist_version = PROTOCOL_METADATA.INSPECT_PROPERTY_ALLOWLIST_VERSION
+	result.value_encoding_version = PROTOCOL_METADATA.INSPECT_VALUE_ENCODING_VERSION
+	result.sort_version = PROTOCOL_METADATA.INSPECT_SORT_VERSION
 	result.child_limit = childLimit
 	result.descendant_max_depth = descendantMaxDepth
 	result.descendant_scan_limit = descendantScanLimit
@@ -4076,14 +4082,14 @@ local function inspectInstance(args, requestId)
 	result.descendant_count_complete = descendantCountComplete
 	result.descendant_truncation_reason = descendantReason
 	result.descendant_class_counts = descendantClassCounts
-	result.output_limit_bytes = MAX_INSPECT_RESULT_BYTES
+	result.output_limit_bytes = DURABLE_BOUNDS.MAX_INSPECT_RESULT_BYTES
 
 	local encodeOk, encoded = pcall(function()
 		return HttpService:JSONEncode(result)
 	end)
 	if not encodeOk
 		or type(encoded) ~= "string"
-		or #encoded > MAX_INSPECT_RESULT_BYTES
+		or #encoded > DURABLE_BOUNDS.MAX_INSPECT_RESULT_BYTES
 	then
 		adapterError(
 			"inspection_result_oversize",
@@ -4254,7 +4260,7 @@ local function findMultiEditMatches(source, edit, taintedRanges, deadline)
 				start_index = startIndex,
 				end_index = endIndex,
 			})
-			if #matches > MAX_MULTI_EDIT_REPLACEMENT_SPANS then
+			if #matches > DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS then
 				adapterError(
 					"multi_edit_span_limit",
 					"Expanded replacement spans exceed the durable bound",
@@ -4362,7 +4368,7 @@ local function applyPlannedEdit(
 			})
 		end
 	end
-	if #source > MAX_MULTI_EDIT_SOURCE_BYTES or not validUtf8(source) then
+	if #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES or not validUtf8(source) then
 		adapterError(
 			"multi_edit_planned_source_invalid",
 			"Planned source is invalid UTF-8 or exceeds the source bound",
@@ -4385,7 +4391,7 @@ local function planMultiEditSource(source, edits, deadline)
 			deadline
 		)
 		replacementCount = replacementCount + #matches
-		if replacementCount > MAX_MULTI_EDIT_REPLACEMENT_SPANS then
+		if replacementCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS then
 			adapterError(
 				"multi_edit_span_limit",
 				"Expanded replacement spans exceed the durable bound",
@@ -4436,7 +4442,7 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		end
 		seenInstances[target] = true
 		local source = readEditorSource(target)
-		if not validUtf8(source) or #source > MAX_MULTI_EDIT_SOURCE_BYTES then
+		if not validUtf8(source) or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES then
 			adapterError(
 				"multi_edit_source_invalid",
 				"Target source is invalid UTF-8 or exceeds the source bound",
@@ -4458,7 +4464,7 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		)
 		aggregateReplacementCount =
 			aggregateReplacementCount + replacementCount
-		if aggregateReplacementCount > MAX_MULTI_EDIT_REPLACEMENT_SPANS then
+		if aggregateReplacementCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS then
 			adapterError(
 				"multi_edit_span_limit",
 				"Expanded replacement spans exceed the aggregate durable bound",
@@ -4468,9 +4474,9 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		aggregateSourceBytes = aggregateSourceBytes + #source
 		aggregatePlannedSourceBytes =
 			aggregatePlannedSourceBytes + #planned
-		if aggregateSourceBytes > MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
+		if aggregateSourceBytes > DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
 			or aggregatePlannedSourceBytes
-				> MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
+				> DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
 		then
 			adapterError(
 				"multi_edit_aggregate_source_limit",
@@ -4510,14 +4516,14 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		generation = peer.generation,
 		request_id = requestId,
 		transaction_id = args.transaction_id,
-		ordering_version = MULTI_EDIT_ORDERING_VERSION,
-		atomicity = MULTI_EDIT_ATOMICITY,
+		ordering_version = PROTOCOL_METADATA.MULTI_EDIT_ORDERING_VERSION,
+		atomicity = PROTOCOL_METADATA.MULTI_EDIT_ATOMICITY,
 		target_count = #planTargets,
 		edit_count = totalEditCount,
 		aggregate_source_bytes = aggregateSourceBytes,
 		aggregate_planned_source_bytes = aggregatePlannedSourceBytes,
 		targets = receiptTargets,
-		expires_in_ms = MULTI_EDIT_PREPARE_TTL_SECONDS * 1_000,
+		expires_in_ms = DURABLE_BOUNDS.MULTI_EDIT_PREPARE_TTL_SECONDS * 1_000,
 	}
 	receipt.prepare_sha256 = multiEditPrepareSha256(receipt)
 	local receiptOk, encodedReceipt = pcall(function()
@@ -4525,7 +4531,7 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 	end)
 	if not receiptOk
 		or type(encodedReceipt) ~= "string"
-		or #encodedReceipt > MAX_MULTI_EDIT_RECEIPT_BYTES
+		or #encodedReceipt > DURABLE_BOUNDS.MAX_MULTI_EDIT_RECEIPT_BYTES
 	then
 		adapterError(
 			"multi_edit_receipt_oversize",
@@ -4539,7 +4545,7 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		generation = peer.generation,
 		prepare_request_id = requestId,
 		prepare_sha256 = receipt.prepare_sha256,
-		expires_at = os.clock() + MULTI_EDIT_PREPARE_TTL_SECONDS,
+		expires_at = os.clock() + DURABLE_BOUNDS.MULTI_EDIT_PREPARE_TTL_SECONDS,
 		status = "prepared",
 		targets = planTargets,
 		edit_count = totalEditCount,
@@ -4558,10 +4564,10 @@ local function multiEditCasReplace(
 	local sawExpected = false
 	local conflictingRevision = false
 	local updateOk = pcall(function()
-		ScriptEditorService:UpdateSourceAsync(target, function(currentSource)
+		OPTIONAL_SERVICES.ScriptEditorService:UpdateSourceAsync(target, function(currentSource)
 			callbackInvoked = true
 			if type(currentSource) ~= "string"
-				or #currentSource > MAX_MULTI_EDIT_SOURCE_BYTES
+				or #currentSource > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 				or not validUtf8(currentSource)
 			then
 				conflictingRevision = true
@@ -4586,7 +4592,7 @@ local function multiEditCasReplace(
 	end)
 	if not confirmedOk
 		or type(confirmedSource) ~= "string"
-		or #confirmedSource > MAX_MULTI_EDIT_SOURCE_BYTES
+		or #confirmedSource > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 		or not validUtf8(confirmedSource)
 	then
 		return false, "", true
@@ -4652,9 +4658,9 @@ local function newMultiEditMutationReceipt(
 		transaction_id = plan.transaction_id,
 		prepare_request_id = plan.prepare_request_id,
 		prepare_sha256 = plan.prepare_sha256,
-		ordering_version = MULTI_EDIT_ORDERING_VERSION,
-		atomicity = MULTI_EDIT_ATOMICITY,
-		receipt_contract = MULTI_EDIT_RECEIPT_CONTRACT,
+		ordering_version = PROTOCOL_METADATA.MULTI_EDIT_ORDERING_VERSION,
+		atomicity = PROTOCOL_METADATA.MULTI_EDIT_ATOMICITY,
+		receipt_contract = PROTOCOL_METADATA.MULTI_EDIT_RECEIPT_CONTRACT,
 		outcome = outcome,
 		safe_terminal = safeTerminal,
 		recovery_required = not safeTerminal,
@@ -4668,7 +4674,7 @@ local function newMultiEditMutationReceipt(
 	end)
 	if not receiptOk
 		or type(encodedReceipt) ~= "string"
-		or #encodedReceipt > MAX_MULTI_EDIT_RECEIPT_BYTES
+		or #encodedReceipt > DURABLE_BOUNDS.MAX_MULTI_EDIT_RECEIPT_BYTES
 	then
 		adapterError(
 			"multi_edit_receipt_oversize",
@@ -4787,7 +4793,7 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 		if not sourceOk
 			or type(source) ~= "string"
 			or not validUtf8(source)
-			or #source > MAX_MULTI_EDIT_SOURCE_BYTES
+			or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 		then
 			preflightSafe = false
 			outcome.observed_before_sha256 = ""
@@ -4911,7 +4917,7 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 		if not checkOk
 			or type(source) ~= "string"
 			or not validUtf8(source)
-			or #source > MAX_MULTI_EDIT_SOURCE_BYTES
+			or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 			or sourceSha256(source) ~= planTarget.prepared_sha256
 		then
 			outcomes[index].status = "recovery_required"
@@ -4978,7 +4984,7 @@ local function recoverMultiEdit(args, requestId, deadlineMs)
 			or type(source) ~= "string"
 			or resolved ~= planTarget.target
 			or not validUtf8(source)
-			or #source > MAX_MULTI_EDIT_SOURCE_BYTES
+			or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
 		then
 			outcome.observed_before_sha256 = ""
 			outcome.observed_after_sha256 = ""
@@ -5027,7 +5033,7 @@ local function readScript(args)
 	requireEditMode()
 	local target = requireLuaSourceContainer(args.path)
 	local source = readEditorSource(target)
-	local maxChars = args.max_chars or MAX_SOURCE_BYTES
+	local maxChars = args.max_chars or DURABLE_BOUNDS.MAX_SOURCE_BYTES
 	local truncated = #source > maxChars
 	return {
 		path = copyPath(args.path),
@@ -5046,13 +5052,13 @@ local function updateScript(args)
 	local replaced = false
 	local observedSha256 = nil
 	local updateOk, updateError = pcall(function()
-		ScriptEditorService:UpdateSourceAsync(target, function(currentSource)
+		OPTIONAL_SERVICES.ScriptEditorService:UpdateSourceAsync(target, function(currentSource)
 			if callbackInvoked then
 				return currentSource
 			end
 			callbackInvoked = true
 			if type(currentSource) ~= "string"
-				or #currentSource > MAX_SOURCE_BYTES
+				or #currentSource > DURABLE_BOUNDS.MAX_SOURCE_BYTES
 			then
 				return currentSource
 			end
@@ -5177,7 +5183,7 @@ end
 local function getConsole(args)
 	local maxEntries = args.max_entries or 100
 	local ok, history = pcall(function()
-		return LogService:GetLogHistory()
+		return OPTIONAL_SERVICES.LogService:GetLogHistory()
 	end)
 	if not ok or type(history) ~= "table" then
 		adapterError(
@@ -5194,7 +5200,7 @@ local function getConsole(args)
 			local message = tostring(entry.message or "")
 			message = string.gsub(message, "[%c]", " ")
 			table.insert(entries, {
-				message = string.sub(message, 1, MAX_CONSOLE_MESSAGE_BYTES),
+				message = string.sub(message, 1, DURABLE_BOUNDS.MAX_CONSOLE_MESSAGE_BYTES),
 				message_type = tostring(entry.messageType or "unknown"),
 				timestamp = isFiniteNumber(entry.timestamp)
 					and entry.timestamp or nil,
@@ -5210,7 +5216,7 @@ local function getConsole(args)
 end
 
 local function waitForScreenshotReady(capture)
-	local deadline = os.clock() + SCREENSHOT_READY_SECONDS
+	local deadline = os.clock() + DURABLE_BOUNDS.SCREENSHOT_READY_SECONDS
 	while os.clock() < deadline do
 		local statusOk, status = pcall(function()
 			return capture.BufferStatus
@@ -5235,7 +5241,7 @@ end
 
 local function captureScreenshot(args)
 	local canOk, canCapture = pcall(function()
-		return StudioCaptureService:CanCaptureScreenshot()
+		return OPTIONAL_SERVICES.StudioCaptureService:CanCaptureScreenshot()
 	end)
 	if not canOk or canCapture ~= true then
 		adapterError(
@@ -5245,7 +5251,7 @@ local function captureScreenshot(args)
 		)
 	end
 	local captureOk, capture = pcall(function()
-		return StudioCaptureService:CaptureScreenshot({})
+		return OPTIONAL_SERVICES.StudioCaptureService:CaptureScreenshot({})
 	end)
 	if not captureOk or capture == nil then
 		adapterError(
@@ -5296,7 +5302,7 @@ local function captureScreenshot(args)
 	if not bufferOk
 		or typeof(pngBuffer) ~= "buffer"
 		or buffer.len(pngBuffer) < 1
-		or buffer.len(pngBuffer) > MAX_SCREENSHOT_BYTES
+		or buffer.len(pngBuffer) > DURABLE_BOUNDS.MAX_SCREENSHOT_BYTES
 	then
 		adapterError(
 			"screenshot_size_unsupported",
@@ -5305,7 +5311,7 @@ local function captureScreenshot(args)
 		)
 	end
 	local encodeOk, encodedBuffer = pcall(function()
-		return EncodingService:Base64Encode(pngBuffer)
+		return OPTIONAL_SERVICES.EncodingService:Base64Encode(pngBuffer)
 	end)
 	if not encodeOk or typeof(encodedBuffer) ~= "buffer" then
 		adapterError(

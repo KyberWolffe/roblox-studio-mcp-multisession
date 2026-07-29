@@ -133,18 +133,18 @@ class Phase2InspectLuauTests(unittest.TestCase):
             set(re.findall(r"\n\t\t([a-z_]+) = true,", keys)),
         )
         for marker in (
-            "local MAX_INSPECT_CHILD_LIMIT = 200",
-            "local DEFAULT_INSPECT_CHILD_LIMIT = 50",
-            "local MAX_INSPECT_DESCENDANT_DEPTH = 64",
-            "local MAX_INSPECT_DESCENDANT_SCAN_LIMIT = 5_000",
-            "local DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT = 2_000",
-            "local MIN_INSPECT_TIME_LIMIT_MS = 100",
-            "local MAX_INSPECT_TIME_LIMIT_MS = 10_000",
-            "local DEFAULT_INSPECT_TIME_LIMIT_MS = 3_000",
-            "local MAX_INSPECT_CHILD_OUTPUT_BYTES = 300_000",
-            "local MAX_INSPECT_RESULT_BYTES = 500_000",
-            "local MAX_INSPECT_ATTRIBUTES_RAW = 1_024",
-            "local MAX_INSPECT_TAGS_RAW = 1_024",
+            "MAX_INSPECT_CHILD_LIMIT = 200",
+            "DEFAULT_INSPECT_CHILD_LIMIT = 50",
+            "MAX_INSPECT_DESCENDANT_DEPTH = 64",
+            "MAX_INSPECT_DESCENDANT_SCAN_LIMIT = 5_000",
+            "DEFAULT_INSPECT_DESCENDANT_SCAN_LIMIT = 2_000",
+            "MIN_INSPECT_TIME_LIMIT_MS = 100",
+            "MAX_INSPECT_TIME_LIMIT_MS = 10_000",
+            "DEFAULT_INSPECT_TIME_LIMIT_MS = 3_000",
+            "MAX_INSPECT_CHILD_OUTPUT_BYTES = 300_000",
+            "MAX_INSPECT_RESULT_BYTES = 500_000",
+            "MAX_INSPECT_ATTRIBUTES_RAW = 1_024",
+            "MAX_INSPECT_TAGS_RAW = 1_024",
         ):
             self.assertIn(marker, self.source)
         validation = self.source[
@@ -221,8 +221,14 @@ class Phase2InspectLuauTests(unittest.TestCase):
         self.assertIn("isFiniteNumber", self.inspect)
         self.assertIn("utf8.len(value)", self.inspect)
         self.assertIn("utf8.offset(", self.inspect)
-        self.assertIn("#value > MAX_INSPECT_STRING_RAW_BYTES", self.inspect)
-        self.assertIn("MAX_INSPECT_STRING_PREFIX_BYTES + 1", self.inspect)
+        self.assertIn(
+            "#value > DURABLE_BOUNDS.MAX_INSPECT_STRING_RAW_BYTES",
+            self.inspect,
+        )
+        self.assertIn(
+            "DURABLE_BOUNDS.MAX_INSPECT_STRING_PREFIX_BYTES + 1",
+            self.inspect,
+        )
         self.assertIn(
             "family.SourceType ~= Enum.ContentSourceType.Uri",
             self.inspect,
@@ -240,7 +246,10 @@ class Phase2InspectLuauTests(unittest.TestCase):
         self.assertIn("not isInteger(value.X.Offset)", self.inspect)
         self.assertIn("not isInteger(value.Y.Offset)", self.inspect)
         self.assertIn("not isInspectionName(name)", self.inspect)
-        self.assertIn("#keypoints > MAX_INSPECT_SEQUENCE_KEYPOINTS", self.inspect)
+        self.assertIn(
+            "#keypoints > DURABLE_BOUNDS.MAX_INSPECT_SEQUENCE_KEYPOINTS",
+            self.inspect,
+        )
 
     def test_attributes_tags_and_children_are_bounded_before_sort(self) -> None:
         attributes = self.inspect[
@@ -248,7 +257,9 @@ class Phase2InspectLuauTests(unittest.TestCase):
             self.inspect.index("local function inspectTags(")
         ]
         self.assertLess(
-            attributes.index("#names > MAX_INSPECT_ATTRIBUTES_RAW"),
+            attributes.index(
+                "#names > DURABLE_BOUNDS.MAX_INSPECT_ATTRIBUTES_RAW"
+            ),
             attributes.index("table.sort(names)"),
         )
         self.assertIn(
@@ -262,7 +273,7 @@ class Phase2InspectLuauTests(unittest.TestCase):
             self.inspect.index("local function isReusableInspectionSegment(")
         ]
         self.assertLess(
-            tags.index("count > MAX_INSPECT_TAGS_RAW"),
+            tags.index("count > DURABLE_BOUNDS.MAX_INSPECT_TAGS_RAW"),
             tags.index("table.sort(copied)"),
         )
         self.assertIn("MAX_INSPECT_TAGS_RETURNED", tags)
@@ -271,12 +282,16 @@ class Phase2InspectLuauTests(unittest.TestCase):
             self.inspect.index("local function sortedInspectionChildren(") :
             self.inspect.index("local function assertInspectionFrontierBound(")
         ]
-        self.assertIn("#children > MAX_TREE_CHILDREN_PER_INSTANCE", children)
+        self.assertIn(
+            "#children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE",
+            children,
+        )
         self.assertIn("left.original_index < right.original_index", children)
         self.assertIn("duplicateNames[child.name] == 1", children)
         self.assertIn("and appendPath(path, child.name) or {}", children)
         self.assertIn(
-            "encodedBytes + #encoded + 1 > MAX_INSPECT_CHILD_OUTPUT_BYTES",
+            "encodedBytes + #encoded + 1 "
+            "> DURABLE_BOUNDS.MAX_INSPECT_CHILD_OUTPUT_BYTES",
             children,
         )
         self.assertIn('reason = "output_bytes"', children)
@@ -303,7 +318,10 @@ class Phase2InspectLuauTests(unittest.TestCase):
             )
         ]
         self.assertIn("#value >= 1", predicate)
-        self.assertIn("#value <= MAX_PATH_SEGMENT_BYTES", predicate)
+        self.assertIn(
+            "#value <= DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES",
+            predicate,
+        )
         self.assertIn(
             'string.find(value, "^[A-Za-z0-9._/%-]+$")',
             predicate,
@@ -509,7 +527,7 @@ class Phase2InspectLuauTests(unittest.TestCase):
             "result.path = path",
             "result.name = target.Name",
             "result.class_name = target.ClassName",
-            'INSPECT_SNAPSHOT_CONTRACT =\n\t'
+            'INSPECT_SNAPSHOT_CONTRACT =\n\t\t'
             '"path-edit-generation-fenced-observational-v1"',
             '"instance-property-allowlist-v1"',
             '"instance-value-v1"',
@@ -520,8 +538,9 @@ class Phase2InspectLuauTests(unittest.TestCase):
             "result.children_total = #sortedChildren",
             "result.descendant_count_complete = descendantCountComplete",
             "result.descendant_class_counts = descendantClassCounts",
-            "result.output_limit_bytes = MAX_INSPECT_RESULT_BYTES",
-            "#encoded > MAX_INSPECT_RESULT_BYTES",
+            "result.output_limit_bytes = "
+            "DURABLE_BOUNDS.MAX_INSPECT_RESULT_BYTES",
+            "#encoded > DURABLE_BOUNDS.MAX_INSPECT_RESULT_BYTES",
         ):
             self.assertIn(marker, self.source)
         self.assertLess(operation.index("local startedAt = os.clock()"), operation.index(

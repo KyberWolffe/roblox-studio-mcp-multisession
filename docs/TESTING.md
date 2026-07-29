@@ -37,10 +37,10 @@ Individual stages:
 python3 -B scripts/audit_release.py --repo .
 python3 -B scripts/build_durable_release.py --output-dir dist
 python3 -B scripts/audit_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.1-macos-arm64.tar.gz
+  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.2-macos-arm64.tar.gz
 python3 -B scripts/prove_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.1-macos-arm64.tar.gz \
-  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-rc.1-macos-arm64.tar.gz.sha256
+  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.2-macos-arm64.tar.gz \
+  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-rc.2-macos-arm64.tar.gz.sha256
 ```
 
 The generic proof's update fixture is deliberately synthetic. The release
@@ -55,7 +55,7 @@ python3 -B scripts/prove_cross_version_rollback.py \
   --candidate-archive CANDIDATE_ARCHIVE \
   --candidate-checksum-file CANDIDATE_CHECKSUM \
   --candidate-expected-sha256 CANDIDATE_SHA256 \
-  --candidate-version 0.4.0-rc.1 \
+  --candidate-version 0.4.0-rc.2 \
   --source-commit CANDIDATE_COMMIT \
   --source-tree CANDIDATE_TREE \
   --output EXTERNAL_ARTIFACT_DIR/CROSS_VERSION_ROLLBACK_PROOF.json
@@ -75,6 +75,75 @@ A fresh disposable rc.4 install generates new credentials and therefore a
 different rendered plugin from the live immutable plugin hash. The proof
 compares that disposable rc.4 state to its own post-rollback bytes while
 retaining the live rc.4 catalog/plugin hashes as provenance.
+
+## Mandatory native rendered-plugin compilation
+
+Before any live candidate validation, render and hash the exact candidate
+`.rbxmx`, then run:
+
+```bash
+python3 -B scripts/native_studio_compile_smoke.py \
+  --package EXACT_CANDIDATE_PLUGIN.rbxmx \
+  --expected-package-sha256 EXACT_PLUGIN_SHA256 \
+  --expected-source-sha256 EXACT_MAIN_SOURCE_SHA256 \
+  --studio-executable /Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio \
+  --expected-studio-executable-sha256 EXACT_STUDIO_SHA256 \
+  --receipt EXACT_GATE_WORK_ROOT/native-studio-compile-proof.json
+```
+
+The gate strictly verifies the Studio app signature and executable hash,
+requires no running Studio process, extracts the sole exact `Main` source,
+checks its reviewed pre-registration Edit/plugin-context fence, and runs it in
+an empty command-script task. Success requires the identity-bearing sentinel
+and the exact expected plugin-context assertion, with no compiler/register
+error, unexpected user-plugin load, crash, or timeout. The receipt, exact
+plugin bytes, and Studio executable are rehashed before a later live harness
+may consume them. Missing Studio, an invalid signature, or absent/mismatched
+evidence is an unqualified candidate, never a skipped pass.
+
+The isolated read-only harness makes this proof mechanical. `prepare` must
+run in a fresh private work root containing one exact extracted candidate
+release. It binds the complete release manifest and extracted tree, every
+runtime/config/secret file, the rendered package and sole `Main` source, the
+port, and the exact public read-only scope:
+
+```bash
+python3 -B scripts/candidate_readonly_gate.py \
+  --work-root EXACT_GATE_WORK_ROOT \
+  prepare \
+  --version 0.4.0-rc.2 \
+  --release-manifest-sha256 EXACT_RELEASE_MANIFEST_SHA256 \
+  --durable-catalog-sha256 EXACT_DURABLE_CATALOG_SHA256 \
+  --port CANDIDATE_PORT
+
+python3 -B scripts/native_studio_compile_smoke.py \
+  --package EXACT_GATE_WORK_ROOT/StudioMCPv2CandidateReadOnly.rbxmx \
+  --expected-package-sha256 EXACT_PLUGIN_SHA256 \
+  --expected-source-sha256 EXACT_MAIN_SOURCE_SHA256 \
+  --studio-executable /Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio \
+  --expected-studio-executable-sha256 EXACT_STUDIO_SHA256 \
+  --receipt EXACT_GATE_WORK_ROOT/native-studio-compile-proof.json
+
+python3 -B scripts/candidate_readonly_gate.py \
+  --work-root EXACT_GATE_WORK_ROOT qualify-native
+python3 -B scripts/candidate_readonly_gate.py \
+  --work-root EXACT_GATE_WORK_ROOT status
+python3 -B scripts/candidate_readonly_gate.py \
+  --work-root EXACT_GATE_WORK_ROOT start
+```
+
+`qualify-native` writes a new private qualification record and immediately
+revalidates the receipt, package/source, logs, release/config provenance, and
+the current signed executable at the fixed official Studio path. `start`,
+discovery, direct calls, and job calls repeat that validation and have no
+unqualified loader option. `status` never authenticates to a broker without
+the proof. The exact cleanup `stop` path deliberately does not depend on the
+receipt, plugin, catalog, state, or extracted payload remaining readable; it
+uses only the candidate-owned private runtime identity and tokens plus the
+broker-instance receipt pinned immediately after Start. It requires live
+authenticated health and the local record to match that exact instance before
+Stop. Substituted runtime credentials, a replaced broker, or a missing receipt
+fail closed. The cleanup path exposes no client or operation capability.
 
 The restore bundle's Git bundle is verified from repository context, for
 example `git -C SOURCE_REPOSITORY bundle verify ABSOLUTE_BUNDLE_PATH`; the

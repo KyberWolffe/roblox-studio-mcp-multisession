@@ -181,7 +181,7 @@ class Phase2InstanceInspectContractTests(unittest.TestCase):
             names.index("studio_inspect_instance"),
             names.index("studio_list_tree") + 1,
         )
-        self.assertEqual("0.4.0-rc.1", self.durable["catalog_version"])
+        self.assertEqual("0.4.0-rc.2", self.durable["catalog_version"])
         schema = self.inspect["inputSchema"]
         properties = schema["properties"]
         self.assertEqual(set(properties), INSPECT_ARGUMENTS)

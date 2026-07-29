@@ -61,7 +61,7 @@ DURABLE_OPERATIONS = {
 class DurableCatalogTests(unittest.TestCase):
     def test_catalog_is_versioned_closed_and_explicitly_targeted(self):
         payload = json.loads(DURABLE_CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual(payload["catalog_version"], "0.4.0-rc.1")
+        self.assertEqual(payload["catalog_version"], "0.4.0-rc.2")
         self.assertEqual(
             payload["upstream"]["compatibility"],
             "reviewed-local-subset-only",
@@ -142,12 +142,93 @@ class DurableRendererTests(unittest.TestCase):
             base_url=base_url,
         )
 
-    def test_render_matches_phase2_0_4_0_rc_1_contract(self):
+    def test_render_matches_phase2_0_4_0_rc_2_contract(self):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),
-            "6661f9cdb2da8fc5cc4a990fbfc00a2c8e0957a0e46a9f3bc12f1370a243ed34",
+            "2cd30c4864178fece6ba082ce804219305ef54608963ef9aa590950cca65062e",
         )
+
+    def test_durable_handlers_are_private_and_below_local_budget(self):
+        handlers = HANDLERS.read_text(encoding="utf-8")
+        handler_locals = (
+            render_studio_plugin._top_level_luau_local_count(handlers)
+        )
+        self.assertLessEqual(
+            handler_locals,
+            render_studio_plugin.MAX_DURABLE_HANDLER_LOCALS,
+        )
+        self.assertLessEqual(
+            render_studio_plugin.MAX_DURABLE_HANDLER_LOCALS,
+            render_studio_plugin.MAX_LUAU_LOCALS_PER_FUNCTION
+            - render_studio_plugin.LUAU_LOCAL_HEADROOM,
+        )
+
+        rendered = self.render()
+        self.assertEqual(
+            1,
+            rendered.count("local DURABLE_HANDLERS = (function()"),
+        )
+        self.assertEqual(
+            1,
+            rendered.count(
+                "local validateRequest = "
+                "DURABLE_HANDLERS.validateRequest"
+            ),
+        )
+        self.assertEqual(
+            1,
+            rendered.count(
+                "local dispatch = DURABLE_HANDLERS.dispatch"
+            ),
+        )
+        self.assertIn(
+            "\treturn table.freeze({\n"
+            "\t\tvalidateRequest = validateRequest,\n"
+            "\t\tdispatch = dispatch,\n"
+            "\t})\n"
+            "end)()",
+            rendered,
+        )
+        self.assertLessEqual(
+            render_studio_plugin._top_level_luau_local_count(rendered),
+            render_studio_plugin.MAX_RENDERED_CHUNK_LOCALS,
+        )
+
+    def test_static_local_budget_masks_inert_long_bracket_source(self):
+        source = (
+            "local first, second = 1, 2\n"
+            "local EMBEDDED = [=[\n"
+            "local not_code = true\n"
+            "local function also_not_code()\n"
+            "end\n"
+            "]=]\n"
+            "local function third()\n"
+            "end\n"
+        )
+        self.assertEqual(
+            4,
+            render_studio_plugin._top_level_luau_local_count(source),
+        )
+
+    def test_handler_closure_fails_closed_on_export_or_budget_drift(self):
+        handlers = HANDLERS.read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "export drifted"):
+            render_studio_plugin._durable_handlers_closure(
+                handlers.replace(
+                    "local function dispatch(request)",
+                    "local function renamedDispatch(request)",
+                    1,
+                )
+            )
+        excess = handlers + "\n" + "\n".join(
+            "local unexpected_" + str(index) + " = true"
+            for index in range(
+                render_studio_plugin.MAX_DURABLE_HANDLER_LOCALS
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "local budget"):
+            render_studio_plugin._durable_handlers_closure(excess)
 
     def test_render_has_no_two_place_or_session_count_limit(self):
         source = self.render()

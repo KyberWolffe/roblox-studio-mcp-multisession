@@ -394,7 +394,7 @@ class Phase2TreePaginationModelTests(unittest.TestCase):
 
         source = HANDLERS.read_text(encoding="utf-8")
         self.assertIn(
-            "#rootPath + maxDepth > MAX_PATH_SEGMENTS",
+            "#rootPath + maxDepth > DURABLE_BOUNDS.MAX_PATH_SEGMENTS",
             source,
         )
         self.assertIn(

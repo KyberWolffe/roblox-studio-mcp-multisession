@@ -35,23 +35,23 @@ class Phase2TreeLuauTests(unittest.TestCase):
             "continuation_cursor",
         ):
             self.assertIn(name + " = true", tree_keys)
-        self.assertIn("local MAX_TREE_FILTER_BYTES = 100", self.source)
-        self.assertIn("local MAX_TREE_CURSOR_BYTES = 512", self.source)
-        self.assertIn("local MAX_TREE_SCAN_LIMIT = 5_000", self.source)
-        self.assertIn("local DEFAULT_TREE_SCAN_LIMIT = 2_000", self.source)
-        self.assertIn("local MAX_TREE_PAGE_SIZE = 500", self.source)
+        self.assertIn("MAX_TREE_FILTER_BYTES = 100", self.source)
+        self.assertIn("MAX_TREE_CURSOR_BYTES = 512", self.source)
+        self.assertIn("MAX_TREE_SCAN_LIMIT = 5_000", self.source)
+        self.assertIn("DEFAULT_TREE_SCAN_LIMIT = 2_000", self.source)
+        self.assertIn("MAX_TREE_PAGE_SIZE = 500", self.source)
         self.assertIn(
-            "local MAX_TREE_CHILDREN_PER_INSTANCE = 10_000",
+            "MAX_TREE_CHILDREN_PER_INSTANCE = 10_000",
             self.source,
         )
-        self.assertIn("local MAX_TREE_OUTPUT_BYTES = 600_000", self.source)
+        self.assertIn("MAX_TREE_OUTPUT_BYTES = 600_000", self.source)
         self.assertIn(
             '"max_results and page_size are mutually exclusive"',
             self.source,
         )
         self.assertIn('"class_is_a requires class_filter"', self.source)
         self.assertIn(
-            "#rootPath + maxDepth > MAX_PATH_SEGMENTS",
+            "#rootPath + maxDepth > DURABLE_BOUNDS.MAX_PATH_SEGMENTS",
             self.source,
         )
         self.assertIn(
@@ -112,13 +112,13 @@ class Phase2TreeLuauTests(unittest.TestCase):
         self.assertIn("local function nextTreeNode(", tree)
         self.assertNotIn("local function visit(", tree)
         self.assertIn(
-            "scanned % TREE_COOPERATIVE_YIELD_INTERVAL == 0",
+            "scanned % DURABLE_BOUNDS.TREE_COOPERATIVE_YIELD_INTERVAL == 0",
             tree,
         )
         self.assertIn("task.wait()", tree)
         self.assertIn("assertExpectedDocument()", tree)
         self.assertIn(
-            "outputBytes + encodedBytes > MAX_TREE_OUTPUT_BYTES",
+            "outputBytes + encodedBytes > DURABLE_BOUNDS.MAX_TREE_OUTPUT_BYTES",
             tree,
         )
         self.assertIn("if previous.Name == current.Name then", tree)

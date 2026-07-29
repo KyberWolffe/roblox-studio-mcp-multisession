@@ -32,6 +32,18 @@ SAFE_SECRET = re.compile(r"^[A-Za-z0-9_.:-]+$")
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9]+$")
 PLACEHOLDER = re.compile(r"__[A-Z0-9_]+__")
 DEFAULT_BASE_URL = "http://127.0.0.1:44756"
+MAX_LUAU_LOCALS_PER_FUNCTION = 200
+LUAU_LOCAL_HEADROOM = 40
+MAX_DURABLE_HANDLER_LOCALS = (
+    MAX_LUAU_LOCALS_PER_FUNCTION - LUAU_LOCAL_HEADROOM
+)
+MAX_RENDERED_CHUNK_LOCALS = (
+    MAX_LUAU_LOCALS_PER_FUNCTION - LUAU_LOCAL_HEADROOM
+)
+LUAU_LONG_BRACKET = re.compile(
+    r"\[(=*)\[.*?\]\1\]",
+    re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -131,6 +143,64 @@ def _luau_long_string(value: str) -> str:
         if closer not in value:
             return opener + "\n" + value + "\n" + closer
     raise ValueError("unable to quote fixed server bridge source")
+
+
+def _top_level_luau_local_count(source: str) -> int:
+    """Conservatively count bindings in one unindented Luau scope.
+
+    Long-bracket bodies are masked first because the rendered Play bridge is
+    an inert string whose unindented source must not be counted as part of the
+    containing plugin chunk.  This static budget is defense in depth; native
+    compilation of the exact packaged source remains authoritative.
+    """
+
+    count = 0
+    masked = LUAU_LONG_BRACKET.sub('""', source)
+    declaration = re.compile(
+        r"^local\s+(?:function\s+)?"
+        r"([A-Za-z_][A-Za-z0-9_]*"
+        r"(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)"
+        r"(?:\s*=|\s*\()"
+    )
+    for line in masked.splitlines():
+        match = declaration.match(line)
+        if match is not None:
+            count += len(match.group(1).split(","))
+    return count
+
+
+def _durable_handlers_closure(source: str) -> str:
+    """Isolate the durable registry from the plugin chunk's local registers."""
+
+    for marker in (
+        "local function validateRequest(request)",
+        "local function dispatch(request)",
+    ):
+        if source.count(marker) != 1:
+            raise ValueError(
+                "durable handler export drifted; refusing to render: "
+                + marker
+            )
+    local_count = _top_level_luau_local_count(source)
+    if local_count > MAX_DURABLE_HANDLER_LOCALS:
+        raise ValueError(
+            "durable handler closure exceeds the fail-closed Luau local "
+            f"budget: {local_count} > {MAX_DURABLE_HANDLER_LOCALS}"
+        )
+    indented = "\n".join(
+        "\t" + line if line else "" for line in source.rstrip().splitlines()
+    )
+    return (
+        "local DURABLE_HANDLERS = (function()\n"
+        + indented
+        + "\n\treturn table.freeze({\n"
+        "\t\tvalidateRequest = validateRequest,\n"
+        "\t\tdispatch = dispatch,\n"
+        "\t})\n"
+        "end)()\n"
+        "local validateRequest = DURABLE_HANDLERS.validateRequest\n"
+        "local dispatch = DURABLE_HANDLERS.dispatch"
+    )
 
 
 def _durable_server_template(source: str, base_url: str) -> str:
@@ -314,7 +384,7 @@ local CAPABILITY_SET = table.freeze({
         source,
         "local function validateArgs(operation, args, deadlineMs)",
         "local function cacheResponse(request, signature, success, result, requestError)",
-        handlers.rstrip(),
+        _durable_handlers_closure(handlers),
         "plugin durable handlers",
     )
     source = _replace_region(
@@ -427,10 +497,17 @@ local function run()
 end""",
         "plugin durable connection lifecycle",
     )
-    return source.replace(
+    source = source.replace(
         '"studio-mcp-v2-standalone-plugin"',
         '"studio-mcp-v2-durable-plugin"',
     )
+    local_count = _top_level_luau_local_count(source)
+    if local_count > MAX_RENDERED_CHUNK_LOCALS:
+        raise ValueError(
+            "rendered durable plugin chunk exceeds the fail-closed Luau "
+            f"local budget: {local_count} > {MAX_RENDERED_CHUNK_LOCALS}"
+        )
+    return source
 
 
 def render(

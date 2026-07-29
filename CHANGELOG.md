@@ -4,7 +4,41 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
-## 0.4.0-rc.1 — unreleased
+## 0.4.0-rc.2 — unreleased
+
+Corrected isolated Phase 2 candidate. The failed rc.1 commit and artifact
+remain immutable and are rejected; the installed `0.3.0-rc.4` bytes and
+restore bundle remain the immediate rollback target.
+
+### Rendered-plugin compilation
+
+- Moved the durable handler registry into a private frozen factory/facade and
+  grouped immutable services, bounds, and protocol metadata. The handler
+  factory now stays below a conservative 160-local budget instead of exceeding
+  Luau's 200-local compiler limit.
+- Added static scope-budget drift checks and a mandatory receipt-bound native
+  Studio compilation gate for the exact hashed `.rbxmx` source before any
+  future live validation.
+- The native gate verifies the signed Studio executable and empty Edit
+  command-script context, accepts only the reviewed pre-registration
+  plugin-context assertion, and fails closed on compiler errors, unexpected
+  plugin loads, crashes, timeouts, or identity drift.
+
+### Candidate live-gate boundary
+
+- Kept public `*_v2` tool names intact through direct calls, authorization, and
+  job admission. Remote base handler names are now catalog-audit-only.
+- Added exact public/remote bijection, explicit-target injection, read-only
+  annotation, candidate-origin, file-hash/mode, and bounded argument checks to
+  the isolated read-only harness.
+- Bound the complete extracted release tree and all runtime/config/secret
+  bytes into native qualification, removed the internal unqualified
+  capability loader, pinned revalidation to the official Studio path, and
+  separated proof-independent authenticated cleanup.
+- Required an external release-manifest hash before candidate import and
+  fenced cleanup to the exact broker instance receipted at Start.
+
+## 0.4.0-rc.1 — rejected 2026-07-29
 
 First isolated Phase 2 release candidate. The installed `0.3.0-rc.4` bytes and
 restore bundle remain immutable and are the required immediate rollback

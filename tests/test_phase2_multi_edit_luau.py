@@ -211,10 +211,10 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
 
     def test_luau_enforces_all_transaction_wide_bounds(self) -> None:
         for marker in (
-            "local MAX_MULTI_EDIT_REPLACEMENT_SPANS = 1_024",
-            "local MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES = 8_192",
-            "local MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES = 1_048_576",
-            "local MAX_MULTI_EDIT_RECEIPT_BYTES = 100_000",
+            "MAX_MULTI_EDIT_REPLACEMENT_SPANS = 1_024",
+            "MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES = 8_192",
+            "MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES = 1_048_576",
+            "MAX_MULTI_EDIT_RECEIPT_BYTES = 100_000",
         ):
             self.assertIn(marker, self.source)
 
@@ -226,7 +226,8 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         self.assertEqual(
             2,
             validation.count(
-                "aggregatePathBytes > MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES"
+                "aggregatePathBytes > "
+                "DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES"
             ),
         )
 
@@ -240,16 +241,19 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
             prepare,
         )
         self.assertIn(
-            "aggregateReplacementCount > MAX_MULTI_EDIT_REPLACEMENT_SPANS",
+            "aggregateReplacementCount "
+            "> DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS",
             prepare,
         )
         self.assertIn(
-            "aggregateSourceBytes > MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES",
+            "aggregateSourceBytes "
+            "> DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES",
             prepare,
         )
         self.assertIn(
             "aggregatePlannedSourceBytes\n"
-            "\t\t\t\t> MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES",
+            "\t\t\t\t> "
+            "DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES",
             prepare,
         )
 
@@ -257,7 +261,8 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         self.assertEqual(
             2,
             self.source.count(
-                "#encodedReceipt > MAX_MULTI_EDIT_RECEIPT_BYTES"
+                "#encodedReceipt > "
+                "DURABLE_BOUNDS.MAX_MULTI_EDIT_RECEIPT_BYTES"
             ),
         )
         prepare = _section(
@@ -266,7 +271,10 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
             "local function multiEditCasReplace(",
         )
         self.assertLess(
-            prepare.index("#encodedReceipt > MAX_MULTI_EDIT_RECEIPT_BYTES"),
+            prepare.index(
+                "#encodedReceipt > "
+                "DURABLE_BOUNDS.MAX_MULTI_EDIT_RECEIPT_BYTES"
+            ),
             prepare.index("peer.multi_edit_plan = {"),
         )
 
@@ -488,7 +496,11 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
             self.assertIn("request.deadline_ms", call)
 
     def test_renderer_embeds_one_consistent_hardened_handler(self) -> None:
-        self.assertIn(self.source.rstrip(), self.rendered)
+        indented = "\n".join(
+            "\t" + line if line else ""
+            for line in self.source.rstrip().splitlines()
+        )
+        self.assertIn(indented, self.rendered)
         self.assertEqual(
             1,
             self.rendered.count("local function prepareMultiEdit("),

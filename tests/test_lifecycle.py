@@ -177,7 +177,7 @@ class LifecycleConfigurationTests(unittest.TestCase):
         self.assertEqual(
             "studio-mcp-v2-durable-catalog", report["format"]
         )
-        self.assertEqual("0.4.0-rc.1", report["catalog_version"])
+        self.assertEqual("0.4.0-rc.2", report["catalog_version"])
         self.assertEqual(
             "production-v1-snapshot-2026-07-26",
             report["upstream"]["version"],
@@ -555,8 +555,29 @@ class LifecycleProcessTests(unittest.TestCase):
         first = ensure_broker(
             self.install.paths, self.config, self.secrets
         )
+        with self.assertRaisesRegex(
+            LifecycleError, "instance changed"
+        ):
+            stop_broker(
+                self.install.paths,
+                self.config,
+                self.secrets,
+                expected_broker_instance_id=str(uuid.uuid4()),
+            )
+        self.assertTrue(
+            broker_status(
+                self.install.paths,
+                self.config,
+                self.secrets,
+            )["running"]
+        )
         stopped = stop_broker(
-            self.install.paths, self.config, self.secrets
+            self.install.paths,
+            self.config,
+            self.secrets,
+            expected_broker_instance_id=first[
+                "broker_instance_id"
+            ],
         )
         self.assertTrue(stopped["stopped"])
         second = ensure_broker(

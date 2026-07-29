@@ -926,11 +926,18 @@ def stop_broker(
     paths: InstallPaths,
     config: Optional[RuntimeConfig] = None,
     secrets: Optional[SecretsConfig] = None,
+    *,
+    expected_broker_instance_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Gracefully stop only the exact authenticated broker instance."""
 
     if config is None or secrets is None:
         config, secrets = load_install_config(paths)
+    if expected_broker_instance_id is not None:
+        expected_broker_instance_id = _validate_uuid(
+            expected_broker_instance_id,
+            "expected_broker_instance_id",
+        )
     with lifecycle_lock(paths):
         port_open = _configured_port_open(config)
         health = _probe_broker(config, secrets)
@@ -942,6 +949,14 @@ def stop_broker(
                 )
             return {"running": False, "stopped": False}
         instance_id = health["broker_instance_id"]
+        if (
+            expected_broker_instance_id is not None
+            and instance_id != expected_broker_instance_id
+        ):
+            raise LifecycleError(
+                "The authenticated broker instance changed; "
+                "refusing lifecycle stop"
+            )
         _request_authenticated_stop(config, secrets, health)
         _remove_record_if_instance(paths, instance_id)
         return {
