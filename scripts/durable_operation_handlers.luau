@@ -35,10 +35,39 @@ local MAX_TREE_SCAN_LIMIT = 5_000
 local DEFAULT_TREE_SCAN_LIMIT = 2_000
 local MAX_TREE_PAGE_SIZE = 500
 local MAX_TREE_CHILDREN_PER_INSTANCE = 10_000
+local MAX_TREE_RETAINED_CHILDREN = 20_000
 local MAX_TREE_OUTPUT_BYTES = 600_000
 local TREE_COOPERATIVE_YIELD_INTERVAL = 100
 local TREE_CURSOR_VERSION = 1
 local TREE_SORT_VERSION = "name-class-v1"
+local MAX_SCRIPT_QUERY_BYTES = 256
+local MAX_SCRIPT_KEYWORDS = 8
+local MAX_SCRIPT_KEYWORD_BYTES = 64
+local MAX_SCRIPT_CURSOR_BYTES = 2_048
+local MAX_SCRIPT_SCAN_LIMIT = 5_000
+local DEFAULT_SCRIPT_SCAN_LIMIT = 2_000
+local MAX_SCRIPT_SEARCH_PAGE_SIZE = 10
+local DEFAULT_SCRIPT_SEARCH_PAGE_SIZE = 10
+local MAX_SCRIPT_GREP_PAGE_SIZE = 50
+local DEFAULT_SCRIPT_GREP_PAGE_SIZE = 50
+local MIN_SCRIPT_TIME_LIMIT_MS = 100
+local MAX_SCRIPT_TIME_LIMIT_MS = 10_000
+local DEFAULT_SCRIPT_SEARCH_TIME_LIMIT_MS = 3_000
+local DEFAULT_SCRIPT_GREP_TIME_LIMIT_MS = 5_000
+local MIN_SCRIPT_SOURCE_BUDGET = MAX_SOURCE_BYTES
+local MAX_SCRIPT_SOURCE_BUDGET = 4_194_304
+local DEFAULT_SCRIPT_SOURCE_BUDGET = 1_048_576
+local MAX_SCRIPT_SOURCE_LINES = 20_000
+local MAX_SCRIPT_PREVIEW_BYTES = 512
+local MAX_SCRIPT_SEARCH_OUTPUT_BYTES = 200_000
+local MAX_SCRIPT_GREP_OUTPUT_BYTES = 500_000
+local SCRIPT_SEARCH_ITEM_BUDGET = 160_000
+local SCRIPT_GREP_ITEM_BUDGET = 450_000
+local SCRIPT_CURSOR_VERSION = 1
+local SCRIPT_SEARCH_QUERY_VERSION = "script-name-query-v1"
+local SCRIPT_GREP_QUERY_VERSION = "script-grep-query-v1"
+local SCRIPT_SEARCH_MATCH_SEMANTICS =
+	"all_keywords_ascii_case_insensitive_literal_subsequence"
 
 local OPERATION_ARG_KEYS = table.freeze({
 	studio_get_state = table.freeze({}),
@@ -51,6 +80,26 @@ local OPERATION_ARG_KEYS = table.freeze({
 		class_is_a = true,
 		scan_limit = true,
 		page_size = true,
+		continuation_cursor = true,
+	}),
+	studio_search_scripts = table.freeze({
+		keywords = true,
+		root_path = true,
+		max_depth = true,
+		scan_limit = true,
+		page_size = true,
+		time_limit_ms = true,
+		continuation_cursor = true,
+	}),
+	studio_grep_scripts = table.freeze({
+		query = true,
+		root_path = true,
+		max_depth = true,
+		case_sensitive = true,
+		scan_limit = true,
+		source_byte_limit = true,
+		page_size = true,
+		time_limit_ms = true,
 		continuation_cursor = true,
 	}),
 	studio_read_script = table.freeze({
@@ -156,6 +205,141 @@ local function validateTreeFilter(value, label)
 	return value
 end
 
+local function validatePrintableAsciiScriptText(value, label)
+	if type(value) ~= "string"
+		or #value < 1
+		or #value > MAX_SCRIPT_QUERY_BYTES
+	then
+		adapterError(
+			"invalid_args",
+			label .. " must be 1 to "
+				.. tostring(MAX_SCRIPT_QUERY_BYTES)
+				.. " printable ASCII bytes",
+			false
+		)
+	end
+	for index = 1, #value do
+		local byte = string.byte(value, index)
+		if byte < 32 or byte > 126 then
+			adapterError(
+				"invalid_args",
+				label .. " must contain printable ASCII only",
+				false
+			)
+		end
+	end
+	return value
+end
+
+local function normalizeScriptKeywords(value)
+	validatePrintableAsciiScriptText(value, "keywords")
+	local normalized = {}
+	local seen = {}
+	local startIndex = 1
+	while true do
+		local commaIndex = string.find(value, ",", startIndex, true)
+		local finishIndex = commaIndex ~= nil and commaIndex - 1 or #value
+		local token = string.sub(value, startIndex, finishIndex)
+		token = string.match(token, "^ *(.-) *$") or ""
+		if #token < 1 or #token > MAX_SCRIPT_KEYWORD_BYTES then
+			adapterError(
+				"invalid_args",
+				"Each comma-separated keyword must be 1 to "
+					.. tostring(MAX_SCRIPT_KEYWORD_BYTES)
+					.. " bytes after ASCII-space trimming",
+				false
+			)
+		end
+		local folded = string.lower(token)
+		if seen[folded] == true then
+			adapterError(
+				"invalid_args",
+				"keywords must not contain duplicate normalized tokens",
+				false
+			)
+		end
+		seen[folded] = true
+		table.insert(normalized, folded)
+		if #normalized > MAX_SCRIPT_KEYWORDS then
+			adapterError(
+				"invalid_args",
+				"keywords contains too many comma-separated tokens",
+				false
+			)
+		end
+		if commaIndex == nil then
+			break
+		end
+		startIndex = commaIndex + 1
+		if startIndex > #value then
+			adapterError(
+				"invalid_args",
+				"keywords must not end with an empty token",
+				false
+			)
+		end
+	end
+	return normalized
+end
+
+local function validateScriptCursor(value)
+	if type(value) ~= "string"
+		or #value < 1
+		or #value > MAX_SCRIPT_CURSOR_BYTES
+		or string.find(value, "[%c%s]") ~= nil
+	then
+		adapterError(
+			"invalid_args",
+			"continuation_cursor is invalid or exceeds its script-search bound",
+			false
+		)
+	end
+end
+
+local function validateScriptTraversalArgs(args, maximumPageSize)
+	local rootPath = validatePath(args.root_path or {}, true, "root_path")
+	if args.max_depth ~= nil then
+		validateIntegerRange(args.max_depth, 0, MAX_PATH_SEGMENTS, "max_depth")
+	end
+	local maxDepth = args.max_depth
+		or (MAX_PATH_SEGMENTS - #rootPath)
+	if #rootPath + maxDepth > MAX_PATH_SEGMENTS then
+		adapterError(
+			"invalid_args",
+			"root_path plus max_depth exceeds the reusable path bound",
+			false
+		)
+	end
+	if args.scan_limit ~= nil then
+		validateIntegerRange(
+			args.scan_limit,
+			1,
+			MAX_SCRIPT_SCAN_LIMIT,
+			"scan_limit"
+		)
+	end
+	if args.page_size ~= nil then
+		validateIntegerRange(
+			args.page_size,
+			1,
+			maximumPageSize,
+			"page_size"
+		)
+	end
+	if args.time_limit_ms ~= nil then
+		validateIntegerRange(
+			args.time_limit_ms,
+			MIN_SCRIPT_TIME_LIMIT_MS,
+			MAX_SCRIPT_TIME_LIMIT_MS,
+			"time_limit_ms"
+		)
+	end
+	if args.continuation_cursor ~= nil then
+		validateScriptCursor(args.continuation_cursor)
+	end
+	return rootPath, maxDepth
+end
+
 local function copyPath(path)
 	local result = {}
 	for index, segment in ipairs(path) do
@@ -175,7 +359,15 @@ local function resolveExactPath(path, allowRoot)
 	local current = game
 	for _, segment in ipairs(path) do
 		local match = nil
-		for _, child in ipairs(current:GetChildren()) do
+		local children = current:GetChildren()
+		if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+			adapterError(
+				"tree_width_unsupported",
+				"Exact-path resolution exceeds the bounded child width",
+				false
+			)
+		end
+		for _, child in ipairs(children) do
 			if child.Name == segment then
 				if match ~= nil then
 					adapterError(
@@ -398,6 +590,35 @@ local function validateDurableArgs(operation, args, deadlineMs)
 				"invalid_args",
 				"continuation_cursor is invalid or exceeds its bound",
 				false
+			)
+		end
+	elseif operation == "studio_search_scripts" then
+		normalizeScriptKeywords(args.keywords)
+		validateScriptTraversalArgs(
+			args,
+			MAX_SCRIPT_SEARCH_PAGE_SIZE
+		)
+	elseif operation == "studio_grep_scripts" then
+		validatePrintableAsciiScriptText(args.query, "query")
+		validateScriptTraversalArgs(
+			args,
+			MAX_SCRIPT_GREP_PAGE_SIZE
+		)
+		if args.case_sensitive ~= nil
+			and type(args.case_sensitive) ~= "boolean"
+		then
+			adapterError(
+				"invalid_args",
+				"case_sensitive must be boolean",
+				false
+			)
+		end
+		if args.source_byte_limit ~= nil then
+			validateIntegerRange(
+				args.source_byte_limit,
+				MIN_SCRIPT_SOURCE_BUDGET,
+				MAX_SCRIPT_SOURCE_BUDGET,
+				"source_byte_limit"
 			)
 		end
 	elseif operation == "studio_read_script" then
@@ -629,6 +850,40 @@ local function treeSha256(value)
 		adapterError(
 			"tree_cursor_unavailable",
 			"Studio could not compute a tree cursor digest",
+			false
+		)
+	end
+	local hexadecimal = table.create(32)
+	for index = 1, 32 do
+		hexadecimal[index] = string.format(
+			"%02x",
+			string.byte(binaryDigest, index)
+		)
+	end
+	return table.concat(hexadecimal)
+end
+
+local function scriptCursorSha256(value)
+	if EncodingService == nil then
+		adapterError(
+			"script_cursor_unavailable",
+			"Studio SHA-256 support is unavailable for script pagination",
+			false
+		)
+	end
+	local ok, binaryDigest = pcall(function()
+		return EncodingService:ComputeStringHash(
+			value,
+			Enum.HashAlgorithm.Sha256
+		)
+	end)
+	if not ok
+		or type(binaryDigest) ~= "string"
+		or #binaryDigest ~= 32
+	then
+		adapterError(
+			"script_cursor_unavailable",
+			"Studio could not compute a script cursor digest",
 			false
 		)
 	end
@@ -959,6 +1214,22 @@ local function treePositionLineage(root, position)
 	return treeSha256(table.concat(parts))
 end
 
+local function assertTreeFrontierBound(frames, newChildren)
+	local retained = #newChildren
+	for _, frame in ipairs(frames) do
+		if frame.children ~= nil then
+			retained = retained + #frame.children
+		end
+	end
+	if retained > MAX_TREE_RETAINED_CHILDREN then
+		adapterError(
+			"tree_frontier_unsupported",
+			"Deterministic traversal exceeds the retained-child frontier bound",
+			false
+		)
+	end
+end
+
 local function newTreeTraversal(root, rootPath, position, maxDepth)
 	local frames = {}
 	local current = root
@@ -973,6 +1244,7 @@ local function newTreeTraversal(root, rootPath, position, maxDepth)
 			)
 		end
 		local children = sortedTreeChildren(current)
+		assertTreeFrontierBound(frames, children)
 		if ordinal > #children then
 			adapterError(
 				"stale_continuation_cursor",
@@ -1017,7 +1289,9 @@ local function nextTreeNode(frames, maxDepth)
 		end
 		if frame.depth < maxDepth then
 			if frame.children == nil then
-				frame.children = sortedTreeChildren(frame.instance)
+				local children = sortedTreeChildren(frame.instance)
+				assertTreeFrontierBound(frames, children)
+				frame.children = children
 			end
 			local ordinal = frame.next_child
 			if ordinal <= #frame.children then
@@ -1228,6 +1502,956 @@ local function listTree(args)
 		class_is_a = classIsA,
 		sort_version = TREE_SORT_VERSION,
 	}
+end
+
+local SCRIPT_SEARCH_CURSOR_KEYS = table.freeze({
+	v = true,
+	s = true,
+	c = true,
+	d = true,
+	g = true,
+	q = true,
+	p = true,
+	l = true,
+})
+
+local SCRIPT_GREP_CURSOR_KEYS = table.freeze({
+	v = true,
+	s = true,
+	c = true,
+	d = true,
+	g = true,
+	q = true,
+	p = true,
+	l = true,
+	b = true,
+	h = true,
+})
+
+local function scriptCursorIntegrity(domain, payload)
+	return scriptCursorSha256(
+		REGISTRATION_SECRET
+			.. "\0"
+			.. domain
+			.. "\0"
+			.. payload
+			.. "\0"
+			.. REGISTRATION_SECRET
+	)
+end
+
+local function encodeScriptCursorPayload(payload, domain)
+	local jsonOk, json = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if not jsonOk or type(json) ~= "string" or #json > 1_400 then
+		adapterError(
+			"script_cursor_unavailable",
+			"Script continuation state could not be encoded within its bound",
+			false
+		)
+	end
+	local base64Ok, encodedBuffer = pcall(function()
+		return EncodingService:Base64Encode(buffer.fromstring(json))
+	end)
+	if not base64Ok or typeof(encodedBuffer) ~= "buffer" then
+		adapterError(
+			"script_cursor_unavailable",
+			"Studio could not encode script continuation state",
+			false
+		)
+	end
+	local encoded = buffer.tostring(encodedBuffer)
+	local cursor = encoded .. "." .. scriptCursorIntegrity(domain, json)
+	if #cursor > MAX_SCRIPT_CURSOR_BYTES then
+		adapterError(
+			"script_cursor_unavailable",
+			"Encoded script continuation exceeds its durable bound",
+			false
+		)
+	end
+	return cursor
+end
+
+local function decodeScriptCursorPayload(
+	cursor,
+	domain,
+	allowedKeys,
+	querySha256,
+	maxDepth
+)
+	local encodedCore, padding, suppliedIntegrity = string.match(
+		cursor,
+		"^([A-Za-z0-9+/]+)(=*)%.([0-9a-f]+)$"
+	)
+	if encodedCore == nil
+		or padding == nil
+		or #padding > 2
+		or suppliedIntegrity == nil
+		or #suppliedIntegrity ~= 64
+	then
+		adapterError(
+			"invalid_script_cursor",
+			"Script continuation cursor encoding is invalid",
+			false
+		)
+	end
+	local decodeOk, decodedBuffer = pcall(function()
+		return EncodingService:Base64Decode(
+			buffer.fromstring(encodedCore .. padding)
+		)
+	end)
+	if not decodeOk or typeof(decodedBuffer) ~= "buffer" then
+		adapterError(
+			"invalid_script_cursor",
+			"Script continuation cursor payload is invalid",
+			false
+		)
+	end
+	local json = buffer.tostring(decodedBuffer)
+	if #json < 1 or #json > 1_400 then
+		adapterError(
+			"invalid_script_cursor",
+			"Script continuation cursor payload exceeds its bound",
+			false
+		)
+	end
+	if not constantTimeTextEqual(
+		suppliedIntegrity,
+		scriptCursorIntegrity(domain, json)
+	) then
+		adapterError(
+			"invalid_script_cursor",
+			"Script continuation cursor integrity check failed",
+			false
+		)
+	end
+	local payloadOk, payload = pcall(function()
+		return HttpService:JSONDecode(json)
+	end)
+	if not payloadOk or type(payload) ~= "table" then
+		adapterError(
+			"invalid_script_cursor",
+			"Script continuation cursor JSON is invalid",
+			false
+		)
+	end
+	for key in pairs(payload) do
+		if type(key) ~= "string" or allowedKeys[key] ~= true then
+			adapterError(
+				"invalid_script_cursor",
+				"Script continuation cursor contains an unexpected field",
+				false
+			)
+		end
+	end
+	for key in pairs(allowedKeys) do
+		if payload[key] == nil then
+			adapterError(
+				"invalid_script_cursor",
+				"Script continuation cursor is missing required state",
+				false
+			)
+		end
+	end
+	if payload.v ~= SCRIPT_CURSOR_VERSION
+		or payload.s ~= peer.studio_id
+		or payload.c ~= CLIENT_INSTANCE_ID
+		or payload.d ~= DOCUMENT_EPOCH
+		or payload.g ~= peer.generation
+	then
+		adapterError(
+			"stale_script_cursor",
+			"Script continuation belongs to another session generation",
+			false
+		)
+	end
+	if payload.q ~= querySha256 then
+		adapterError(
+			"script_cursor_query_mismatch",
+			"Script continuation does not match this normalized query",
+			false
+		)
+	end
+	if type(payload.l) ~= "string"
+		or #payload.l ~= 64
+		or string.find(payload.l, "[^0-9a-f]") ~= nil
+		or type(payload.p) ~= "table"
+		or #payload.p > maxDepth
+	then
+		adapterError(
+			"invalid_script_cursor",
+			"Script continuation traversal state is invalid",
+			false
+		)
+	end
+	local positionCount = #payload.p
+	for key in pairs(payload.p) do
+		if not isInteger(key) or key < 1 or key > positionCount then
+			adapterError(
+				"invalid_script_cursor",
+				"Script continuation position must be a dense array",
+				false
+			)
+		end
+	end
+	for _, ordinal in ipairs(payload.p) do
+		if not isInteger(ordinal)
+			or ordinal < 1
+			or ordinal > MAX_TREE_CHILDREN_PER_INSTANCE
+		then
+			adapterError(
+				"invalid_script_cursor",
+				"Script continuation child ordinal is invalid",
+				false
+			)
+		end
+	end
+	return payload
+end
+
+local function canonicalScriptSearchQuery(
+	rootPath,
+	maxDepth,
+	keywords,
+	scanLimit,
+	pageSize,
+	timeLimitMs
+)
+	local parts = {}
+	appendCanonicalTreeValue(parts, SCRIPT_SEARCH_QUERY_VERSION)
+	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, maxDepth)
+	appendCanonicalTreeValue(parts, scanLimit)
+	appendCanonicalTreeValue(parts, pageSize)
+	appendCanonicalTreeValue(parts, timeLimitMs)
+	appendCanonicalTreeValue(parts, #rootPath)
+	for _, segment in ipairs(rootPath) do
+		appendCanonicalTreeValue(parts, segment)
+	end
+	appendCanonicalTreeValue(parts, #keywords)
+	for _, keyword in ipairs(keywords) do
+		appendCanonicalTreeValue(parts, keyword)
+	end
+	return table.concat(parts)
+end
+
+local function canonicalScriptGrepQuery(
+	rootPath,
+	maxDepth,
+	query,
+	caseSensitive,
+	scanLimit,
+	sourceByteLimit,
+	pageSize,
+	timeLimitMs
+)
+	local parts = {}
+	appendCanonicalTreeValue(parts, SCRIPT_GREP_QUERY_VERSION)
+	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, maxDepth)
+	appendCanonicalTreeValue(parts, query)
+	appendCanonicalTreeValue(parts, caseSensitive and "1" or "0")
+	appendCanonicalTreeValue(parts, scanLimit)
+	appendCanonicalTreeValue(parts, sourceByteLimit)
+	appendCanonicalTreeValue(parts, pageSize)
+	appendCanonicalTreeValue(parts, timeLimitMs)
+	appendCanonicalTreeValue(parts, #rootPath)
+	for _, segment in ipairs(rootPath) do
+		appendCanonicalTreeValue(parts, segment)
+	end
+	return table.concat(parts)
+end
+
+local function scriptCursorForPosition(
+	root,
+	position,
+	querySha256,
+	domain,
+	extra
+)
+	local payload = {
+		v = SCRIPT_CURSOR_VERSION,
+		s = peer.studio_id,
+		c = CLIENT_INSTANCE_ID,
+		d = DOCUMENT_EPOCH,
+		g = peer.generation,
+		q = querySha256,
+		p = copyPath(position),
+		l = treePositionLineage(root, position),
+	}
+	if extra ~= nil then
+		for key, value in pairs(extra) do
+			payload[key] = value
+		end
+	end
+	return encodeScriptCursorPayload(payload, domain)
+end
+
+local function isPlaceScript(instance)
+	return instance.ClassName == "Script"
+		or instance.ClassName == "LocalScript"
+		or instance.ClassName == "ModuleScript"
+end
+
+local function nameMatchesScriptKeywords(name, keywords)
+	local foldedName = string.lower(name)
+	for _, keyword in ipairs(keywords) do
+		local nextIndex = 1
+		for keywordIndex = 1, #keyword do
+			local byteText = string.sub(
+				keyword,
+				keywordIndex,
+				keywordIndex
+			)
+			local found = string.find(
+				foldedName,
+				byteText,
+				nextIndex,
+				true
+			)
+			if found == nil then
+				return false
+			end
+			nextIndex = found + 1
+		end
+	end
+	return true
+end
+
+local function newScriptResult(operation, requestId)
+	return {
+		adapter = "studio-mcp-v2-durable-plugin",
+		v = 1,
+		operation = operation,
+		studio_id = peer.studio_id,
+		client_instance_id = CLIENT_INSTANCE_ID,
+		document_epoch = DOCUMENT_EPOCH,
+		generation = peer.generation,
+		request_id = requestId,
+	}
+end
+
+local function assertBoundedScriptResult(result, maximumBytes)
+	local encodedOk, encoded = pcall(function()
+		return HttpService:JSONEncode(result)
+	end)
+	if not encodedOk
+		or type(encoded) ~= "string"
+		or #encoded > maximumBytes
+	then
+		adapterError(
+			"script_result_oversize",
+			"Script query result exceeds its encoded output bound",
+			false
+		)
+	end
+end
+
+local function searchScripts(args, requestId)
+	requireEditMode()
+	local startedAt = os.clock()
+	local rootPath, maxDepth = validateScriptTraversalArgs(
+		args,
+		MAX_SCRIPT_SEARCH_PAGE_SIZE
+	)
+	local root = resolveExactPath(rootPath, true)
+	local keywords = normalizeScriptKeywords(args.keywords)
+	local scanLimit = args.scan_limit or DEFAULT_SCRIPT_SCAN_LIMIT
+	local pageSize = args.page_size or DEFAULT_SCRIPT_SEARCH_PAGE_SIZE
+	local timeLimitMs = args.time_limit_ms
+		or DEFAULT_SCRIPT_SEARCH_TIME_LIMIT_MS
+	local queryCanonical = canonicalScriptSearchQuery(
+		rootPath,
+		maxDepth,
+		keywords,
+		scanLimit,
+		pageSize,
+		timeLimitMs
+	)
+	local querySha256 = scriptCursorSha256(queryCanonical)
+	local startPosition = {}
+	if args.continuation_cursor ~= nil then
+		local payload = decodeScriptCursorPayload(
+			args.continuation_cursor,
+			"studio-script-search-cursor-v1",
+			SCRIPT_SEARCH_CURSOR_KEYS,
+			querySha256,
+			maxDepth
+		)
+		startPosition = payload.p
+		local observedLineage = treePositionLineage(root, startPosition)
+		if not constantTimeTextEqual(payload.l, observedLineage) then
+			adapterError(
+				"stale_script_cursor",
+				"Script search tree changed at the continuation location",
+				false
+			)
+		end
+	end
+
+	local frames = newTreeTraversal(
+		root,
+		rootPath,
+		startPosition,
+		maxDepth
+	)
+	local items = {}
+	local itemBytes = 0
+	local scannedInstances = 0
+	local scannedScripts = 0
+	local continuationCursor = ""
+	local truncationReason = "complete"
+
+	while true do
+		local instance, path, _, position = nextTreeNode(frames, maxDepth)
+		if instance == nil then
+			break
+		end
+		if (os.clock() - startedAt) * 1_000 >= timeLimitMs then
+			continuationCursor = scriptCursorForPosition(
+				root,
+				position,
+				querySha256,
+				"studio-script-search-cursor-v1",
+				nil
+			)
+			truncationReason = "time_budget"
+			break
+		end
+		scannedInstances = scannedInstances + 1
+		if isPlaceScript(instance) then
+			scannedScripts = scannedScripts + 1
+			if nameMatchesScriptKeywords(instance.Name, keywords) then
+				local item = {
+					path = copyPath(path),
+					name = instance.Name,
+					class_name = instance.ClassName,
+				}
+				local itemJsonOk, itemJson = pcall(function()
+					return HttpService:JSONEncode(item)
+				end)
+				if not itemJsonOk or type(itemJson) ~= "string" then
+					adapterError(
+						"script_result_encoding_unavailable",
+						"Studio could not encode a script-search item",
+						false
+					)
+				end
+				if itemBytes + #itemJson + 1
+					> SCRIPT_SEARCH_ITEM_BUDGET
+				then
+					continuationCursor = scriptCursorForPosition(
+						root,
+						position,
+						querySha256,
+						"studio-script-search-cursor-v1",
+						nil
+					)
+					truncationReason = "output_bytes"
+					break
+				end
+				table.insert(items, item)
+				itemBytes = itemBytes + #itemJson + 1
+				if #items >= pageSize then
+					local _, _, _, followingPosition =
+						nextTreeNode(frames, maxDepth)
+					if followingPosition ~= nil then
+						continuationCursor = scriptCursorForPosition(
+							root,
+							followingPosition,
+							querySha256,
+							"studio-script-search-cursor-v1",
+							nil
+						)
+						truncationReason = "page_size"
+					end
+					break
+				end
+			end
+		end
+
+		if scannedInstances >= scanLimit then
+			local _, _, _, followingPosition =
+				nextTreeNode(frames, maxDepth)
+			if followingPosition ~= nil then
+				continuationCursor = scriptCursorForPosition(
+					root,
+					followingPosition,
+					querySha256,
+					"studio-script-search-cursor-v1",
+					nil
+				)
+				truncationReason = "scan_limit"
+			end
+			break
+		end
+		if scannedInstances % TREE_COOPERATIVE_YIELD_INTERVAL == 0 then
+			task.wait()
+			assertExpectedDocument()
+			requireEditMode()
+		end
+	end
+
+	assertExpectedDocument()
+	requireEditMode()
+	local result = newScriptResult("studio_search_scripts", requestId)
+	result.root_path = copyPath(rootPath)
+	result.keywords = copyPath(keywords)
+	result.match_semantics = SCRIPT_SEARCH_MATCH_SEMANTICS
+	result.query_version = SCRIPT_SEARCH_QUERY_VERSION
+	result.sort_version = TREE_SORT_VERSION
+	result.max_depth = maxDepth
+	result.scan_limit = scanLimit
+	result.page_size = pageSize
+	result.time_limit_ms = timeLimitMs
+	result.scanned_instances = scannedInstances
+	result.scanned_scripts = scannedScripts
+	result.returned = #items
+	result.items = items
+	result.truncated = continuationCursor ~= ""
+	result.has_more = continuationCursor ~= ""
+	result.continuation_cursor = continuationCursor
+	result.truncation_reason = truncationReason
+	result.output_limit_bytes = MAX_SCRIPT_SEARCH_OUTPUT_BYTES
+	assertBoundedScriptResult(result, MAX_SCRIPT_SEARCH_OUTPUT_BYTES)
+	return result
+end
+
+local function readGrepSource(target)
+	if ScriptEditorService == nil then
+		adapterError(
+			"script_editor_unavailable",
+			"ScriptEditorService is unavailable for bounded grep",
+			false
+		)
+	end
+	local ok, source = pcall(function()
+		return ScriptEditorService:GetEditorSource(target)
+	end)
+	if not ok or type(source) ~= "string" then
+		adapterError(
+			"script_source_unavailable",
+			"One script source is unavailable; grep cannot claim completeness",
+			false
+		)
+	end
+	if #source > MAX_SOURCE_BYTES then
+		adapterError(
+			"script_source_oversize",
+			"One script source exceeds the durable per-script grep bound",
+			false
+		)
+	end
+	if utf8.len(source) == nil then
+		adapterError(
+			"script_source_invalid_utf8",
+			"One script source is not valid UTF-8",
+			false
+		)
+	end
+	local lineCount = 1
+	local nextIndex = 1
+	while true do
+		local newline = string.find(source, "\n", nextIndex, true)
+		if newline == nil then
+			break
+		end
+		lineCount = lineCount + 1
+		if lineCount > MAX_SCRIPT_SOURCE_LINES then
+			adapterError(
+				"script_source_line_limit",
+				"One script source exceeds the bounded logical-line count",
+				false
+			)
+		end
+		nextIndex = newline + 1
+	end
+	return source
+end
+
+local function sourceLineStateAt(source, bytePosition)
+	local lineNumber = 1
+	local lineStart = 1
+	while true do
+		local newline = string.find(source, "\n", lineStart, true)
+		if newline == nil or newline >= bytePosition then
+			return lineNumber, lineStart, newline
+		end
+		lineNumber = lineNumber + 1
+		lineStart = newline + 1
+	end
+end
+
+local function byteIsUtf8Continuation(value)
+	return value ~= nil and value >= 128 and value <= 191
+end
+
+local function grepPreview(
+	source,
+	lineStart,
+	lineEnd,
+	matchStart,
+	matchEnd
+)
+	local roomBefore = math.floor(
+		(MAX_SCRIPT_PREVIEW_BYTES - (matchEnd - matchStart + 1)) / 2
+	)
+	local previewStart = math.max(lineStart, matchStart - roomBefore)
+	while previewStart > lineStart
+		and byteIsUtf8Continuation(string.byte(source, previewStart))
+	do
+		previewStart = previewStart - 1
+	end
+	local previewEnd = math.min(
+		lineEnd,
+		previewStart + MAX_SCRIPT_PREVIEW_BYTES - 1
+	)
+	while previewEnd >= previewStart
+		and previewEnd < lineEnd
+		and byteIsUtf8Continuation(string.byte(source, previewEnd + 1))
+	do
+		previewEnd = previewEnd - 1
+	end
+	if previewStart > matchStart or previewEnd < matchEnd then
+		adapterError(
+			"script_preview_unavailable",
+			"Studio could not form a bounded UTF-8 grep preview",
+			false
+		)
+	end
+	return previewStart,
+		string.sub(source, previewStart, previewEnd),
+		previewStart > lineStart,
+		previewEnd < lineEnd
+end
+
+local function grepScripts(args, requestId)
+	requireEditMode()
+	local startedAt = os.clock()
+	local rootPath, maxDepth = validateScriptTraversalArgs(
+		args,
+		MAX_SCRIPT_GREP_PAGE_SIZE
+	)
+	local root = resolveExactPath(rootPath, true)
+	local query = validatePrintableAsciiScriptText(args.query, "query")
+	local caseSensitive = args.case_sensitive ~= false
+	local scanLimit = args.scan_limit or DEFAULT_SCRIPT_SCAN_LIMIT
+	local sourceByteLimit = args.source_byte_limit
+		or DEFAULT_SCRIPT_SOURCE_BUDGET
+	local pageSize = args.page_size or DEFAULT_SCRIPT_GREP_PAGE_SIZE
+	local timeLimitMs = args.time_limit_ms
+		or DEFAULT_SCRIPT_GREP_TIME_LIMIT_MS
+	local queryCanonical = canonicalScriptGrepQuery(
+		rootPath,
+		maxDepth,
+		query,
+		caseSensitive,
+		scanLimit,
+		sourceByteLimit,
+		pageSize,
+		timeLimitMs
+	)
+	local querySha256 = scriptCursorSha256(queryCanonical)
+	local startPosition = {}
+	local resumeByte = 1
+	local resumeSourceSha256 = ""
+	if args.continuation_cursor ~= nil then
+		local payload = decodeScriptCursorPayload(
+			args.continuation_cursor,
+			"studio-script-grep-cursor-v1",
+			SCRIPT_GREP_CURSOR_KEYS,
+			querySha256,
+			maxDepth
+		)
+		if not isInteger(payload.b)
+			or payload.b < 1
+			or payload.b > MAX_SOURCE_BYTES + 1
+			or type(payload.h) ~= "string"
+			or (payload.h ~= ""
+				and (#payload.h ~= 64
+					or string.find(payload.h, "[^0-9a-f]") ~= nil))
+			or (payload.h == "" and payload.b ~= 1)
+		then
+			adapterError(
+				"invalid_script_cursor",
+				"Grep continuation source state is invalid",
+				false
+			)
+		end
+		startPosition = payload.p
+		resumeByte = payload.b
+		resumeSourceSha256 = payload.h
+		local observedLineage = treePositionLineage(root, startPosition)
+		if not constantTimeTextEqual(payload.l, observedLineage) then
+			adapterError(
+				"stale_script_cursor",
+				"Grep tree changed at the continuation location",
+				false
+			)
+		end
+	end
+
+	local frames = newTreeTraversal(
+		root,
+		rootPath,
+		startPosition,
+		maxDepth
+	)
+	local items = {}
+	local itemBytes = 0
+	local scannedInstances = 0
+	local scannedScripts = 0
+	local sourceBytesScanned = 0
+	local continuationCursor = ""
+	local truncationReason = "complete"
+	local firstNode = true
+	local stop = false
+
+	while not stop do
+		local instance, path, _, position = nextTreeNode(frames, maxDepth)
+		if instance == nil then
+			break
+		end
+		if (os.clock() - startedAt) * 1_000 >= timeLimitMs then
+			continuationCursor = scriptCursorForPosition(
+				root,
+				position,
+				querySha256,
+				"studio-script-grep-cursor-v1",
+				{ b = 1, h = "" }
+			)
+			truncationReason = "time_budget"
+			break
+		end
+		scannedInstances = scannedInstances + 1
+		if isPlaceScript(instance) then
+			local source = readGrepSource(instance)
+			local sourceDigest = sourceSha256(source)
+			local searchStart = 1
+			if firstNode and resumeSourceSha256 ~= "" then
+				if not constantTimeTextEqual(
+					resumeSourceSha256,
+					sourceDigest
+				) then
+					adapterError(
+						"stale_script_source_cursor",
+						"Script source changed after the grep continuation",
+						false
+					)
+				end
+				searchStart = resumeByte
+			elseif firstNode and resumeByte ~= 1 then
+				adapterError(
+					"invalid_script_cursor",
+					"Grep continuation does not identify a source revision",
+					false
+				)
+			end
+			if sourceBytesScanned + #source > sourceByteLimit then
+				continuationCursor = scriptCursorForPosition(
+					root,
+					position,
+					querySha256,
+					"studio-script-grep-cursor-v1",
+					{ b = 1, h = "" }
+				)
+				truncationReason = "source_bytes"
+				break
+			end
+			sourceBytesScanned = sourceBytesScanned + #source
+			scannedScripts = scannedScripts + 1
+			local haystack = caseSensitive and source
+				or string.lower(source)
+			local needle = caseSensitive and query or string.lower(query)
+			local lineNumber, lineStart, nextNewline =
+				sourceLineStateAt(source, searchStart)
+
+			while searchStart <= #source do
+				if (os.clock() - startedAt) * 1_000 >= timeLimitMs then
+					continuationCursor = scriptCursorForPosition(
+						root,
+						position,
+						querySha256,
+						"studio-script-grep-cursor-v1",
+						{ b = searchStart, h = sourceDigest }
+					)
+					truncationReason = "time_budget"
+					stop = true
+					break
+				end
+				local matchStart, matchEnd = string.find(
+					haystack,
+					needle,
+					searchStart,
+					true
+				)
+				if matchStart == nil then
+					break
+				end
+				while nextNewline ~= nil and nextNewline < matchStart do
+					lineNumber = lineNumber + 1
+					lineStart = nextNewline + 1
+					nextNewline = string.find(
+						source,
+						"\n",
+						lineStart,
+						true
+					)
+				end
+				local lineEnd = nextNewline ~= nil
+					and nextNewline - 1 or #source
+				if lineEnd >= lineStart
+					and string.byte(source, lineEnd) == 13
+				then
+					lineEnd = lineEnd - 1
+				end
+				local previewStart,
+					preview,
+					prefixTruncated,
+					suffixTruncated = grepPreview(
+						source,
+						lineStart,
+						lineEnd,
+						matchStart,
+						matchEnd
+					)
+				local item = {
+					path = copyPath(path),
+					name = instance.Name,
+					class_name = instance.ClassName,
+					source_sha256 = sourceDigest,
+					source_length = #source,
+					match_start_byte = matchStart,
+					match_end_byte = matchEnd,
+					line_number = lineNumber,
+					column_byte = matchStart - lineStart + 1,
+					preview_start_byte = previewStart,
+					preview = preview,
+					preview_prefix_truncated = prefixTruncated,
+					preview_suffix_truncated = suffixTruncated,
+				}
+				local itemJsonOk, itemJson = pcall(function()
+					return HttpService:JSONEncode(item)
+				end)
+				if not itemJsonOk or type(itemJson) ~= "string" then
+					adapterError(
+						"script_result_encoding_unavailable",
+						"Studio could not encode a grep match",
+						false
+					)
+				end
+				if itemBytes + #itemJson + 1 > SCRIPT_GREP_ITEM_BUDGET then
+					continuationCursor = scriptCursorForPosition(
+						root,
+						position,
+						querySha256,
+						"studio-script-grep-cursor-v1",
+						{ b = matchStart, h = sourceDigest }
+					)
+					truncationReason = "output_bytes"
+					stop = true
+					break
+				end
+				table.insert(items, item)
+				itemBytes = itemBytes + #itemJson + 1
+				searchStart = matchEnd + 1
+				if #items >= pageSize then
+					local furtherMatch = string.find(
+						haystack,
+						needle,
+						searchStart,
+						true
+					)
+					if furtherMatch ~= nil then
+						continuationCursor = scriptCursorForPosition(
+							root,
+							position,
+							querySha256,
+							"studio-script-grep-cursor-v1",
+							{ b = searchStart, h = sourceDigest }
+						)
+					else
+						local _, _, _, followingPosition =
+							nextTreeNode(frames, maxDepth)
+						if followingPosition ~= nil then
+							continuationCursor = scriptCursorForPosition(
+								root,
+								followingPosition,
+								querySha256,
+								"studio-script-grep-cursor-v1",
+								{ b = 1, h = "" }
+							)
+						end
+					end
+					if continuationCursor ~= "" then
+						truncationReason = "page_size"
+					end
+					stop = true
+					break
+				end
+			end
+		elseif firstNode and resumeSourceSha256 ~= "" then
+			adapterError(
+				"stale_script_source_cursor",
+				"Grep continuation no longer points to a place script",
+				false
+			)
+		end
+		firstNode = false
+		resumeByte = 1
+		resumeSourceSha256 = ""
+
+		if not stop and scannedInstances >= scanLimit then
+			local _, _, _, followingPosition =
+				nextTreeNode(frames, maxDepth)
+			if followingPosition ~= nil then
+				continuationCursor = scriptCursorForPosition(
+					root,
+					followingPosition,
+					querySha256,
+					"studio-script-grep-cursor-v1",
+					{ b = 1, h = "" }
+				)
+				truncationReason = "scan_limit"
+			end
+			break
+		end
+		if not stop
+			and scannedInstances % TREE_COOPERATIVE_YIELD_INTERVAL == 0
+		then
+			task.wait()
+			assertExpectedDocument()
+			requireEditMode()
+		end
+	end
+
+	assertExpectedDocument()
+	requireEditMode()
+	local result = newScriptResult("studio_grep_scripts", requestId)
+	result.root_path = copyPath(rootPath)
+	result.query = query
+	result.match_mode = "literal"
+	result.case_sensitive = caseSensitive
+	result.query_version = SCRIPT_GREP_QUERY_VERSION
+	result.sort_version = TREE_SORT_VERSION
+	result.max_depth = maxDepth
+	result.scan_limit = scanLimit
+	result.source_byte_limit = sourceByteLimit
+	result.page_size = pageSize
+	result.time_limit_ms = timeLimitMs
+	result.scanned_instances = scannedInstances
+	result.scanned_scripts = scannedScripts
+	result.source_bytes_scanned = sourceBytesScanned
+	result.returned = #items
+	result.items = items
+	result.truncated = continuationCursor ~= ""
+	result.has_more = continuationCursor ~= ""
+	result.continuation_cursor = continuationCursor
+	result.truncation_reason = truncationReason
+	result.output_limit_bytes = MAX_SCRIPT_GREP_OUTPUT_BYTES
+	assertBoundedScriptResult(result, MAX_SCRIPT_GREP_OUTPUT_BYTES)
+	return result
 end
 
 local function readScript(args)
@@ -1578,6 +2802,10 @@ local function dispatch(request)
 		return durableGetState()
 	elseif request.operation == "studio_list_tree" then
 		return listTree(request.args)
+	elseif request.operation == "studio_search_scripts" then
+		return searchScripts(request.args, request.request_id)
+	elseif request.operation == "studio_grep_scripts" then
+		return grepScripts(request.args, request.request_id)
 	elseif request.operation == "studio_read_script" then
 		return readScript(request.args)
 	elseif request.operation == "studio_update_script" then

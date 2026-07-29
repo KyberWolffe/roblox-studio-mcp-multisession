@@ -103,6 +103,604 @@
       }
     },
     {
+      "name": "studio_search_scripts",
+      "description": "Search script names with bounded literal ASCII-case-insensitive all-keyword matching beneath one exact Studio instance path. Results use deterministic pagination and an opaque continuation cursor fenced to the explicit session, document, generation, query, ordering, and continuation lineage.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "keywords": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[ -~]+$",
+            "description": "Printable-ASCII comma-separated literal keywords. The normalized query contains from one through eight non-empty keywords, each at most 64 bytes."
+          },
+          "root_path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 0,
+            "maxItems": 64,
+            "description": "Exact child-name segments from the DataModel root; an empty array means the DataModel."
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "time_limit_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10000
+          },
+          "continuation_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^[A-Za-z0-9+/]+={0,2}\\.[0-9a-f]{64}$",
+            "description": "Opaque cursor returned by a prior page for the same explicit session and exact query."
+          }
+        },
+        "required": [
+          "keywords"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "v": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation": {
+            "type": "string",
+            "const": "studio_search_scripts"
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "root_path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 0,
+            "maxItems": 64
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[ -~]+$"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "match_semantics": {
+            "type": "string",
+            "const": "all_keywords_ascii_case_insensitive_literal_subsequence"
+          },
+          "query_version": {
+            "type": "string",
+            "const": "script-name-query-v1"
+          },
+          "sort_version": {
+            "type": "string",
+            "const": "name-class-v1"
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "time_limit_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10000
+          },
+          "scanned_instances": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "scanned_scripts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "returned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "minItems": 1,
+                  "maxItems": 64
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "class_name": {
+                  "type": "string",
+                  "enum": [
+                    "Script",
+                    "LocalScript",
+                    "ModuleScript"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "name",
+                "class_name"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 10
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "continuation_cursor": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 2048
+          },
+          "truncation_reason": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "page_size",
+              "scan_limit",
+              "time_budget",
+              "output_bytes"
+            ]
+          },
+          "output_limit_bytes": {
+            "type": "integer",
+            "const": 200000
+          }
+        },
+        "required": [
+          "adapter",
+          "v",
+          "operation",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "request_id",
+          "root_path",
+          "keywords",
+          "match_semantics",
+          "query_version",
+          "sort_version",
+          "max_depth",
+          "scan_limit",
+          "page_size",
+          "time_limit_ms",
+          "scanned_instances",
+          "scanned_scripts",
+          "returned",
+          "items",
+          "truncated",
+          "has_more",
+          "continuation_cursor",
+          "truncation_reason",
+          "output_limit_bytes"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Search Studio Scripts",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_grep_scripts",
+      "description": "Search bounded script source bytes for one literal query beneath one exact Studio instance path. Results use deterministic pagination, bounded previews, revision hashes, and an opaque continuation cursor fenced to the explicit session, document, generation, query, ordering, and continuation lineage.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[ -~]+$",
+            "description": "Printable-ASCII literal source substring; Luau patterns and regular expressions are not accepted."
+          },
+          "root_path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 0,
+            "maxItems": 64,
+            "description": "Exact child-name segments from the DataModel root; an empty array means the DataModel."
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "case_sensitive": {
+            "type": "boolean"
+          },
+          "scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000
+          },
+          "source_byte_limit": {
+            "type": "integer",
+            "minimum": 262144,
+            "maximum": 4194304
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "time_limit_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10000
+          },
+          "continuation_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^[A-Za-z0-9+/]+={0,2}\\.[0-9a-f]{64}$",
+            "description": "Opaque cursor returned by a prior page for the same explicit session and exact query."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "v": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation": {
+            "type": "string",
+            "const": "studio_grep_scripts"
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "root_path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 0,
+            "maxItems": 64
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[ -~]+$"
+          },
+          "match_mode": {
+            "type": "string",
+            "const": "literal"
+          },
+          "case_sensitive": {
+            "type": "boolean"
+          },
+          "query_version": {
+            "type": "string",
+            "const": "script-grep-query-v1"
+          },
+          "sort_version": {
+            "type": "string",
+            "const": "name-class-v1"
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000
+          },
+          "source_byte_limit": {
+            "type": "integer",
+            "minimum": 262144,
+            "maximum": 4194304
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "time_limit_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10000
+          },
+          "scanned_instances": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "scanned_scripts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "source_bytes_scanned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4194304
+          },
+          "returned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "minItems": 1,
+                  "maxItems": 64
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "class_name": {
+                  "type": "string",
+                  "enum": [
+                    "Script",
+                    "LocalScript",
+                    "ModuleScript"
+                  ]
+                },
+                "source_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "source_length": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 262144
+                },
+                "match_start_byte": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "match_end_byte": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "line_number": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "column_byte": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "preview_start_byte": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "preview": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "preview_prefix_truncated": {
+                  "type": "boolean"
+                },
+                "preview_suffix_truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "name",
+                "class_name",
+                "source_sha256",
+                "source_length",
+                "match_start_byte",
+                "match_end_byte",
+                "line_number",
+                "column_byte",
+                "preview_start_byte",
+                "preview",
+                "preview_prefix_truncated",
+                "preview_suffix_truncated"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 50
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "continuation_cursor": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 2048
+          },
+          "truncation_reason": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "page_size",
+              "scan_limit",
+              "source_bytes",
+              "time_budget",
+              "output_bytes"
+            ]
+          },
+          "output_limit_bytes": {
+            "type": "integer",
+            "const": 500000
+          }
+        },
+        "required": [
+          "adapter",
+          "v",
+          "operation",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "request_id",
+          "root_path",
+          "query",
+          "match_mode",
+          "case_sensitive",
+          "query_version",
+          "sort_version",
+          "max_depth",
+          "scan_limit",
+          "source_byte_limit",
+          "page_size",
+          "time_limit_ms",
+          "scanned_instances",
+          "scanned_scripts",
+          "source_bytes_scanned",
+          "returned",
+          "items",
+          "truncated",
+          "has_more",
+          "continuation_cursor",
+          "truncation_reason",
+          "output_limit_bytes"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Grep Studio Scripts",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "studio_read_script",
       "description": "Read bounded editor source and its SHA-256 revision from one exact LuaSourceContainer path.",
       "inputSchema": {

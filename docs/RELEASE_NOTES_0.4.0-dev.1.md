@@ -13,9 +13,11 @@ does not claim full parity, does not auto-enable newly discovered upstream
 tools, and never introduces active/default Studio routing or a silent v1
 fallback.
 
-No release artifacts or GitHub publication are authorized for this development
-version. Any future installable candidate requires the full release, security,
-reproducibility, rollback, and explicit live-acceptance gates.
+Local candidate artifacts may be staged and proved only in isolated disposable
+homes. No live installation or GitHub publication is authorized for this
+development version. Any future installable candidate requires the full
+release, security, reproducibility, rollback, and explicit live-acceptance
+gates.
 
 Current development slice:
 
@@ -27,3 +29,21 @@ Current development slice:
   PlayServer bridge as a general Server/Client channel; and
 - host-side identity, generation, and closed-context validation before a
   connected durable state result can affect cached session mode.
+
+Current script-discovery slice:
+
+- explicit-session `studio_search_scripts` with deterministic exact-path
+  traversal, bounded all-keyword literal-subsequence matching, cooperative
+  work limits, and an integrity-protected continuation cursor;
+- Edit-only `studio_grep_scripts` with literal cross-script matching,
+  source-byte and output budgets, UTF-8-safe previews, and mid-script cursors
+  fenced to the exact source SHA-256;
+- exact output contracts and host-side result validation for both operations,
+  so malformed or cross-session authenticated responses fail closed before
+  reaching callers or retained jobs; and
+- review-driven hardening for bounded exact-root resolution, deterministic
+  result order, non-overlapping match offsets, coherent single-line preview
+  metadata, and non-finite catalog JSON rejection; and
+- honest partial parity: upstream fuzzy ranking and Luau-pattern behavior
+  remain unclaimed because the official catalog does not specify a complete
+  behavioral or output contract.

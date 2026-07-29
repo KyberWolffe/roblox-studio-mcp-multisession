@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import copy
+import json
+import re
 import time
+import unicodedata
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -104,6 +109,103 @@ _DURABLE_PLAY_FAILURE_CODES = frozenset(
         "bridge_already_ended",
     }
 )
+
+_DURABLE_SCRIPT_ADAPTER = "studio-mcp-v2-durable-plugin"
+_DURABLE_SCRIPT_CLASSES = frozenset(
+    {"Script", "LocalScript", "ModuleScript"}
+)
+_DURABLE_SCRIPT_COMMON_RESULT_KEYS = frozenset(
+    {
+        "adapter",
+        "v",
+        "operation",
+        "studio_id",
+        "client_instance_id",
+        "document_epoch",
+        "generation",
+        "request_id",
+        "root_path",
+        "sort_version",
+        "max_depth",
+        "scan_limit",
+        "page_size",
+        "time_limit_ms",
+        "items",
+        "returned",
+        "scanned_instances",
+        "scanned_scripts",
+        "truncated",
+        "has_more",
+        "continuation_cursor",
+        "truncation_reason",
+        "output_limit_bytes",
+    }
+)
+_DURABLE_SCRIPT_SEARCH_RESULT_KEYS = (
+    _DURABLE_SCRIPT_COMMON_RESULT_KEYS
+    | frozenset({"keywords", "match_semantics", "query_version"})
+)
+_DURABLE_SCRIPT_GREP_RESULT_KEYS = (
+    _DURABLE_SCRIPT_COMMON_RESULT_KEYS
+    | frozenset(
+        {
+            "query",
+            "match_mode",
+            "case_sensitive",
+            "query_version",
+            "source_byte_limit",
+            "source_bytes_scanned",
+        }
+    )
+)
+_DURABLE_SCRIPT_SEARCH_ITEM_KEYS = frozenset(
+    {"path", "name", "class_name"}
+)
+_DURABLE_SCRIPT_GREP_ITEM_KEYS = frozenset(
+    {
+        "path",
+        "name",
+        "class_name",
+        "source_sha256",
+        "source_length",
+        "match_start_byte",
+        "match_end_byte",
+        "line_number",
+        "column_byte",
+        "preview_start_byte",
+        "preview",
+        "preview_prefix_truncated",
+        "preview_suffix_truncated",
+    }
+)
+_DURABLE_SCRIPT_SEARCH_ARGUMENT_KEYS = frozenset(
+    {
+        "keywords",
+        "root_path",
+        "max_depth",
+        "scan_limit",
+        "page_size",
+        "time_limit_ms",
+        "continuation_cursor",
+    }
+)
+_DURABLE_SCRIPT_GREP_ARGUMENT_KEYS = frozenset(
+    {
+        "query",
+        "root_path",
+        "max_depth",
+        "case_sensitive",
+        "scan_limit",
+        "source_byte_limit",
+        "page_size",
+        "time_limit_ms",
+        "continuation_cursor",
+    }
+)
+_DURABLE_SCRIPT_CURSOR_RE = re.compile(
+    r"^([A-Za-z0-9+/]+={0,2})\.([0-9a-f]{64})$"
+)
+_DURABLE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class LongPollTransport:
@@ -525,6 +627,623 @@ class StudioSession:
             return False
 
     @staticmethod
+    def _bounded_integer(
+        value: Any, minimum: int, maximum: int
+    ) -> bool:
+        return (
+            type(value) is int
+            and minimum <= value <= maximum
+        )
+
+    @staticmethod
+    def _printable_ascii_script_text(value: Any) -> bool:
+        return (
+            type(value) is str
+            and 1 <= len(value) <= 256
+            and value.isascii()
+            and all(32 <= ord(character) <= 126 for character in value)
+        )
+
+    @staticmethod
+    def _ascii_fold_bytes(value: bytes) -> bytes:
+        return value.translate(
+            bytes.maketrans(
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                b"abcdefghijklmnopqrstuvwxyz",
+            )
+        )
+
+    @staticmethod
+    def _ordered_byte_subsequence(
+        needle: bytes, haystack: bytes
+    ) -> bool:
+        position = 0
+        for byte in needle:
+            position = haystack.find(bytes((byte,)), position)
+            if position < 0:
+                return False
+            position += 1
+        return True
+
+    @staticmethod
+    def _valid_script_cursor(
+        value: Any, *, allow_empty: bool
+    ) -> bool:
+        if type(value) is not str:
+            return False
+        if value == "":
+            return allow_empty
+        if len(value) > 2_048:
+            return False
+        matched = _DURABLE_SCRIPT_CURSOR_RE.fullmatch(value)
+        if matched is None:
+            return False
+        encoded = matched.group(1)
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return False
+        return (
+            bool(decoded)
+            and base64.b64encode(decoded).decode("ascii") == encoded
+        )
+
+    @staticmethod
+    def _normalized_script_path(
+        value: Any, *, allow_empty: bool
+    ) -> Optional[tuple[str, ...]]:
+        if (
+            type(value) is not list
+            or (not allow_empty and not value)
+            or len(value) > 64
+        ):
+            return None
+        normalized = []
+        for segment in value:
+            if type(segment) is not str:
+                return None
+            try:
+                encoded = segment.encode("utf-8")
+            except UnicodeEncodeError:
+                return None
+            if (
+                not 1 <= len(encoded) <= 100
+                or any(
+                    unicodedata.category(character) == "Cc"
+                    for character in segment
+                )
+            ):
+                return None
+            normalized.append(segment)
+        return tuple(normalized)
+
+    def _normalized_script_request(
+        self, remote_tool: str, arguments: Any
+    ) -> Optional[Dict[str, Any]]:
+        if type(arguments) is not dict:
+            return None
+        if remote_tool == "studio_search_scripts":
+            allowed_keys = _DURABLE_SCRIPT_SEARCH_ARGUMENT_KEYS
+        elif remote_tool == "studio_grep_scripts":
+            allowed_keys = _DURABLE_SCRIPT_GREP_ARGUMENT_KEYS
+        else:
+            return None
+        if not frozenset(arguments).issubset(allowed_keys):
+            return None
+
+        root_path = self._normalized_script_path(
+            arguments.get("root_path", []),
+            allow_empty=True,
+        )
+        if root_path is None:
+            return None
+        max_depth = arguments.get("max_depth", 64 - len(root_path))
+        scan_limit = arguments.get("scan_limit", 2_000)
+        time_limit_ms = arguments.get(
+            "time_limit_ms",
+            3_000
+            if remote_tool == "studio_search_scripts"
+            else 5_000,
+        )
+        maximum_page_size = (
+            10 if remote_tool == "studio_search_scripts" else 50
+        )
+        page_size = arguments.get("page_size", maximum_page_size)
+        if (
+            not self._bounded_integer(max_depth, 0, 64)
+            or len(root_path) + max_depth > 64
+            or not self._bounded_integer(scan_limit, 1, 5_000)
+            or not self._bounded_integer(
+                page_size, 1, maximum_page_size
+            )
+            or not self._bounded_integer(time_limit_ms, 100, 10_000)
+        ):
+            return None
+        if "continuation_cursor" in arguments and not (
+            self._valid_script_cursor(
+                arguments["continuation_cursor"],
+                allow_empty=False,
+            )
+        ):
+            return None
+
+        normalized: Dict[str, Any] = {
+            "root_path": root_path,
+            "max_depth": max_depth,
+            "scan_limit": scan_limit,
+            "page_size": page_size,
+            "time_limit_ms": time_limit_ms,
+        }
+        if remote_tool == "studio_search_scripts":
+            raw_keywords = arguments.get("keywords")
+            if not self._printable_ascii_script_text(raw_keywords):
+                return None
+            keywords = []
+            seen = set()
+            for raw_token in raw_keywords.split(","):
+                token = raw_token.strip(" ")
+                if not 1 <= len(token.encode("ascii")) <= 64:
+                    return None
+                folded = token.lower()
+                if folded in seen:
+                    return None
+                seen.add(folded)
+                keywords.append(folded)
+            if not 1 <= len(keywords) <= 8:
+                return None
+            normalized["keywords"] = keywords
+            return normalized
+
+        query = arguments.get("query")
+        if not self._printable_ascii_script_text(query):
+            return None
+        case_sensitive = arguments.get("case_sensitive", True)
+        source_byte_limit = arguments.get(
+            "source_byte_limit", 1_048_576
+        )
+        if (
+            type(case_sensitive) is not bool
+            or not self._bounded_integer(
+                source_byte_limit, 262_144, 4_194_304
+            )
+        ):
+            return None
+        normalized.update(
+            {
+                "query": query,
+                "case_sensitive": case_sensitive,
+                "source_byte_limit": source_byte_limit,
+            }
+        )
+        return normalized
+
+    def _valid_script_common_result(
+        self,
+        pending: PendingRequest,
+        result: Any,
+        expected: Dict[str, Any],
+        *,
+        exact_keys: frozenset[str],
+        maximum_page_size: int,
+        output_limit_bytes: int,
+        reasons: frozenset[str],
+    ) -> bool:
+        if (
+            type(result) is not dict
+            or frozenset(result) != exact_keys
+            or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
+            or type(result.get("v")) is not int
+            or result.get("v") != 1
+            or result.get("operation") != pending.remote_tool
+            or result.get("studio_id") != self.studio_id
+            or result.get("client_instance_id")
+            != self.client_instance_id
+            or result.get("document_epoch") != self.document_epoch
+            or type(result.get("generation")) is not int
+            or result.get("generation") != pending.generation
+            or result.get("generation") != self.generation
+            or result.get("request_id") != pending.request_id
+            or result.get("sort_version") != "name-class-v1"
+            or result.get("output_limit_bytes")
+            != output_limit_bytes
+        ):
+            return False
+
+        root_path = self._normalized_script_path(
+            result.get("root_path"), allow_empty=True
+        )
+        if (
+            root_path is None
+            or root_path != expected["root_path"]
+            or result.get("max_depth") != expected["max_depth"]
+            or type(result.get("max_depth")) is not int
+            or result.get("scan_limit") != expected["scan_limit"]
+            or type(result.get("scan_limit")) is not int
+            or result.get("page_size") != expected["page_size"]
+            or type(result.get("page_size")) is not int
+            or not 1 <= result["page_size"] <= maximum_page_size
+            or result.get("time_limit_ms") != expected["time_limit_ms"]
+            or type(result.get("time_limit_ms")) is not int
+        ):
+            return False
+
+        scanned_instances = result.get("scanned_instances")
+        scanned_scripts = result.get("scanned_scripts")
+        returned = result.get("returned")
+        items = result.get("items")
+        if (
+            not self._bounded_integer(
+                scanned_instances, 0, expected["scan_limit"]
+            )
+            or not self._bounded_integer(
+                scanned_scripts, 0, scanned_instances
+            )
+            or not self._bounded_integer(
+                returned, 0, expected["page_size"]
+            )
+            or type(items) is not list
+            or len(items) != returned
+        ):
+            return False
+
+        cursor = result.get("continuation_cursor")
+        if not self._valid_script_cursor(cursor, allow_empty=True):
+            return False
+        reason = result.get("truncation_reason")
+        if type(reason) is not str or reason not in reasons:
+            return False
+        has_cursor = cursor != ""
+        if (
+            (reason == "complete") == has_cursor
+            or result.get("truncated") is not has_cursor
+            or result.get("has_more") is not has_cursor
+            or (reason == "page_size"
+                and returned != expected["page_size"])
+            or (reason == "scan_limit"
+                and scanned_instances != expected["scan_limit"])
+        ):
+            return False
+
+        try:
+            encoded = json.dumps(
+                result,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (
+            TypeError,
+            ValueError,
+            UnicodeEncodeError,
+            RecursionError,
+        ):
+            return False
+        return len(encoded) <= output_limit_bytes
+
+    def _valid_script_item_identity(
+        self,
+        item: Any,
+        *,
+        exact_keys: frozenset[str],
+        root_path: tuple[str, ...],
+        max_depth: int,
+    ) -> Optional[tuple[str, ...]]:
+        if type(item) is not dict or frozenset(item) != exact_keys:
+            return None
+        path = self._normalized_script_path(
+            item.get("path"), allow_empty=False
+        )
+        if (
+            path is None
+            or path[: len(root_path)] != root_path
+            or len(path) > len(root_path) + max_depth
+            or item.get("name") != path[-1]
+            or item.get("class_name") not in _DURABLE_SCRIPT_CLASSES
+        ):
+            return None
+        return path
+
+    def _valid_script_search_result(
+        self,
+        pending: PendingRequest,
+        result: Any,
+        expected: Dict[str, Any],
+    ) -> bool:
+        if not self._valid_script_common_result(
+            pending,
+            result,
+            expected,
+            exact_keys=_DURABLE_SCRIPT_SEARCH_RESULT_KEYS,
+            maximum_page_size=10,
+            output_limit_bytes=200_000,
+            reasons=frozenset(
+                {
+                    "complete",
+                    "page_size",
+                    "scan_limit",
+                    "time_budget",
+                    "output_bytes",
+                }
+            ),
+        ):
+            return False
+        if (
+            result.get("keywords") != expected["keywords"]
+            or type(result.get("keywords")) is not list
+            or result.get("match_semantics")
+            != (
+                "all_keywords_ascii_case_insensitive_"
+                "literal_subsequence"
+            )
+            or result.get("query_version")
+            != "script-name-query-v1"
+            or result["returned"] > result["scanned_scripts"]
+        ):
+            return False
+
+        paths = set()
+        previous_path: Optional[tuple[str, ...]] = None
+        keyword_bytes = [
+            keyword.encode("ascii") for keyword in expected["keywords"]
+        ]
+        for item in result["items"]:
+            path = self._valid_script_item_identity(
+                item,
+                exact_keys=_DURABLE_SCRIPT_SEARCH_ITEM_KEYS,
+                root_path=expected["root_path"],
+                max_depth=expected["max_depth"],
+            )
+            if (
+                path is None
+                or path in paths
+                or (
+                    previous_path is not None
+                    and path <= previous_path
+                )
+            ):
+                return False
+            paths.add(path)
+            previous_path = path
+            try:
+                folded_name = self._ascii_fold_bytes(
+                    item["name"].encode("utf-8")
+                )
+            except UnicodeEncodeError:
+                return False
+            if any(
+                not self._ordered_byte_subsequence(
+                    keyword, folded_name
+                )
+                for keyword in keyword_bytes
+            ):
+                return False
+        return True
+
+    def _valid_script_grep_result(
+        self,
+        pending: PendingRequest,
+        result: Any,
+        expected: Dict[str, Any],
+    ) -> bool:
+        if not self._valid_script_common_result(
+            pending,
+            result,
+            expected,
+            exact_keys=_DURABLE_SCRIPT_GREP_RESULT_KEYS,
+            maximum_page_size=50,
+            output_limit_bytes=500_000,
+            reasons=frozenset(
+                {
+                    "complete",
+                    "page_size",
+                    "scan_limit",
+                    "source_bytes",
+                    "time_budget",
+                    "output_bytes",
+                }
+            ),
+        ):
+            return False
+        source_bytes_scanned = result.get("source_bytes_scanned")
+        if (
+            result.get("query") != expected["query"]
+            or result.get("match_mode") != "literal"
+            or result.get("case_sensitive")
+            is not expected["case_sensitive"]
+            or result.get("query_version")
+            != "script-grep-query-v1"
+            or result.get("source_byte_limit")
+            != expected["source_byte_limit"]
+            or type(result.get("source_byte_limit")) is not int
+            or not self._bounded_integer(
+                source_bytes_scanned,
+                0,
+                expected["source_byte_limit"],
+            )
+        ):
+            return False
+
+        query_bytes = expected["query"].encode("ascii")
+        folded_query = self._ascii_fold_bytes(query_bytes)
+        seen_matches = set()
+        closed_paths = set()
+        current_path: Optional[tuple[str, ...]] = None
+        current_revision: Optional[tuple[Any, ...]] = None
+        previous_path: Optional[tuple[str, ...]] = None
+        previous_end = 0
+        previous_line_number = 0
+        previous_column_byte = 0
+        previous_line_start = 0
+        matched_script_count = 0
+        matched_source_bytes = 0
+
+        for item in result["items"]:
+            path = self._valid_script_item_identity(
+                item,
+                exact_keys=_DURABLE_SCRIPT_GREP_ITEM_KEYS,
+                root_path=expected["root_path"],
+                max_depth=expected["max_depth"],
+            )
+            if path is None:
+                return False
+            source_sha256 = item.get("source_sha256")
+            source_length = item.get("source_length")
+            match_start = item.get("match_start_byte")
+            match_end = item.get("match_end_byte")
+            line_number = item.get("line_number")
+            column_byte = item.get("column_byte")
+            preview_start = item.get("preview_start_byte")
+            preview = item.get("preview")
+            if (
+                type(source_sha256) is not str
+                or _DURABLE_SHA256_RE.fullmatch(source_sha256) is None
+                or not self._bounded_integer(
+                    source_length, 0, 262_144
+                )
+                or not self._bounded_integer(
+                    match_start, 1, source_length
+                )
+                or not self._bounded_integer(
+                    match_end, match_start, source_length
+                )
+                or match_end - match_start + 1 != len(query_bytes)
+                or not self._bounded_integer(
+                    line_number, 1, 20_000
+                )
+                or type(column_byte) is not int
+                or column_byte < 1
+                or column_byte > source_length
+                or not self._bounded_integer(
+                    preview_start, 1, source_length
+                )
+                or type(preview) is not str
+                or type(item.get("preview_prefix_truncated"))
+                is not bool
+                or type(item.get("preview_suffix_truncated"))
+                is not bool
+            ):
+                return False
+            try:
+                preview_bytes = preview.encode("utf-8")
+            except UnicodeEncodeError:
+                return False
+            preview_end = preview_start + len(preview_bytes) - 1
+            match_offset = match_start - preview_start
+            line_start = match_start - column_byte + 1
+            room_before = (512 - len(query_bytes)) // 2
+            nominal_preview_start = max(
+                line_start, match_start - room_before
+            )
+            if (
+                not 1 <= len(preview_bytes) <= 512
+                or b"\n" in preview_bytes
+                or line_start < 1
+                or preview_start > match_start
+                or preview_start < line_start
+                or preview_start > nominal_preview_start
+                or nominal_preview_start - preview_start > 3
+                or preview_end > source_length
+                or match_offset + len(query_bytes)
+                > len(preview_bytes)
+                or item["preview_prefix_truncated"]
+                is not (preview_start > line_start)
+                or (
+                    preview_end == source_length
+                    and item["preview_suffix_truncated"]
+                )
+                or (
+                    item["preview_suffix_truncated"]
+                    and not 509 <= len(preview_bytes) <= 512
+                )
+                or (line_start == 1) is not (line_number == 1)
+            ):
+                return False
+            observed_match = preview_bytes[
+                match_offset : match_offset + len(query_bytes)
+            ]
+            if expected["case_sensitive"]:
+                if observed_match != query_bytes:
+                    return False
+            elif self._ascii_fold_bytes(observed_match) != folded_query:
+                return False
+
+            revision = (
+                source_sha256,
+                source_length,
+                item["name"],
+                item["class_name"],
+            )
+            if path != current_path:
+                if path in closed_paths:
+                    return False
+                if (
+                    previous_path is not None
+                    and path <= previous_path
+                ):
+                    return False
+                if current_path is not None:
+                    closed_paths.add(current_path)
+                current_path = path
+                previous_path = path
+                current_revision = revision
+                previous_end = 0
+                previous_line_number = 0
+                previous_column_byte = 0
+                previous_line_start = 0
+                matched_script_count += 1
+                matched_source_bytes += source_length
+            elif revision != current_revision:
+                return False
+            if (
+                match_start <= previous_end
+                or line_number < previous_line_number
+                or (
+                    line_number == previous_line_number
+                    and (
+                        column_byte <= previous_column_byte
+                        or line_start != previous_line_start
+                    )
+                )
+                or (
+                    previous_line_number > 0
+                    and line_number > previous_line_number
+                    and line_start <= previous_end
+                )
+            ):
+                return False
+            previous_end = match_end
+            previous_line_number = line_number
+            previous_column_byte = column_byte
+            previous_line_start = line_start
+            match_identity = (path, source_sha256, match_start)
+            if match_identity in seen_matches:
+                return False
+            seen_matches.add(match_identity)
+        return (
+            matched_script_count <= result["scanned_scripts"]
+            and matched_source_bytes <= source_bytes_scanned
+        )
+
+    def _valid_durable_script_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        expected = self._normalized_script_request(
+            pending.remote_tool, pending.arguments
+        )
+        if expected is None:
+            return False
+        if pending.remote_tool == "studio_search_scripts":
+            return self._valid_script_search_result(
+                pending, result, expected
+            )
+        if pending.remote_tool == "studio_grep_scripts":
+            return self._valid_script_grep_result(
+                pending, result, expected
+            )
+        return False
+
+    @staticmethod
     def _controller_mode_from_predicates(
         predicates: Dict[str, Dict[str, Any]]
     ) -> str:
@@ -787,6 +1506,20 @@ class StudioSession:
                 pending.future.set_exception(
                     RemoteToolError(
                         "Targeted Studio returned an invalid state response"
+                    )
+                )
+                return True
+            if (
+                pending.remote_tool
+                in {"studio_search_scripts", "studio_grep_scripts"}
+                and not self._valid_durable_script_result(
+                    pending, result
+                )
+            ):
+                pending.future.set_exception(
+                    RemoteToolError(
+                        "Targeted Studio returned an invalid script "
+                        "query response"
                     )
                 )
                 return True

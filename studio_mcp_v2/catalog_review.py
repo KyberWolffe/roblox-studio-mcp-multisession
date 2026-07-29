@@ -41,6 +41,8 @@ INSTALLED_V1_CACHE_PARTS = (
 FAMILY_TO_DURABLE_HANDLER = {
     "state_read": "studio_get_state",
     "tree_read": "studio_list_tree",
+    "script_name_search": "studio_search_scripts",
+    "script_content_search": "studio_grep_scripts",
     "script_read": "studio_read_script",
     "script_update": "studio_update_script",
     "attribute_update": "studio_set_attribute",
@@ -62,6 +64,30 @@ FAMILY_ALLOWED_ARGUMENTS = {
             "class_is_a",
             "scan_limit",
             "page_size",
+            "continuation_cursor",
+        }
+    ),
+    "script_name_search": frozenset(
+        {
+            "keywords",
+            "root_path",
+            "max_depth",
+            "scan_limit",
+            "page_size",
+            "time_limit_ms",
+            "continuation_cursor",
+        }
+    ),
+    "script_content_search": frozenset(
+        {
+            "query",
+            "root_path",
+            "max_depth",
+            "case_sensitive",
+            "scan_limit",
+            "source_byte_limit",
+            "page_size",
+            "time_limit_ms",
             "continuation_cursor",
         }
     ),
@@ -100,6 +126,7 @@ class CompatibilityManifest:
     durable_catalog_version: str
     schema_policy: str
     durable_handler_schema_sha256: Mapping[str, str]
+    durable_handler_output_schema_sha256: Mapping[str, str]
     mappings: Mapping[str, CompatibilityMapping]
 
 
@@ -148,17 +175,35 @@ class CatalogReview:
 
 
 def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _validate_schema(schema: Any, tool_name: str) -> Dict[str, Any]:
+def _reject_json_constant(value: str) -> None:
+    raise ValueError("Non-finite JSON number is forbidden: " + value)
+
+
+def _validate_schema(
+    schema: Any,
+    tool_name: str,
+    *,
+    schema_name: str = "inputSchema",
+) -> Dict[str, Any]:
     if not isinstance(schema, dict) or schema.get("type") != "object":
         raise ValidationError(
-            "Tool " + tool_name + " inputSchema must be an object schema"
+            "Tool "
+            + tool_name
+            + " "
+            + schema_name
+            + " must be an object schema"
         )
     properties = schema.get("properties", {})
     required = schema.get("required", [])
@@ -171,7 +216,11 @@ def _validate_schema(schema: Any, tool_name: str) -> Dict[str, Any]:
         )
     ):
         raise ValidationError(
-            "Tool " + tool_name + " schema properties are invalid"
+            "Tool "
+            + tool_name
+            + " "
+            + schema_name
+            + " schema properties are invalid"
         )
     if (
         not isinstance(required, list)
@@ -181,14 +230,22 @@ def _validate_schema(schema: Any, tool_name: str) -> Dict[str, Any]:
         or any(item not in properties for item in required)
     ):
         raise ValidationError(
-            "Tool " + tool_name + " schema required list is invalid"
+            "Tool "
+            + tool_name
+            + " "
+            + schema_name
+            + " schema required list is invalid"
         )
     # A canonicalization pass also rejects values JSON cannot represent.
     try:
         _canonical(schema)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValidationError(
-            "Tool " + tool_name + " schema is not bounded JSON"
+            "Tool "
+            + tool_name
+            + " "
+            + schema_name
+            + " schema is not bounded JSON"
         ) from exc
     return schema
 
@@ -199,6 +256,12 @@ def validate_catalog_payload(payload: Any) -> Dict[str, Any]:
     tools = payload.get("tools")
     if not isinstance(tools, list) or len(tools) > MAX_TOOLS:
         raise ValidationError("Catalog tools must be a bounded array")
+    try:
+        _canonical(payload)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValidationError(
+            "Catalog payload contains non-JSON data"
+        ) from exc
     seen = set()
     validated_tools: List[Dict[str, Any]] = []
     for raw in tools:
@@ -213,6 +276,12 @@ def validate_catalog_payload(payload: Any) -> Dict[str, Any]:
             raise ValidationError("Catalog tool name is invalid or duplicated")
         seen.add(name)
         _validate_schema(raw.get("inputSchema"), name)
+        if "outputSchema" in raw:
+            _validate_schema(
+                raw.get("outputSchema"),
+                name,
+                schema_name="outputSchema",
+            )
         family = raw.get("x_studio_mcp_v2_family")
         if family is not None and not isinstance(family, str):
             raise ValidationError(
@@ -226,6 +295,12 @@ def validate_catalog_payload(payload: Any) -> Dict[str, Any]:
             raise ValidationError(
                 "Tool " + name + " renamed-from value is invalid"
             )
+        try:
+            _canonical(raw)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ValidationError(
+                "Tool " + name + " contains non-JSON data"
+            ) from exc
         validated_tools.append(copy.deepcopy(raw))
     result = copy.deepcopy(payload)
     result["tools"] = validated_tools
@@ -240,8 +315,16 @@ def load_catalog(path: Path) -> Tuple[Dict[str, Any], bytes]:
     if not data or len(data) > MAX_CATALOG_BYTES:
         raise ValidationError("Catalog file is empty or exceeds the size bound")
     try:
-        payload = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(
+            data.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        RecursionError,
+    ) as exc:
         raise ValidationError("Catalog file must be valid UTF-8 JSON") from exc
     return validate_catalog_payload(payload), data
 
@@ -258,8 +341,16 @@ def load_compatibility_manifest(path: Path) -> CompatibilityManifest:
             "Compatibility manifest is empty or exceeds the size bound"
         )
     try:
-        payload = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(
+            data.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        RecursionError,
+    ) as exc:
         raise ValidationError(
             "Compatibility manifest must be valid UTF-8 JSON"
         ) from exc
@@ -272,17 +363,21 @@ def load_compatibility_manifest(path: Path) -> CompatibilityManifest:
             "durable_catalog_version",
             "schema_policy",
             "durable_handler_schema_sha256",
+            "durable_handler_output_schema_sha256",
             "mappings",
         }
         or payload.get("format")
         != "studio-mcp-v2-upstream-compatibility-map"
-        or not isinstance(payload.get("manifest_version"), str)
+        or payload.get("manifest_version") != "3"
         or not isinstance(payload.get("durable_catalog_version"), str)
-        or payload.get("schema_policy") != "exact_handler_schema"
+        or payload.get("schema_policy") != "exact_handler_contract"
         or not isinstance(payload.get("mappings"), list)
     ):
         raise ValidationError("Compatibility manifest header is invalid")
     schema_digests = payload["durable_handler_schema_sha256"]
+    output_schema_digests = payload[
+        "durable_handler_output_schema_sha256"
+    ]
     expected_handlers = frozenset(FAMILY_TO_DURABLE_HANDLER.values())
     if (
         not isinstance(schema_digests, dict)
@@ -297,6 +392,21 @@ def load_compatibility_manifest(path: Path) -> CompatibilityManifest:
         raise ValidationError(
             "Compatibility manifest must pin every durable handler schema "
             "to one exact lowercase SHA-256"
+        )
+    if (
+        not isinstance(output_schema_digests, dict)
+        or frozenset(output_schema_digests) != expected_handlers
+        or any(
+            not isinstance(handler, str)
+            or not isinstance(digest, str)
+            or SHA256.fullmatch(digest) is None
+            for handler, digest in output_schema_digests.items()
+        )
+    ):
+        raise ValidationError(
+            "Compatibility manifest must pin every durable handler output "
+            "schema, including explicit absence, to one exact lowercase "
+            "SHA-256"
         )
     mappings: Dict[str, CompatibilityMapping] = {}
     for raw in payload["mappings"]:
@@ -331,6 +441,9 @@ def load_compatibility_manifest(path: Path) -> CompatibilityManifest:
         durable_catalog_version=payload["durable_catalog_version"],
         schema_policy=payload["schema_policy"],
         durable_handler_schema_sha256=dict(schema_digests),
+        durable_handler_output_schema_sha256=dict(
+            output_schema_digests
+        ),
         mappings=mappings,
     )
 
@@ -436,6 +549,9 @@ def audit_installed_v1_cache(
             "added": counts.get("new", 0),
             "renamed": counts.get("renamed", 0),
             "schema_changed": counts.get("schema_changed", 0),
+            "output_schema_changed": counts.get(
+                "output_schema_changed", 0
+            ),
             "metadata_changed": counts.get("metadata_changed", 0),
         },
         "fail_closed": review.fail_closed,
@@ -451,6 +567,12 @@ def audit_installed_v1_cache(
 
 def _tool_map(payload: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {tool["name"]: tool for tool in payload["tools"]}
+
+
+def _output_contract(tool: Mapping[str, Any]) -> Any:
+    """Return the reviewed output shape, using JSON null for explicit absence."""
+
+    return tool["outputSchema"] if "outputSchema" in tool else None
 
 
 def _family_compatibility(
@@ -480,6 +602,10 @@ def _family_compatibility(
         durable["inputSchema"]
     ):
         return family, handler, "incompatible_schema"
+    if _canonical(_output_contract(tool)) != _canonical(
+        _output_contract(durable)
+    ):
+        return family, handler, "incompatible_output_schema"
     return family, handler, "compatible_candidate"
 
 
@@ -562,7 +688,11 @@ def review_catalogs(
     for name in sorted(old_names & new_names):
         old_schema = _canonical(old[name]["inputSchema"])
         new_schema = _canonical(new[name]["inputSchema"])
-        if old_schema != new_schema:
+        old_output_schema = _canonical(_output_contract(old[name]))
+        new_output_schema = _canonical(_output_contract(new[name]))
+        schema_changed = old_schema != new_schema
+        output_schema_changed = old_output_schema != new_output_schema
+        if schema_changed:
             family, handler, compatibility = _family_compatibility(
                 new[name],
                 compatibility_manifest,
@@ -577,16 +707,31 @@ def review_catalogs(
                     compatibility=compatibility,
                 )
             )
+        elif output_schema_changed:
+            family, handler, compatibility = _family_compatibility(
+                new[name],
+                compatibility_manifest,
+                durable_tools,
+            )
+            changes.append(
+                CatalogChange(
+                    "output_schema_changed",
+                    name,
+                    family=family,
+                    durable_handler=handler,
+                    compatibility=compatibility,
+                )
+            )
         else:
             old_metadata = {
                 key: value
                 for key, value in old[name].items()
-                if key not in {"inputSchema"}
+                if key not in {"inputSchema", "outputSchema"}
             }
             new_metadata = {
                 key: value
                 for key, value in new[name].items()
-                if key not in {"inputSchema"}
+                if key not in {"inputSchema", "outputSchema"}
             }
             if _canonical(old_metadata) != _canonical(new_metadata):
                 changes.append(
@@ -606,6 +751,7 @@ def review_catalogs(
     blocking = {
         "unknown_family",
         "incompatible_schema",
+        "incompatible_output_schema",
         "invalid_rename_claim",
     }
     fail_closed = any(
@@ -677,6 +823,20 @@ def validate_durable_contract(
                 + handler
                 + " input schema does not match its reviewed SHA-256"
             )
+        output_schema = _output_contract(durable_tools[handler])
+        actual_output_schema_sha256 = _sha256(
+            _canonical(output_schema).encode("utf-8")
+        )
+        if (
+            compatibility_manifest
+            .durable_handler_output_schema_sha256.get(handler)
+            != actual_output_schema_sha256
+        ):
+            raise ValidationError(
+                "Generated durable "
+                + handler
+                + " output schema does not match its reviewed SHA-256"
+            )
     handler_path = Path(handler_source_path)
     if handler_path.is_symlink() or not handler_path.is_file():
         raise ValidationError(
@@ -737,7 +897,11 @@ def validate_durable_contract(
         "all_operations_require_studio_id": True,
         "handler_allowlist_unchanged": True,
         "closed_handler_schemas": True,
+        "closed_handler_contracts": True,
         "reviewed_handler_schema_count": len(expected_handlers),
+        "reviewed_handler_output_schema_count": len(
+            expected_handlers
+        ),
         "schema_policy": compatibility_manifest.schema_policy,
     }
 
@@ -754,6 +918,7 @@ def regenerate_durable_catalog(
     durable_tools = _tool_map(durable)
     candidate_tools = _tool_map(candidate)
     generated_from = []
+    generated_pairs = set()
     for change in review.changes:
         if change.compatibility != "compatible_candidate":
             continue
@@ -768,9 +933,14 @@ def regenerate_durable_catalog(
             raise ValidationError(
                 "Reviewed compatibility source or handler disappeared"
             )
-        # Exact-handler compatibility was already checked by review_catalogs.
-        # Copy only inputSchema. Names, descriptions, annotations, and handler
-        # identity remain operator-owned local policy.
+        generation_pair = (change.name, mapping.durable_handler)
+        if generation_pair in generated_pairs:
+            continue
+        generated_pairs.add(generation_pair)
+        # Exact-handler input and output compatibility were already checked by
+        # review_catalogs. Copy only inputSchema. outputSchema, names,
+        # descriptions, annotations, and handler identity remain
+        # operator-owned local policy and are never copied from upstream.
         target_tool["inputSchema"] = copy.deepcopy(source_tool["inputSchema"])
         generated_from.append(
             {

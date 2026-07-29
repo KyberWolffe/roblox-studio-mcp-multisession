@@ -36,7 +36,7 @@ delegates automatically.
 | `character_navigation` | P0 | deferred | **Yes** | None | No bounded session-local character navigation adapter exists. |
 | `user_mouse_input` | P0 | v2 partial | **Yes** | `studio_fire_input_binding_v2` | V2 can fire an existing Scriptable InputBinding but cannot inject arbitrary mouse or Studio UI input. |
 | `search_game_tree` | P0 | v2 partial | **Yes** | `studio_list_tree_v2` | V2 now provides exact-path traversal, bounded literal name/ClassName-or-IsA filters, scan/output caps, and session-fenced cursor pagination. It still differs from the upstream multi-keyword parser, dot-path/depth-10/head-limit shape, and depth-limit child summaries. |
-| `script_search` | P0 | v2 partial | **Yes** | `studio_list_tree_v2` | Tree inspection can locate known paths but there is no bounded fuzzy script-name search adapter. |
+| `script_search` | P0 | v2 partial | **Yes** | `studio_search_scripts_v2` | V2 provides deterministic, cursor-paginated, all-keyword literal-subsequence name matching. Upstream fuzzy ranking, token-combination behavior, and output shape are unspecified and therefore not claimed equivalent. |
 | `upload_image` | P1 | deferred | No | None | No reviewed authenticated Roblox asset-upload adapter exists. |
 | `script_read` | P0 | v2 full | No | `studio_read_script_v2` | None |
 | `insert_asset` | P1 | deferred | No | None | No bounded asset insertion adapter or permission contract exists. |
@@ -48,7 +48,7 @@ delegates automatically.
 | `skill` | P1 | deferred | No | None | No Roblox-specific skill content equivalent to the v1 skill catalog is shipped. |
 | `screen_capture` | P0 | v2 partial | **Yes** | `studio_capture_screenshot_v2` | Current viewport capture exists, but upstream camera-positioning and stored-image semantics are not complete. |
 | `get_console_output` | P0 | v2 full | No | `studio_get_console_v2` | None |
-| `script_grep` | P0 | deferred | **Yes** | None | No bounded cross-script content search adapter exists. |
+| `script_grep` | P0 | v2 partial | **Yes** | `studio_grep_scripts_v2` | V2 provides literal, source-revision-fenced, cursor-paginated cross-script grep. Upstream Luau-pattern behavior and its unspecified output shape remain unimplemented. |
 | `wait_job_finished` | P0 | v2 partial | **Yes** | `get_studio_job_v2` | V2 jobs are session-scoped, but upstream primitive-generation job identity and result semantics are not adapted. |
 | `generate_procedural_model` | P1 | deferred | No | None | No reviewed procedural-generation adapter exists. |
 | `generate_material` | P1 | deferred | No | None | No reviewed material-generation adapter exists. |

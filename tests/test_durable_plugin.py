@@ -43,6 +43,8 @@ RUN_ID = "0123456789abcdef0123456789abcdef"
 DURABLE_OPERATIONS = {
     "studio_get_state",
     "studio_list_tree",
+    "studio_search_scripts",
+    "studio_grep_scripts",
     "studio_read_script",
     "studio_update_script",
     "studio_set_attribute",
@@ -141,7 +143,7 @@ class DurableRendererTests(unittest.TestCase):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),
-            "f99e91deea3378a339d4b48e0134b4e95e9b7737f291d67ea5e2efb27c71f495",
+            "ced4942580301d657aa43870c47f4cb92d07742ffa613f6151e1823dd47a6650",
         )
 
     def test_render_has_no_two_place_or_session_count_limit(self):

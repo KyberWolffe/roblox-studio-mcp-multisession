@@ -14,10 +14,13 @@ resume credential, generation, and authorization policy remain separate checks.
 
 ## Durable operation surface
 
-The installed catalog exposes exactly these Studio-side handlers:
+The isolated 0.4.0 development catalog exposes exactly these Studio-side
+handlers. The live-installed rc.4 catalog remains unchanged:
 
 - `studio_get_state`
 - `studio_list_tree`
+- `studio_search_scripts`
+- `studio_grep_scripts`
 - `studio_read_script`
 - `studio_update_script`
 - `studio_set_attribute`
@@ -36,6 +39,21 @@ depth-first ordering, explicit scan/page/output caps, and opaque continuation
 cursors. Cursors are integrity-protected and fenced to the exact Studio,
 document epoch, generation, normalized query, sort version, and continuation
 lineage; a mismatched or stale cursor fails closed.
+
+Script-name search uses a separate cursor domain and deterministic all-keyword
+literal-subsequence matching. Keywords are printable ASCII, comma-separated,
+case-insensitive, and never interpreted as patterns. Results remain explicitly
+partial parity because the upstream fuzzy ranking and token-combination
+semantics are not specified.
+
+Cross-script grep is Edit-only, literal, and bounded by instance, source-byte,
+result, output, and internal time budgets. It reads editor-visible source only
+through `ScriptEditorService:GetEditorSource`. A mid-script continuation binds
+the exact source SHA-256 in addition to the session, document, generation,
+normalized query, traversal position, and lineage. A source edit therefore
+makes the cursor stale instead of silently skipping or duplicating matches.
+Pattern-looking input remains inert; arbitrary Luau patterns are not executed.
+
 Script updates use `ScriptEditorService:UpdateSourceAsync` with a required
 SHA-256 compare-and-swap revision. Primitive attribute updates require an exact
 expected prior state and confirm the result.
@@ -102,12 +120,13 @@ against an empty broker.
 Raw upstream tool names are never copied into the durable surface. The
 operator-owned mapping is
 `config/upstream-compatibility-map.json`. Its policy is
-`exact_handler_schema`: an added, renamed, or schema-changed upstream operation
-is compatible only when:
+`exact_handler_contract`: an added, renamed, or schema-changed upstream
+operation is compatible only when:
 
 1. its exact upstream name is present in the operator mapping;
-2. the mapping resolves to one of the nine existing durable handlers;
-3. its schema exactly matches that handler's current local schema; and
+2. the mapping resolves to one of the eleven existing durable handlers;
+3. its input schema and declared-or-absent output schema exactly match that
+   handler's current locally pinned contracts; and
 4. the generated catalog still passes the explicit-`studio_id`, handler-source,
    provenance, and fixed-allowlist contract checks.
 

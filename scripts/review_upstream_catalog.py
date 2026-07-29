@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Review or import a local upstream Studio MCP catalog snapshot.
 
 This command never fetches a URL and never publishes upstream tools into the
@@ -10,7 +11,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from studio_mcp_v2.catalog_review import (
     DEFAULT_COMPATIBILITY_MANIFEST,
@@ -25,7 +32,6 @@ from studio_mcp_v2.catalog_review import (
 )
 
 
-ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASELINE = ROOT / "config" / "tool-catalog.json"
 
 

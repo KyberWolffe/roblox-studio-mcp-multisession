@@ -193,9 +193,10 @@ References:
 ## Tool catalog
 
 `config/durable-tool-catalog.json` is the default runtime catalog. It exposes
-exactly nine audited operations: state, tree, script read/update, attribute
-update, console, screenshot, Scriptable `InputBinding`, and Play/Stop. At the
-public MCP boundary the catalog:
+exactly eleven audited operations: state, tree, script-name search, literal
+cross-script grep, script read/update, attribute update, console, screenshot,
+Scriptable `InputBinding`, and Play/Stop. At the public MCP boundary the
+catalog:
 
 1. preserves descriptions and annotations;
 2. injects a required UUID `studio_id`;

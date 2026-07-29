@@ -89,10 +89,10 @@
       "references": [
         {
           "kind": "durable_tool",
-          "name": "studio_list_tree"
+          "name": "studio_search_scripts"
         }
       ],
-      "gap": "Tree inspection can locate known paths but there is no bounded fuzzy script-name search adapter.",
+      "gap": "V2 provides deterministic, cursor-paginated, all-keyword literal-subsequence name matching. Upstream fuzzy ranking, token-combination behavior, and output shape are unspecified and therefore not claimed equivalent.",
       "phase": "phase_2"
     },
     {
@@ -227,10 +227,15 @@
     {
       "name": "script_grep",
       "priority": "P0",
-      "status": "deferred",
+      "status": "v2_partial",
       "p0_gap": true,
-      "references": [],
-      "gap": "No bounded cross-script content search adapter exists.",
+      "references": [
+        {
+          "kind": "durable_tool",
+          "name": "studio_grep_scripts"
+        }
+      ],
+      "gap": "V2 provides literal, source-revision-fenced, cursor-paginated cross-script grep. Upstream Luau-pattern behavior and its unspecified output shape remain unimplemented.",
       "phase": "phase_2"
     },
     {

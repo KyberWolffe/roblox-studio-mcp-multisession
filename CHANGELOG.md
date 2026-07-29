@@ -38,6 +38,27 @@ Phase 2 capability-parity development based on the immutable
   host before they can update cached mode. Disconnected recovery reports no
   available request channel and never infers Server or Client routability.
 
+### Phase 2 script discovery slice
+
+- Added `studio_search_scripts`, a deterministic cursor-paginated
+  script-name search with exact reusable paths, bounded literal-subsequence
+  keywords, and session/document/generation/query/lineage fencing.
+- Added `studio_grep_scripts`, an Edit-only literal cross-script grep with
+  source-byte, scan, result, output, and time budgets. Mid-script cursors bind
+  the exact source revision, and returned previews preserve UTF-8 boundaries.
+- Successful script-search and grep results use closed identity-bearing output
+  contracts and are validated by the host before delivery or job retention.
+- Exact root resolution now shares the 10,000-child width bound, and script
+  time budgets include resolution and cursor reconstruction. Host validation
+  additionally enforces deterministic path order, non-overlapping grep
+  matches, and internally coherent line/preview metadata.
+- Compatibility review now pins both input schemas and declared-or-absent
+  output schemas for every durable handler. Upstream output-shape drift is a
+  distinct fail-closed catalog change; non-finite JSON numbers are rejected.
+- Official `script_search` and `script_grep` remain honestly partial: the
+  upstream catalog does not specify fuzzy ranking/output semantics, and v2
+  does not execute caller-supplied Luau patterns.
+
 ## 0.3.0-rc.4 — 2026-07-28
 
 PlayServer HTTP-independence and terminal-session lifecycle correction.

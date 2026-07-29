@@ -46,9 +46,9 @@ class CapabilityParityTests(unittest.TestCase):
         self.assertEqual(
             {
                 "v2_full": 3,
-                "v2_partial": 9,
+                "v2_partial": 10,
                 "native_codex_equivalent": 2,
-                "deferred": 11,
+                "deferred": 10,
             },
             result["status_counts"],
         )
