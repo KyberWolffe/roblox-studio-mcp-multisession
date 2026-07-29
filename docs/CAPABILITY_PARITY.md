@@ -4,7 +4,7 @@
 <!-- p0-parity: incomplete -->
 <!-- full-parity-claimed: false -->
 
-Version `0.4.0-rc.2` is an isolated experimental release candidate. Full
+Version `0.4.0-rc.3` is an isolated experimental release candidate. Full
 25-tool parity is not claimed. It preserves the frozen rc.4 multi-session
 architecture while Phase 2 addresses the 12 P0 gaps below.
 

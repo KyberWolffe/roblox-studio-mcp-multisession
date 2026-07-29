@@ -4,7 +4,40 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
-## 0.4.0-rc.2 — unreleased
+## 0.4.0-rc.3 — unreleased
+
+Corrected native-qualification identity for the isolated Phase 2 candidate.
+The rc.1 rejection and rc.2 superseded checkpoint remain immutable, and the
+installed `0.3.0-rc.4` bytes and restore bundle remain the immediate rollback
+target.
+
+### Native Studio identity
+
+- Corrected the exact official Studio bundle/signature identifier from the
+  incorrectly cased `com.roblox.RobloxStudio` expectation to
+  `com.Roblox.RobloxStudio`.
+- Pinned the signed TeamIdentifier to Roblox's exact `2CFABCH843` identity and
+  advanced the receipt format so evidence from the weaker identity contract
+  cannot be reused.
+- Required an Apple-anchored code-signing requirement containing that exact
+  bundle identifier and leaf-certificate team OU, preventing a locally
+  self-signed metadata imitation from satisfying the gate.
+- Kept strict code-signature verification mandatory. An unsigned, modified,
+  or otherwise unverifiable Studio app still blocks native qualification and
+  cannot be treated as a skipped or partial pass.
+- Preserved the exact-package/source/executable hash binding, empty Edit
+  command-script guard, reviewed assertion outcome, bounded evidence, and
+  receipt revalidation introduced for rc.2.
+
+### Preserved candidate corrections
+
+- Retains the rendered-plugin register-budget refactor and official Luau
+  compiler coverage.
+- Retains public `*_v2` read-only gate names, explicit `studio_id` routing,
+  complete extracted-tree provenance, exact broker-instance cleanup fencing,
+  and all rc.1 workflow/CAS/recovery behavior.
+
+## 0.4.0-rc.2 — superseded 2026-07-29
 
 Corrected isolated Phase 2 candidate. The failed rc.1 commit and artifact
 remain immutable and are rejected; the installed `0.3.0-rc.4` bytes and

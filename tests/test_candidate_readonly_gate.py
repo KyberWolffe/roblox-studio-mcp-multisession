@@ -462,7 +462,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             os.chmod(config / "secrets.json", 0o600)
             cleanup_identity = {
                 "format": gate.CLEANUP_IDENTITY_FORMAT,
-                "version": "0.4.0-rc.2",
+                "version": "0.4.0-rc.3",
                 "port": 44_757,
                 "run_id": "a" * 32,
                 "release_manifest_sha256": "b" * 64,
@@ -672,7 +672,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             payload, manifest_sha256 = (
                 gate._validated_candidate_release(
                     extracted,
-                    expected_version="0.4.0-rc.2",
+                    expected_version="0.4.0-rc.3",
                 )
             )
             self.assertTrue(payload.is_dir())
@@ -707,7 +707,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             payload, manifest_sha256 = (
                 gate._validated_candidate_release(
                     work_root,
-                    expected_version="0.4.0-rc.2",
+                    expected_version="0.4.0-rc.3",
                 )
             )
             durable_sha256 = gate.sha256_bytes(
@@ -719,7 +719,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             )
             rejected_args = argparse.Namespace(
                 work_root=work_root,
-                version="0.4.0-rc.2",
+                version="0.4.0-rc.3",
                 durable_catalog_sha256=durable_sha256,
                 release_manifest_sha256="0" * 64,
                 port=44_757,
@@ -739,7 +739,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             state = gate.prepare(
                 argparse.Namespace(
                     work_root=work_root,
-                    version="0.4.0-rc.2",
+                    version="0.4.0-rc.3",
                     durable_catalog_sha256=durable_sha256,
                     release_manifest_sha256=manifest_sha256,
                     port=44_757,
@@ -778,7 +778,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             root = Path(temporary).resolve()
             identity_bytes = b'{"identity":true}\n'
             identity = {
-                "version": "0.4.0-rc.2",
+                "version": "0.4.0-rc.3",
                 "port": 44_757,
                 "run_id": "a" * 32,
                 "durable_catalog_file_sha256": "b" * 64,
@@ -789,7 +789,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
                 ),
                 "pid": 123,
                 "started_at": 1234.5,
-                "version": "0.4.0-rc.2",
+                "version": "0.4.0-rc.3",
                 "catalog_sha256": "b" * 64,
                 "stop_safe": True,
             }
@@ -844,10 +844,10 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
                 stop_broker=lifecycle_stop,
             )
             fake_package = types.SimpleNamespace(
-                __version__="0.4.0-rc.2"
+                __version__="0.4.0-rc.3"
             )
             identity = {
-                "version": "0.4.0-rc.2",
+                "version": "0.4.0-rc.3",
             }
             with (
                 mock.patch.object(
@@ -913,7 +913,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
         )
         loaded = (
             {
-                "version": "0.4.0-rc.2",
+                "version": "0.4.0-rc.3",
                 "port": 44_757,
                 "durable_catalog_file_sha256": "a" * 64,
                 "plugin_sha256": "b" * 64,

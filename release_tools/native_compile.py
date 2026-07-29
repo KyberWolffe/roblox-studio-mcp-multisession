@@ -29,11 +29,16 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 from xml.etree import ElementTree
 
 
-PROOF_FORMAT = "roblox-studio-mcp-v2-native-compile-proof-v2"
+PROOF_FORMAT = "roblox-studio-mcp-v2-native-compile-proof-v3"
 DEFAULT_STUDIO_EXECUTABLE = Path(
     "/Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio"
 )
-EXPECTED_STUDIO_BUNDLE_ID = "com.roblox.RobloxStudio"
+EXPECTED_STUDIO_BUNDLE_ID = "com.Roblox.RobloxStudio"
+EXPECTED_STUDIO_TEAM_ID = "2CFABCH843"
+EXPECTED_STUDIO_REQUIREMENT = (
+    '=anchor apple generic and identifier "com.Roblox.RobloxStudio" '
+    'and certificate leaf[subject.OU] = "2CFABCH843"'
+)
 EXPECTED_MAIN_ASSERTION = (
     'assert(plugin ~= nil, '
     '"Studio MCP v2 must be installed as a Studio plugin")'
@@ -52,7 +57,6 @@ PROCESS_POLL_SECONDS = 0.05
 MIN_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 300
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 VERSION_ID_RE = re.compile(r"^[\x20-\x7e]{1,128}$")
 REFERENT_RE = re.compile(r"^RBX[0-9a-f]{32}$")
 SCRIPT_GUID_RE = re.compile(
@@ -586,9 +590,11 @@ def inspect_studio_identity(
             "--deep",
             "--strict",
             "--verbose=2",
+            "-R",
+            EXPECTED_STUDIO_REQUIREMENT,
             str(bundle),
         ],
-        "Studio strict code-signature verification",
+        "Studio Apple-anchored code-signature verification",
     )
     if verify.returncode != 0:
         raise NativeCompileError("Studio code signature verification failed")
@@ -612,7 +618,7 @@ def inspect_studio_identity(
         identifier_match is None
         or identifier_match.group(1).strip() != bundle_id
         or team_match is None
-        or TEAM_ID_RE.fullmatch(team_match.group(1).strip()) is None
+        or team_match.group(1).strip() != EXPECTED_STUDIO_TEAM_ID
     ):
         raise NativeCompileError("Studio signed identity is incomplete")
     return {
@@ -624,7 +630,7 @@ def inspect_studio_identity(
         "executable_sha256": executable_sha256,
         "info_plist_sha256": _sha256_bytes(info_bytes),
         "signature_identifier": identifier_match.group(1).strip(),
-        "team_identifier": team_match.group(1).strip(),
+        "team_identifier": EXPECTED_STUDIO_TEAM_ID,
     }
 
 
