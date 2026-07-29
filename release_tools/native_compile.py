@@ -955,6 +955,30 @@ def _log_receipt(
     }
 
 
+def _runtime_witness_matches(output: bytes) -> list[re.Match[bytes]]:
+    return list(
+        re.finditer(
+            rb"(?m)^STUDIO_MCP_V2_NATIVE_COMPILE_PREFIX_OK:"
+            rb"([0-9a-f]{32}):([0-9a-f]{64}):([0-9a-f]{64})\r?$",
+            output,
+        )
+    )
+
+
+def _runtime_error_matches(
+    output: bytes,
+    message: bytes,
+) -> list[re.Match[bytes]]:
+    return list(
+        re.finditer(
+            rb"(?m)^[^:\r\n]{1,256}:[0-9]+: "
+            + re.escape(message)
+            + rb"(?:  -  Edit)?\r?$",
+            output,
+        )
+    )
+
+
 def prove_native_studio_compilation(
     package_path: Path,
     *,
@@ -1086,14 +1110,20 @@ def prove_native_studio_compilation(
     prefix_guard_failures = [
         marker
         for marker in PREFIX_FAILURE_MESSAGES
-        if marker.encode("utf-8") in combined
+        if _runtime_error_matches(output, marker.encode("utf-8"))
     ]
     sentinel_bytes = sentinel.encode("ascii")
     assertion_bytes = EXPECTED_MAIN_ASSERTION_MESSAGE.encode("utf-8")
-    sentinel_count = output.count(sentinel_bytes)
-    assertion_count = output.count(assertion_bytes)
-    sentinel_position = output.find(sentinel_bytes)
-    assertion_position = output.find(assertion_bytes)
+    witnesses = _runtime_witness_matches(output)
+    assertion_matches = _runtime_error_matches(output, assertion_bytes)
+    sentinel_count = len(witnesses)
+    assertion_count = len(assertion_matches)
+    sentinel_position = witnesses[0].start() if len(witnesses) == 1 else -1
+    assertion_position = (
+        assertion_matches[0].start()
+        if len(assertion_matches) == 1
+        else -1
+    )
 
     failure_reasons = []
     if process_result["launch_error"] is not None:
@@ -1523,13 +1553,7 @@ def validate_native_compile_receipt(
     stdout = log_values["studio_stdout"]
     combined = stdout + b"\n" + stderr + b"\n" + output
     combined_lower = combined.lower()
-    witnesses = list(
-        re.finditer(
-            rb"STUDIO_MCP_V2_NATIVE_COMPILE_PREFIX_OK:"
-            rb"([0-9a-f]{32}):([0-9a-f]{64}):([0-9a-f]{64})",
-            output,
-        )
-    )
+    witnesses = _runtime_witness_matches(output)
     if len(witnesses) != 1:
         raise NativeCompileError(
             "native compile receipt witness is missing or duplicated"
@@ -1558,7 +1582,7 @@ def validate_native_compile_receipt(
     prefix_guard_failures = [
         marker
         for marker in PREFIX_FAILURE_MESSAGES
-        if marker.encode("utf-8") in combined
+        if _runtime_error_matches(output, marker.encode("utf-8"))
     ]
     user_plugin_hits = sorted(
         {
@@ -1566,10 +1590,11 @@ def validate_native_compile_receipt(
             for match in USER_PLUGIN_RE.finditer(combined)
         }
     )
+    assertion_matches = _runtime_error_matches(output, assertion_bytes)
     witness_precedes_assertion = (
-        output.find(sentinel_bytes) >= 0
-        and output.find(assertion_bytes) >= 0
-        and output.find(sentinel_bytes) < output.find(assertion_bytes)
+        len(witnesses) == 1
+        and len(assertion_matches) == 1
+        and witnesses[0].start() < assertion_matches[0].start()
     )
     observations = _receipt_mapping(
         result["observations"],
@@ -1590,8 +1615,8 @@ def validate_native_compile_receipt(
     expected_observations = {
         "compile_error_markers": compile_markers,
         "prefix_guard_failures": prefix_guard_failures,
-        "prefix_witness_count_in_output": output.count(sentinel_bytes),
-        "terminal_assertion_count_in_output": output.count(assertion_bytes),
+        "prefix_witness_count_in_output": len(witnesses),
+        "terminal_assertion_count_in_output": len(assertion_matches),
         "user_plugin_log_hits": user_plugin_hits,
         "witness_precedes_terminal_assertion": witness_precedes_assertion,
     }

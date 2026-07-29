@@ -172,10 +172,17 @@ class NativeCompileTests(unittest.TestCase):
             + self.source_sha256
         )
         return (
-            sentinel
-            + "\ncompile-only.luau:42: "
+            '> assert(game.PlaceId == 0, "'
+            + native_compile.PREFIX_FAILURE_MESSAGES[0]
+            + '")\nprint("'
+            + sentinel
+            + '")\nassert(plugin ~= nil, "'
             + EXPECTED_MAIN_ASSERTION_MESSAGE
-            + "\n"
+            + '")\n'
+            + sentinel
+            + "\nRunScript:42: "
+            + EXPECTED_MAIN_ASSERTION_MESSAGE
+            + "  -  Edit\n"
         ).encode("utf-8")
 
     def _proof_patches(
