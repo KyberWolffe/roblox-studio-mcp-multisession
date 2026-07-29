@@ -23,7 +23,7 @@ class Phase2ScriptLuauTests(unittest.TestCase):
         ]
         cls.grep = cls.source[
             cls.source.index("local function readGrepSource(") :
-            cls.source.index("local function readScript(")
+            cls.source.index("local function newInspectionValue(")
         ]
 
     def test_closed_argument_keys_and_bounds_are_present(self) -> None:

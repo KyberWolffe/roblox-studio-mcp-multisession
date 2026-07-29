@@ -61,6 +61,9 @@ archive for:
 - unsafe or duplicate archive paths;
 - unexpected files outside the release allowlist.
 
-The isolated proof installs only under a temporary home. No GitHub release
-candidate proof requires a live Studio session because the Studio operation
-surface is unchanged from the validated baseline.
+The isolated proofs install only under temporary synthetic homes. Phase 2
+changes the Studio operation surface, so package proof is not presented as a
+substitute for live validation. Any live read-only validation or installation
+of a candidate remains a separate, explicit user-authorized gate; ordinary
+development, deterministic build, update/rollback proof, and archive audit do
+not contact Studio or mutate the live rc.4 installation.

@@ -181,7 +181,7 @@ class Phase2InstanceInspectContractTests(unittest.TestCase):
             names.index("studio_inspect_instance"),
             names.index("studio_list_tree") + 1,
         )
-        self.assertEqual("0.4.0-dev.3", self.durable["catalog_version"])
+        self.assertEqual("0.4.0-rc.1", self.durable["catalog_version"])
         schema = self.inspect["inputSchema"]
         properties = schema["properties"]
         self.assertEqual(set(properties), INSPECT_ARGUMENTS)
@@ -398,9 +398,9 @@ class Phase2InstanceInspectContractTests(unittest.TestCase):
             _canonical_sha256(self.inspect["outputSchema"]),
         )
         validated = self._validate_contract(self.durable)
-        self.assertEqual(validated["reviewed_handler_schema_count"], 12)
+        self.assertEqual(validated["reviewed_handler_schema_count"], 14)
         self.assertEqual(
-            validated["reviewed_handler_output_schema_count"], 12
+            validated["reviewed_handler_output_schema_count"], 14
         )
 
     def test_official_shape_is_mapped_but_incompatible_and_review_only(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import unittest
 
 from studio_mcp_v2.catalog import ToolCatalog
@@ -70,6 +71,61 @@ class Phase2TreeStateIsolationTests(unittest.IsolatedAsyncioTestCase):
             },
             client_request_id=client_request_id,
         )
+
+    @staticmethod
+    def valid_tree(
+        studio: FakeStudio,
+        request,
+        *,
+        items=None,
+    ):
+        arguments = request["args"]
+        normalized_items = copy.deepcopy(items or [])
+        output_bytes = sum(
+            len(
+                json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            + 1
+            for item in normalized_items
+        )
+        page_size = arguments.get(
+            "page_size", arguments.get("max_results", 200)
+        )
+        return {
+            "adapter": "studio-mcp-v2-durable-plugin",
+            "v": 1,
+            "operation": "studio_list_tree",
+            "studio_id": studio.studio_id,
+            "client_instance_id": studio.client_instance_id,
+            "document_epoch": studio.registration.document_epoch,
+            "generation": request["generation"],
+            "request_id": request["request_id"],
+            "root_path": copy.deepcopy(
+                arguments.get("root_path", [])
+            ),
+            "items": normalized_items,
+            "truncated": False,
+            "has_more": False,
+            "continuation_cursor": "",
+            "truncation_reason": "complete",
+            "max_depth": arguments.get("max_depth", 2),
+            "max_results": page_size,
+            "page_size": page_size,
+            "scan_limit": arguments.get("scan_limit", 2_000),
+            "scanned": len(normalized_items),
+            "returned": len(normalized_items),
+            "output_bytes": output_bytes,
+            "name_filter": arguments.get("name_filter", ""),
+            "class_filter": arguments.get("class_filter", ""),
+            "class_is_a": arguments.get("class_is_a", False),
+            "sort_version": "name-class-v1",
+            "output_limit_bytes": 600_000,
+        }
 
     @staticmethod
     def valid_state(studio: FakeStudio, mode: str):
@@ -163,14 +219,8 @@ class Phase2TreeStateIsolationTests(unittest.IsolatedAsyncioTestCase):
             request_b["args"],
         )
 
-        result_a = {
-            "root_path": ["Workspace", "A"],
-            "items": [{"name": "Only A"}],
-        }
-        result_b = {
-            "root_path": ["Workspace", "B"],
-            "items": [{"name": "Only B"}],
-        }
+        result_a = self.valid_tree(self.a, request_a)
+        result_b = self.valid_tree(self.b, request_b)
         self.assertTrue(self.b.respond(request_b, result_b))
         self.assertEqual(result_b, await call_b)
         self.assertFalse(call_a.done())
@@ -200,10 +250,9 @@ class Phase2TreeStateIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.a.transport._queue.empty())
         self.assertFalse(second.done())
 
-        self.assertTrue(
-            self.a.respond(first_request, {"page": "first"})
-        )
-        self.assertEqual({"page": "first"}, await first)
+        first_result = self.valid_tree(self.a, first_request)
+        self.assertTrue(self.a.respond(first_request, first_result))
+        self.assertEqual(first_result, await first)
         second_request = await self.a.next_request()
         self.assertEqual(
             "phase2-tree-second",
@@ -213,10 +262,9 @@ class Phase2TreeStateIsolationTests(unittest.IsolatedAsyncioTestCase):
             {"name_filter": "second"},
             second_request["args"],
         )
-        self.assertTrue(
-            self.a.respond(second_request, {"page": "second"})
-        )
-        self.assertEqual({"page": "second"}, await second)
+        second_result = self.valid_tree(self.a, second_request)
+        self.assertTrue(self.a.respond(second_request, second_result))
+        self.assertEqual(second_result, await second)
 
     async def test_tree_query_and_cursor_are_inert_exact_envelope_data(
         self,
@@ -280,7 +328,7 @@ class Phase2TreeStateIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(30_000, request["deadline_ms"])
         self.assertTrue(self.b.transport._queue.empty())
 
-        result = {"accepted_as_data": copy.deepcopy(request["args"])}
+        result = self.valid_tree(self.a, request)
         self.assertTrue(self.a.respond(request, result))
         self.assertEqual(result, await operation)
 
@@ -298,7 +346,10 @@ class Phase2TreeStateIsolationTests(unittest.IsolatedAsyncioTestCase):
         request = await self.a.next_request()
         self.assertEqual(old_generation, request["generation"])
         self.assertTrue(
-            self.a.respond(request, {"generation": old_generation})
+            self.a.respond(
+                request,
+                self.valid_tree(self.a, request),
+            )
         )
 
         self.assertTrue(self.a.disconnect())

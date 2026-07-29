@@ -46,6 +46,8 @@ FAMILY_TO_DURABLE_HANDLER = {
     "script_content_search": "studio_grep_scripts",
     "script_read": "studio_read_script",
     "script_update": "studio_update_script",
+    "multi_edit": "studio_multi_edit",
+    "multi_edit_recovery": "studio_recover_multi_edit",
     "attribute_update": "studio_set_attribute",
     "console_read": "studio_get_console",
     "screenshot": "studio_capture_screenshot",
@@ -105,6 +107,8 @@ FAMILY_ALLOWED_ARGUMENTS = {
     "script_update": frozenset(
         {"path", "expected_sha256", "new_source"}
     ),
+    "multi_edit": frozenset({"datamodel_type", "targets"}),
+    "multi_edit_recovery": frozenset({"transaction_id"}),
     "attribute_update": frozenset(
         {
             "path",

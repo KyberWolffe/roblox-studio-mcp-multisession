@@ -649,7 +649,10 @@ local function connect(reconnecting)
 		body.reconnect_id = newUuid()
 		local settled = {}
 		for _, requestId in ipairs(peer.response_order) do
-			table.insert(settled, requestId)
+			local record = peer.response_cache[requestId]
+			if record ~= nil and record.settlement_safe == true then
+				table.insert(settled, requestId)
+			end
 		end
 		body.settled_request_ids = settled
 	end
@@ -1704,6 +1707,22 @@ local function dispatch(request)
 end
 
 local function cacheResponse(request, signature, success, result, requestError)
+	local settlementSafe = true
+	if request.operation == "studio_recover_multi_edit" then
+		settlementSafe = success
+			and type(result) == "table"
+			and result.safe_terminal == true
+			and result.recovery_required == false
+	elseif request.operation == "studio_multi_edit" then
+		if type(request.args) ~= "table"
+			or request.args._phase ~= "prepare"
+		then
+			settlementSafe = success
+				and type(result) == "table"
+				and result.safe_terminal == true
+				and result.recovery_required == false
+		end
+	end
 	local record = {
 		request_id = request.request_id,
 		operation = request.operation,
@@ -1713,6 +1732,7 @@ local function cacheResponse(request, signature, success, result, requestError)
 		success = success,
 		result = result,
 		error = requestError,
+		settlement_safe = settlementSafe,
 	}
 	peer.response_cache[request.request_id] = record
 	table.insert(peer.response_order, request.request_id)

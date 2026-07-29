@@ -43,10 +43,12 @@ RUNTIME_MODULES: Sequence[str] = (
     "hub.py",
     "lifecycle.py",
     "mcp_stdio.py",
+    "multi_edit.py",
     "play_bridge.py",
     "registry.py",
     "service.py",
     "session.py",
+    "schema_validation.py",
     "validation.py",
 )
 

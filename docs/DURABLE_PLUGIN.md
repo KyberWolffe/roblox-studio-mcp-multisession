@@ -14,7 +14,7 @@ resume credential, generation, and authorization policy remain separate checks.
 
 ## Durable operation surface
 
-The isolated 0.4.0-dev.3 development catalog exposes exactly these Studio-side
+The isolated 0.4.0-rc.1 candidate catalog exposes exactly these Studio-side
 handlers. The live-installed rc.4 catalog remains unchanged:
 
 - `studio_get_state`
@@ -24,6 +24,8 @@ handlers. The live-installed rc.4 catalog remains unchanged:
 - `studio_grep_scripts`
 - `studio_read_script`
 - `studio_update_script`
+- `studio_multi_edit`
+- `studio_recover_multi_edit`
 - `studio_set_attribute`
 - `studio_get_console`
 - `studio_capture_screenshot`
@@ -69,6 +71,32 @@ Pattern-looking input remains inert; arbitrary Luau patterns are not executed.
 Script updates use `ScriptEditorService:UpdateSourceAsync` with a required
 SHA-256 compare-and-swap revision. Primitive attribute updates require an exact
 expected prior state and confirm the result.
+
+Multi-edit extends that revision boundary to 1-16 existing exact script paths
+without weakening it. Every target carries an expected SHA-256, and every
+ordered edit is pre-expanded against a bounded intermediate source before the
+first mutation. Targets execute in input order; edits within a target execute
+in input order. Optional offsets are paired zero-based half-open UTF-8 byte
+ranges. Creation, empty search strings, duplicate paths, ambiguous paths,
+overlapping matches, invalid UTF-8, stale revisions, and out-of-bound plans
+fail closed.
+
+The public `studio_multi_edit` handler returns only a final apply receipt.
+Prepare is an internal broker-owned phase that records exact
+Studio/client/document/generation identity, target order, expected/prepared/
+planned revisions, expanded replacement counts, and a canonical receipt
+digest before any source update. Apply rechecks all targets before writing and
+read-backs every update. A later failure attempts per-target compensating
+rollback only under an exact planned-revision CAS. Because Studio provides no
+transaction spanning multiple scripts, this is deliberately not advertised as
+cross-script atomicity.
+
+An unprovable dispatch returns `recovery_required`, retains the exact
+transaction evidence, and quarantines further mutation. The separate
+`studio_recover_multi_edit` handler accepts only that transaction UUID under
+the same explicit session identity; it cannot accept source, edits, paths, or
+a replacement target. Recovery reports success only after every target
+revision is positively terminal.
 
 State reads keep lifecycle state and controller execution predicates separate.
 The bound plugin controller is an Edit DataModel request channel, so connected
@@ -136,11 +164,17 @@ operator-owned mapping is
 operation is compatible only when:
 
 1. its exact upstream name is present in the operator mapping;
-2. the mapping resolves to one of the twelve existing durable handlers;
+2. the mapping resolves to one of the fourteen existing durable handlers;
 3. its input schema and declared-or-absent output schema exactly match that
    handler's current locally pinned contracts; and
 4. the generated catalog still passes the explicit-`studio_id`, handler-source,
    provenance, and fixed-allowlist contract checks.
+
+The upstream `multi_edit` name is recognized as the multi-edit family, but its
+current dot-path, optional-creation, and revision-free schema is not identical
+to the safer durable handler and therefore is not an exact compatible
+candidate. The mapping is family review metadata, not permission to copy that
+schema or auto-enable creation.
 
 Unknown names and changed shapes are quarantined and fail closed. A compatible
 addition remains review-only until explicit approval. The fixture workflow is

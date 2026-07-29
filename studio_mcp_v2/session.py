@@ -23,6 +23,25 @@ from .errors import (
     StaleGenerationError,
     UnsafeCancellationError,
 )
+from .multi_edit import (
+    MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES,
+    MAX_MULTI_EDIT_RECEIPT_BYTES,
+    MAX_MULTI_EDIT_EDITS,
+    MAX_MULTI_EDIT_EDITS_PER_TARGET,
+    MAX_MULTI_EDIT_REPLACEMENT_SPANS,
+    MAX_MULTI_EDIT_SOURCE_BYTES,
+    MAX_MULTI_EDIT_TARGETS,
+    MULTI_EDIT_ATOMICITY,
+    MULTI_EDIT_ORDERING_VERSION,
+    MULTI_EDIT_RECEIPT_CONTRACT,
+    SHA256_RE,
+    canonical_json_bytes,
+    canonical_json_sha256,
+    mutation_receipt_sha256,
+    normalize_multi_edit_arguments,
+    prepare_receipt_sha256,
+    total_edit_count,
+)
 
 _DURABLE_STATE_MODES = frozenset(
     {"edit", "starting", "play", "settling", "stopping", "unknown"}
@@ -110,6 +129,12 @@ _DURABLE_PLAY_FAILURE_CODES = frozenset(
         "bridge_already_ended",
     }
 )
+
+MAX_SESSION_JOBS = 128
+MAX_ACTIVE_SESSION_JOBS = 32
+MAX_RETAINED_JOB_BYTES = 32_000_000
+MAX_JOB_RESOLUTION_RECEIPTS = 4
+MAX_JOB_RETIREMENT_TOMBSTONES = 64
 
 _DURABLE_SCRIPT_ADAPTER = "studio-mcp-v2-durable-plugin"
 _DURABLE_SCRIPT_CLASSES = frozenset(
@@ -207,6 +232,56 @@ _DURABLE_SCRIPT_CURSOR_RE = re.compile(
     r"^([A-Za-z0-9+/]+={0,2})\.([0-9a-f]{64})$"
 )
 _DURABLE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DURABLE_TREE_CURSOR_RE = re.compile(
+    r"^([A-Za-z0-9+/]+={0,2})\.([0-9a-f]{64})$"
+)
+_DURABLE_TREE_ARGUMENT_KEYS = frozenset(
+    {
+        "root_path",
+        "max_depth",
+        "max_results",
+        "name_filter",
+        "class_filter",
+        "class_is_a",
+        "scan_limit",
+        "page_size",
+        "continuation_cursor",
+    }
+)
+_DURABLE_TREE_RESULT_KEYS = frozenset(
+    {
+        "adapter",
+        "v",
+        "operation",
+        "studio_id",
+        "client_instance_id",
+        "document_epoch",
+        "generation",
+        "request_id",
+        "root_path",
+        "items",
+        "truncated",
+        "has_more",
+        "continuation_cursor",
+        "truncation_reason",
+        "max_depth",
+        "max_results",
+        "page_size",
+        "scan_limit",
+        "scanned",
+        "returned",
+        "output_bytes",
+        "name_filter",
+        "class_filter",
+        "class_is_a",
+        "sort_version",
+        "output_limit_bytes",
+    }
+)
+_DURABLE_TREE_ITEM_KEYS = frozenset(
+    {"path", "name", "class_name", "child_count"}
+)
+_DURABLE_TREE_OUTPUT_LIMIT_BYTES = 600_000
 _DURABLE_CLASS_IDENTIFIER_RE = re.compile(
     r"^[A-Za-z][A-Za-z0-9_]{0,99}$"
 )
@@ -445,6 +520,85 @@ _DURABLE_INSPECT_SENTINELS = {
     "truncated": False,
 }
 _DURABLE_INSPECT_OUTPUT_LIMIT_BYTES = 500_000
+_DURABLE_MULTI_EDIT_PREPARE_KEYS = frozenset(
+    {
+        "adapter",
+        "v",
+        "operation",
+        "phase",
+        "studio_id",
+        "client_instance_id",
+        "document_epoch",
+        "generation",
+        "request_id",
+        "transaction_id",
+        "ordering_version",
+        "atomicity",
+        "target_count",
+        "edit_count",
+        "aggregate_source_bytes",
+        "aggregate_planned_source_bytes",
+        "targets",
+        "expires_in_ms",
+        "prepare_sha256",
+    }
+)
+_DURABLE_MULTI_EDIT_PREPARED_TARGET_KEYS = frozenset(
+    {
+        "index",
+        "path",
+        "expected_sha256",
+        "prepared_sha256",
+        "planned_sha256",
+        "source_length",
+        "planned_source_length",
+        "edit_count",
+        "replacement_count",
+        "status",
+    }
+)
+_DURABLE_MULTI_EDIT_MUTATION_KEYS = frozenset(
+    {
+        "adapter",
+        "v",
+        "operation",
+        "phase",
+        "studio_id",
+        "client_instance_id",
+        "document_epoch",
+        "generation",
+        "request_id",
+        "transaction_id",
+        "prepare_request_id",
+        "prepare_sha256",
+        "ordering_version",
+        "atomicity",
+        "receipt_contract",
+        "outcome",
+        "safe_terminal",
+        "recovery_required",
+        "target_count",
+        "edit_count",
+        "targets",
+        "receipt_sha256",
+    }
+)
+_DURABLE_MULTI_EDIT_TARGET_OUTCOME_KEYS = frozenset(
+    {
+        "index",
+        "path",
+        "expected_sha256",
+        "prepared_sha256",
+        "planned_sha256",
+        "observed_before_sha256",
+        "observed_after_sha256",
+        "source_length",
+        "planned_source_length",
+        "edit_count",
+        "replacement_count",
+        "status",
+    }
+)
 
 
 class LongPollTransport:
@@ -457,7 +611,11 @@ class LongPollTransport:
     async def send(self, envelope: Dict[str, Any]) -> None:
         if self._closed:
             raise SessionDisconnectedError("Studio transport is closed")
-        await self._queue.put(copy.deepcopy(envelope))
+        # The queue is intentionally unbounded and local. A synchronous
+        # put_nowait makes the dispatch boundary atomic with respect to task
+        # cancellation: either nothing was queued, or the caller resumes and
+        # records the exact dispatched request before its next suspension.
+        self._queue.put_nowait(copy.deepcopy(envelope))
 
     async def poll(self, timeout_seconds: float) -> Optional[Dict[str, Any]]:
         if self._closed and self._queue.empty():
@@ -480,6 +638,126 @@ class PendingRequest:
     future: asyncio.Future
 
 
+def _job_admitted_contract(
+    remote_tool: str, arguments: Dict[str, Any]
+) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "contract_version": "studio-job-admission-v1",
+        "operation": remote_tool,
+    }
+    if remote_tool == "studio_multi_edit":
+        summary.update(
+            {
+                "datamodel_type": "Edit",
+                "target_count": len(arguments["targets"]),
+                "edit_count": total_edit_count(
+                    arguments["targets"]
+                ),
+                "ordering_version": MULTI_EDIT_ORDERING_VERSION,
+                "atomicity": MULTI_EDIT_ATOMICITY,
+                "targets": [
+                    {
+                        "index": index,
+                        "path": copy.deepcopy(target["path"]),
+                        "expected_sha256": target[
+                            "expected_sha256"
+                        ],
+                        "edit_count": len(target["edits"]),
+                    }
+                    for index, target in enumerate(
+                        arguments["targets"], start=1
+                    )
+                ],
+            }
+        )
+        return summary
+    if remote_tool == "studio_list_tree":
+        summary.update(
+            {
+                "root_path": copy.deepcopy(
+                    arguments.get("root_path", [])
+                ),
+                "max_depth": arguments.get("max_depth", 2),
+                "scan_limit": arguments.get("scan_limit", 2_000),
+                "page_size": arguments.get(
+                    "page_size",
+                    arguments.get("max_results", 200),
+                ),
+            }
+        )
+    elif remote_tool in {
+        "studio_search_scripts",
+        "studio_grep_scripts",
+    }:
+        summary.update(
+            {
+                "root_path": copy.deepcopy(
+                    arguments.get("root_path", [])
+                ),
+                "max_depth": arguments.get("max_depth"),
+                "scan_limit": arguments.get("scan_limit", 2_000),
+                "page_size": arguments.get("page_size"),
+                "time_limit_ms": arguments.get("time_limit_ms"),
+            }
+        )
+        query_value = arguments.get(
+            "keywords", arguments.get("query", "")
+        )
+        summary["query_sha256"] = canonical_json_sha256(
+            query_value
+        )
+    elif remote_tool == "studio_inspect_instance":
+        summary.update(
+            {
+                "path": copy.deepcopy(arguments.get("path")),
+                "child_limit": arguments.get("child_limit", 50),
+                "descendant_max_depth": arguments.get(
+                    "descendant_max_depth"
+                ),
+                "descendant_scan_limit": arguments.get(
+                    "descendant_scan_limit", 2_000
+                ),
+                "time_limit_ms": arguments.get(
+                    "time_limit_ms", 3_000
+                ),
+            }
+        )
+    else:
+        summary["arguments_sha256"] = canonical_json_sha256(
+            arguments
+        )
+    return summary
+
+
+@dataclass
+class OperationAdmission:
+    sequence: int
+    predecessor: asyncio.Future
+    completion: asyncio.Future
+    retired: bool = False
+
+    def complete(self) -> None:
+        if self.retired:
+            return
+        self.retired = True
+        if not self.completion.done():
+            self.completion.set_result(None)
+
+    def retire_after_predecessor(self) -> None:
+        if self.retired:
+            return
+        self.retired = True
+
+        def release(_: asyncio.Future) -> None:
+            if not self.completion.done():
+                self.completion.set_result(None)
+
+        if self.predecessor.done():
+            release(self.predecessor)
+        else:
+            self.predecessor.add_done_callback(release)
+
+
 @dataclass
 class JobRecord:
     job_id: str
@@ -496,21 +774,88 @@ class JobRecord:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     task: Optional[asyncio.Task] = field(default=None, repr=False)
+    client_instance_id: str = ""
+    document_epoch: str = ""
+    input_schema_sha256: str = ""
+    output_schema_sha256: str = ""
+    handler_contract_sha256: str = ""
+    arguments_sha256: str = ""
+    admitted_contract: Dict[str, Any] = field(default_factory=dict)
+    dispatched_request_ids: list[str] = field(default_factory=list)
+    dispatched_phases: list[str] = field(default_factory=list)
+    cancellation_state: str = "not_requested"
+    terminal_outcome: Optional[str] = None
+    result_sha256: Optional[str] = None
+    result_bytes: Optional[int] = None
+    transaction_id: Optional[str] = None
+    admission_sequence: int = 0
+    phase_receipts: list[Dict[str, Any]] = field(default_factory=list)
+    resolution_receipts: list[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    admission: Optional[OperationAdmission] = field(
+        default=None, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        if (
+            self.status == "completed"
+            and self.result is not None
+            and self.result_sha256 is None
+        ):
+            encoded = canonical_json_bytes(self.result)
+            self.result_sha256 = canonical_json_sha256(self.result)
+            self.result_bytes = len(encoded)
 
     def snapshot(self) -> Dict[str, Any]:
+        terminal = self.status in {
+            "completed",
+            "failed",
+            "cancelled",
+        }
+        result_present = self.result_sha256 is not None
+        error_present = self.error is not None
         payload: Dict[str, Any] = {
+            "format": "studio-mcp-v2-job-receipt",
+            "schema_version": 1,
             "job_id": self.job_id,
             "studio_id": self.studio_id,
+            "client_instance_id": self.client_instance_id,
+            "document_epoch": self.document_epoch,
             "generation": self.generation,
             "tool_name": self.public_tool,
+            "remote_tool": self.remote_tool,
+            "input_schema_sha256": self.input_schema_sha256,
+            "output_schema_sha256": self.output_schema_sha256,
+            "handler_contract_sha256": self.handler_contract_sha256,
+            "arguments_sha256": self.arguments_sha256,
+            "transaction_id": self.transaction_id,
+            "admitted_contract": copy.deepcopy(self.admitted_contract),
+            "timeout_ms": self.timeout_ms,
+            "admission_sequence": self.admission_sequence,
             "status": self.status,
             "dispatched": self.dispatched,
+            "dispatched_request_ids": list(
+                self.dispatched_request_ids
+            ),
+            "dispatched_phases": list(self.dispatched_phases),
+            "phase_receipts": copy.deepcopy(self.phase_receipts),
+            "resolution_receipts": copy.deepcopy(
+                self.resolution_receipts
+            ),
+            "cancellation_state": self.cancellation_state,
+            "terminal": terminal,
+            "terminal_outcome": self.terminal_outcome,
+            "result_present": result_present,
+            "error_present": error_present,
+            "result_sha256": self.result_sha256,
+            "result_bytes": self.result_bytes,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
-        if self.result is not None:
+        if result_present:
             payload["result"] = copy.deepcopy(self.result)
-        if self.error is not None:
+        if error_present:
             payload["error"] = copy.deepcopy(self.error)
         return payload
 
@@ -519,7 +864,7 @@ class StudioSession:
     """All operational state and serialization for one explicit Studio ID."""
 
     TERMINAL_JOB_STATES = frozenset(
-        {"completed", "failed", "cancelled", "disconnected"}
+        {"completed", "failed", "cancelled"}
     )
     PLAY_BRIDGE_RECOVERY_TOOLS = frozenset(
         {
@@ -573,16 +918,46 @@ class StudioSession:
         self.console: Deque[Dict[str, Any]] = deque(maxlen=1000)
         self.console_sequence = 0
         self.jobs: Dict[str, JobRecord] = {}
+        self.job_retirement_count = 0
+        self.job_retirement_chain_sha256 = "0" * 64
+        self.job_retirement_tombstones: Deque[
+            Dict[str, Any]
+        ] = deque(maxlen=MAX_JOB_RETIREMENT_TOMBSTONES)
         self.pending: Dict[str, PendingRequest] = {}
         self.used_request_ids: Set[str] = set()
         # Dispatched calls whose terminal outcome has not been proven. New
         # operations are quarantined until the same-generation late response
         # arrives or a reconnecting Studio supplies its settlement ledger.
         self.uncertain_requests: Dict[str, Dict[str, Any]] = {}
+        self.uncertain_pending: Dict[str, PendingRequest] = {}
+        self.multi_edit_recovery: Optional[Dict[str, Any]] = None
+        self.multi_edit_prepared_receipt: Optional[Dict[str, Any]] = None
         # Conservative v2 baseline: every Studio-bound operation is exclusive.
         self.operation_lock = asyncio.Lock()
+        # Explicit admission chaining makes the order deterministic even when
+        # a background job task has been created but has not yet reached the
+        # operation lock. Each session owns its own chain, so different Studio
+        # sessions remain concurrent.
+        self._next_admission_sequence = 1
+        self._admission_tail: Optional[asyncio.Future] = None
         self.last_seen_monotonic = time.monotonic()
         self.has_polled = False
+
+    def reserve_operation(self) -> OperationAdmission:
+        loop = asyncio.get_running_loop()
+        predecessor = self._admission_tail
+        if predecessor is None:
+            predecessor = loop.create_future()
+            predecessor.set_result(None)
+        completion = loop.create_future()
+        admission = OperationAdmission(
+            sequence=self._next_admission_sequence,
+            predecessor=predecessor,
+            completion=completion,
+        )
+        self._next_admission_sequence += 1
+        self._admission_tail = completion
+        return admission
 
     def snapshot(self) -> Dict[str, Any]:
         return {
@@ -597,9 +972,24 @@ class StudioSession:
             "last_confirmed_mode": self.last_confirmed_mode,
             "uncertainty_state": self.uncertainty_state,
             "play_bridge_uncertain": self.play_bridge_uncertain,
+            "multi_edit_recovery": (
+                copy.deepcopy(self.multi_edit_recovery)
+                if self.multi_edit_recovery is not None
+                else None
+            ),
             "uncertain_request_count": len(self.uncertain_requests),
             "pending_count": len(self.pending),
             "job_counts": self._job_counts(),
+            "job_retirement_count": self.job_retirement_count,
+            "job_retirement_chain_sha256": (
+                self.job_retirement_chain_sha256
+            ),
+            "job_retirement_tombstone_limit": (
+                MAX_JOB_RETIREMENT_TOMBSTONES
+            ),
+            "job_retirement_tombstones": copy.deepcopy(
+                list(self.job_retirement_tombstones)
+            ),
             "console_sequence": self.console_sequence,
         }
 
@@ -608,6 +998,106 @@ class StudioSession:
         for job in self.jobs.values():
             counts[job.status] = counts.get(job.status, 0) + 1
         return counts
+
+    @staticmethod
+    def _job_retained_bytes(job: JobRecord) -> int:
+        try:
+            return len(
+                canonical_json_bytes(
+                    {
+                        "arguments": job.arguments,
+                        "admitted_contract": job.admitted_contract,
+                        "phase_receipts": job.phase_receipts,
+                        "resolution_receipts": (
+                            job.resolution_receipts
+                        ),
+                        "result": job.result,
+                        "error": job.error,
+                    }
+                )
+            )
+        except ValidationError:
+            return MAX_RETAINED_JOB_BYTES + 1
+
+    def _retire_job(self, job: JobRecord) -> None:
+        tombstone = {
+            "job_id": job.job_id,
+            "studio_id": job.studio_id,
+            "client_instance_id": job.client_instance_id,
+            "document_epoch": job.document_epoch,
+            "generation": job.generation,
+            "tool_name": job.public_tool,
+            "remote_tool": job.remote_tool,
+            "input_schema_sha256": job.input_schema_sha256,
+            "output_schema_sha256": job.output_schema_sha256,
+            "handler_contract_sha256": job.handler_contract_sha256,
+            "arguments_sha256": job.arguments_sha256,
+            "status": job.status,
+            "terminal_outcome": job.terminal_outcome,
+            "result_sha256": job.result_sha256,
+            "result_bytes": job.result_bytes,
+            "phase_receipts_sha256": canonical_json_sha256(
+                job.phase_receipts
+            ),
+            "resolution_receipts_sha256": canonical_json_sha256(
+                job.resolution_receipts
+            ),
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+        }
+        previous_chain_sha256 = self.job_retirement_chain_sha256
+        next_chain_sha256 = canonical_json_sha256(
+            {
+                "previous_sha256": previous_chain_sha256,
+                "retired": tombstone,
+            }
+        )
+        tombstone["previous_chain_sha256"] = previous_chain_sha256
+        tombstone["chain_sha256"] = next_chain_sha256
+        self.job_retirement_chain_sha256 = next_chain_sha256
+        self.job_retirement_tombstones.append(tombstone)
+        self.job_retirement_count += 1
+        self.jobs.pop(job.job_id, None)
+
+    def _compact_terminal_jobs(
+        self,
+        *,
+        required_bytes: int = 0,
+        protected_job_id: Optional[str] = None,
+    ) -> None:
+        while True:
+            retained_bytes = sum(
+                self._job_retained_bytes(job)
+                for job in self.jobs.values()
+            )
+            if (
+                len(self.jobs) < MAX_SESSION_JOBS
+                and retained_bytes + required_bytes
+                <= MAX_RETAINED_JOB_BYTES
+            ):
+                return
+            candidates = sorted(
+                (
+                    job
+                    for job in self.jobs.values()
+                    if job.status in self.TERMINAL_JOB_STATES
+                    and job.job_id != protected_job_id
+                ),
+                key=lambda job: (
+                    job.updated_at,
+                    job.created_at,
+                    job.job_id,
+                ),
+            )
+            if not candidates:
+                return
+            self._retire_job(candidates[0])
+
+    def _finalize_job_storage(self, job: JobRecord) -> None:
+        if job.status in self.TERMINAL_JOB_STATES:
+            job.arguments = {}
+            job.admission = None
+        self._compact_terminal_jobs(protected_job_id=job.job_id)
 
     def replace_connection(
         self,
@@ -624,7 +1114,34 @@ class StudioSession:
         self._disconnect_current("Studio reconnected; old generation fenced")
         for request_id in settled_request_ids:
             if isinstance(request_id, str):
+                pending = self.uncertain_pending.get(request_id)
+                if (
+                    pending is not None
+                    and pending.remote_tool
+                    in {
+                        "studio_multi_edit",
+                        "studio_recover_multi_edit",
+                    }
+                    and pending.arguments.get("_phase") != "prepare"
+                ):
+                    # A bare request ID proves only that the plugin stopped
+                    # executing. It cannot prove a safe mutation outcome.
+                    # Prepare is the deliberate exception: its handler is
+                    # source-free and cannot dispatch a mutation.
+                    continue
+                if (
+                    pending is not None
+                    and pending.remote_tool == "studio_multi_edit"
+                    and pending.arguments.get("_phase") == "prepare"
+                ):
+                    self._settle_safe_unapplied_job(
+                        request_id,
+                        "prepare_settled_after_reconnect_no_apply",
+                    )
+                elif pending is not None:
+                    self._settle_safe_missing_receipt_job(request_id)
                 self.uncertain_requests.pop(request_id, None)
+                self.uncertain_pending.pop(request_id, None)
         self.generation += 1
         self.used_request_ids.clear()
         self.resume_token_hash = resume_token_hash
@@ -672,18 +1189,6 @@ class StudioSession:
 
     def _disconnect_current(self, reason: str) -> None:
         disconnect_mode = self.mode.lower()
-        terminal_candidate = (
-            disconnect_mode == "edit"
-            and self.uncertainty_state is None
-            and self.play_bridge_uncertain is None
-            and not self.operation_lock.locked()
-            and not self.pending
-            and not self.uncertain_requests
-            and all(
-                job.status in self.TERMINAL_JOB_STATES
-                for job in self.jobs.values()
-            )
-        )
         if self.transport is not None:
             self.transport.close()
         self.transport = None
@@ -691,7 +1196,7 @@ class StudioSession:
         self.last_confirmed_mode = disconnect_mode
         self.mode = "unknown"
         self.disconnected_at_monotonic = time.monotonic()
-        self.terminal_disconnect_candidate = terminal_candidate
+        self.terminal_disconnect_candidate = False
         self.terminal_disconnect_reason = str(reason)[:160]
         error = SessionDisconnectedError(reason)
         for pending in list(self.pending.values()):
@@ -700,37 +1205,149 @@ class StudioSession:
                 "operation": pending.remote_tool,
                 "reason": "connection_lost_after_dispatch",
             }
+            self.uncertain_pending[pending.request_id] = pending
             if not pending.future.done():
                 pending.future.set_exception(error)
         self.pending.clear()
-        self._refresh_uncertainty(
-            fallback=None if terminal_candidate else reason
-        )
         for job in self.jobs.values():
             if job.status not in self.TERMINAL_JOB_STATES:
-                job.status = "disconnected"
                 job.error = error.as_dict()
                 job.updated_at = time.time()
+                if (
+                    job.dispatched
+                    and job.remote_tool == "studio_multi_edit"
+                    and "apply" not in job.dispatched_phases
+                ):
+                    job.status = "failed"
+                    job.terminal_outcome = (
+                        "prepare_interrupted_no_apply"
+                    )
+                elif job.dispatched:
+                    job.status = "outcome_unknown"
+                    job.terminal_outcome = "connection_lost_after_dispatch"
+                else:
+                    job.status = "failed"
+                    job.terminal_outcome = (
+                        "not_dispatched_connection_lost"
+                    )
                 if not job.dispatched and job.task is not None:
+                    if job.admission is not None:
+                        job.admission.retire_after_predecessor()
                     job.task.cancel()
+        for job in list(self.jobs.values()):
+            if job.status in self.TERMINAL_JOB_STATES:
+                job.arguments = {}
+                job.admission = None
+        self._compact_terminal_jobs()
+        self._recompute_terminal_disconnect_candidate()
 
-    def assert_generation_online(self, admitted_generation: int) -> None:
+    def _recompute_terminal_disconnect_candidate(self) -> None:
+        if self.connected:
+            return
+        terminal_candidate = (
+            self.last_confirmed_mode == "edit"
+            and self.play_bridge_uncertain is None
+            and self.multi_edit_recovery is None
+            and not self.operation_lock.locked()
+            and not self.pending
+            and not self.uncertain_requests
+            and all(
+                job.status in self.TERMINAL_JOB_STATES
+                for job in self.jobs.values()
+            )
+        )
+        self.terminal_disconnect_candidate = terminal_candidate
+        self._refresh_uncertainty(
+            fallback=(
+                None
+                if terminal_candidate
+                else self.terminal_disconnect_reason
+            )
+        )
+
+    def assert_generation_online(
+        self,
+        admitted_generation: int,
+        *,
+        allow_uncertain: bool = False,
+    ) -> None:
         if admitted_generation != self.generation:
             raise StaleGenerationError(
                 "The operation was admitted before this Studio reconnected"
             )
         if not self.connected or self.transport is None:
             raise SessionDisconnectedError("The explicitly targeted Studio is offline")
-        if self.uncertain_requests:
+        if self.uncertain_requests and not allow_uncertain:
             raise SessionConflictError(
                 "This Studio is quarantined until prior dispatched request "
                 "outcomes are reconciled"
             )
 
     def assert_operation_admissible(
-        self, admitted_generation: int, remote_tool: str
+        self,
+        admitted_generation: int,
+        remote_tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
     ) -> None:
-        self.assert_generation_online(admitted_generation)
+        operation_arguments = arguments or {}
+        recovery_transaction_id = (
+            self.multi_edit_recovery.get("transaction_id")
+            if self.multi_edit_recovery is not None
+            else None
+        )
+        uncertainty_ids_match = (
+            set(self.uncertain_requests)
+            == set(self.uncertain_pending)
+        )
+        recovery_generation = (
+            self.multi_edit_recovery.get("generation")
+            if self.multi_edit_recovery is not None
+            else None
+        )
+        recovery_allowed = (
+            remote_tool == "studio_recover_multi_edit"
+            and self.multi_edit_recovery is not None
+            and operation_arguments.get("transaction_id")
+            == recovery_transaction_id
+            and type(recovery_generation) is int
+            and recovery_generation == admitted_generation
+            and uncertainty_ids_match
+            and all(
+                pending.generation == recovery_generation
+                and self.uncertain_requests[request_id].get(
+                    "generation"
+                )
+                == recovery_generation
+                and pending.arguments.get("transaction_id")
+                == recovery_transaction_id
+                and (
+                    (
+                        pending.remote_tool == "studio_multi_edit"
+                        and pending.arguments.get("_phase") == "apply"
+                    )
+                    or (
+                        pending.remote_tool
+                        == "studio_recover_multi_edit"
+                        and pending.arguments.get("_phase") is None
+                    )
+                )
+                for request_id, pending in (
+                    self.uncertain_pending.items()
+                )
+            )
+        )
+        self.assert_generation_online(
+            admitted_generation,
+            allow_uncertain=recovery_allowed,
+        )
+        if (
+            self.multi_edit_recovery is not None
+            and not recovery_allowed
+        ):
+            raise SessionConflictError(
+                "This Studio has an exact multi-edit recovery fence; only "
+                "the matching bounded recovery transaction is admitted"
+            )
         if (
             self.play_bridge_uncertain is not None
             and remote_tool not in self.PLAY_BRIDGE_RECOVERY_TOOLS
@@ -758,92 +1375,375 @@ class StudioSession:
         request_id: Optional[str] = None,
         expected_generation: Optional[int] = None,
         before_dispatch: Optional[Callable[[], None]] = None,
-        on_dispatched: Optional[Callable[[], None]] = None,
+        on_dispatched: Optional[Callable[..., None]] = None,
+        admission: Optional[OperationAdmission] = None,
     ) -> Any:
         admitted_generation = (
             self.generation
             if expected_generation is None
             else expected_generation
         )
-        async with self.operation_lock:
-            # Critical no-replay fence for calls that waited through reconnect.
-            self.assert_operation_admissible(
-                admitted_generation, remote_tool
-            )
-            if before_dispatch is not None:
-                before_dispatch()
-            if remote_tool not in self.capabilities:
-                from .errors import CapabilityError
+        operation_admission = admission or self.reserve_operation()
+        predecessor_reached = False
+        try:
+            await asyncio.shield(operation_admission.predecessor)
+            predecessor_reached = True
+            async with self.operation_lock:
+                if (
+                    remote_tool == "studio_multi_edit"
+                    and "_phase" not in arguments
+                ):
+                    normalized = normalize_multi_edit_arguments(arguments)
+                    return await self._invoke_multi_edit_locked(
+                        normalized,
+                        timeout_ms,
+                        request_id=request_id,
+                        admitted_generation=admitted_generation,
+                        before_dispatch=before_dispatch,
+                        on_dispatched=on_dispatched,
+                    )
+                return await self._invoke_locked(
+                    remote_tool,
+                    arguments,
+                    timeout_ms,
+                    request_id=request_id,
+                    admitted_generation=admitted_generation,
+                    before_dispatch=before_dispatch,
+                    on_dispatched=on_dispatched,
+                )
+        finally:
+            if predecessor_reached:
+                operation_admission.complete()
+            else:
+                operation_admission.retire_after_predecessor()
+            self._recompute_terminal_disconnect_candidate()
 
-                raise CapabilityError(
-                    "The targeted Studio did not advertise " + remote_tool
+    async def _invoke_multi_edit_locked(
+        self,
+        arguments: Dict[str, Any],
+        timeout_ms: int,
+        *,
+        request_id: Optional[str],
+        admitted_generation: int,
+        before_dispatch: Optional[Callable[[], None]],
+        on_dispatched: Optional[Callable[..., None]],
+    ) -> Any:
+        transaction_id = str(uuid.uuid4())
+        prepare_request_id = request_id or str(uuid.uuid4())
+        apply_request_id = str(uuid.uuid4())
+        started = time.monotonic()
+
+        def remaining_timeout() -> int:
+            elapsed_ms = int((time.monotonic() - started) * 1_000)
+            remaining = timeout_ms - elapsed_ms
+            if remaining < 1:
+                raise RequestTimeoutError(
+                    "Multi-edit exhausted its bounded total deadline before "
+                    "the next phase",
+                    details={
+                        "transaction_id": transaction_id,
+                        "phase": "between_phases",
+                    },
                 )
-            operation_request_id = request_id or str(uuid.uuid4())
-            if operation_request_id in self.used_request_ids:
-                raise StaleGenerationError(
-                    "Request ID reuse is forbidden within a Studio generation"
+            return remaining
+
+        prepare_args = {
+            "_phase": "prepare",
+            "transaction_id": transaction_id,
+            "datamodel_type": "Edit",
+            "targets": copy.deepcopy(arguments["targets"]),
+        }
+        phase = "prepare"
+        phase_request_id = prepare_request_id
+        apply_dispatched = False
+
+        def observe_dispatched(
+            operation_request_id: str,
+            dispatched_phase: str,
+            dispatched_transaction_id: Optional[str],
+        ) -> None:
+            nonlocal apply_dispatched
+            if dispatched_phase == "apply":
+                apply_dispatched = True
+            if on_dispatched is not None:
+                on_dispatched(
+                    operation_request_id,
+                    dispatched_phase,
+                    dispatched_transaction_id,
                 )
-            self.used_request_ids.add(operation_request_id)
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-            pending = PendingRequest(
-                request_id=operation_request_id,
-                generation=admitted_generation,
-                remote_tool=remote_tool,
-                arguments=copy.deepcopy(arguments),
-                future=future,
+
+        try:
+            prepared = await self._invoke_locked(
+                "studio_multi_edit",
+                prepare_args,
+                remaining_timeout(),
+                request_id=prepare_request_id,
+                admitted_generation=admitted_generation,
+                before_dispatch=before_dispatch,
+                on_dispatched=observe_dispatched,
             )
-            self.pending[operation_request_id] = pending
-            envelope = {
-                "v": 2,
-                "kind": "request",
-                "studio_id": self.studio_id,
-                "document_epoch": self.document_epoch,
-                "generation": admitted_generation,
-                "request_id": operation_request_id,
-                "operation": remote_tool,
-                "args": copy.deepcopy(arguments),
-                "deadline_ms": timeout_ms,
+            self.multi_edit_prepared_receipt = copy.deepcopy(prepared)
+            phase = "apply"
+            phase_request_id = apply_request_id
+            apply_args = {
+                "_phase": "apply",
+                "transaction_id": transaction_id,
+                "prepare_request_id": prepare_request_id,
+                "prepare_sha256": prepared["prepare_sha256"],
+                "prepared_targets": copy.deepcopy(prepared["targets"]),
             }
-            dispatched = False
-            try:
-                assert self.transport is not None
-                await self.transport.send(envelope)
-                dispatched = True
-                if on_dispatched is not None:
-                    on_dispatched()
-                result = await asyncio.wait_for(
-                    asyncio.shield(future), timeout_ms / 1000
+            result = await self._invoke_locked(
+                "studio_multi_edit",
+                apply_args,
+                remaining_timeout(),
+                request_id=apply_request_id,
+                admitted_generation=admitted_generation,
+                before_dispatch=before_dispatch,
+                on_dispatched=observe_dispatched,
+            )
+            if result.get("recovery_required") is True:
+                self._set_multi_edit_recovery(
+                    transaction_id,
+                    apply_request_id,
+                    admitted_generation,
+                    "receipt_requires_recovery",
                 )
-                # A response can wake this task just before a reconnect. Fence
-                # the result and its state observations against that race.
-                self.assert_generation_online(admitted_generation)
-                return result
-            except asyncio.TimeoutError:
+            return result
+        except RemoteToolError as exc:
+            if phase == "apply" and apply_dispatched:
+                self._set_multi_edit_recovery(
+                    transaction_id,
+                    phase_request_id,
+                    admitted_generation,
+                    "apply_error_without_safe_receipt",
+                )
+                exc.details.update(
+                    {
+                        "transaction_id": transaction_id,
+                        "phase": phase,
+                        "request_id": phase_request_id,
+                    }
+                )
+            elif phase == "apply":
+                self.multi_edit_prepared_receipt = None
+            raise
+        except (
+            RequestTimeoutError,
+            SessionDisconnectedError,
+            StaleGenerationError,
+            asyncio.CancelledError,
+        ) as exc:
+            if phase == "apply" and apply_dispatched:
+                self._set_multi_edit_recovery(
+                    transaction_id,
+                    phase_request_id,
+                    admitted_generation,
+                    "apply_outcome_unknown",
+                )
+            elif phase == "apply":
+                # Prepare never mutates source. If apply was never sent, the
+                # public operation is safely not applied and no compensating
+                # recovery is authorized or necessary.
+                self.multi_edit_prepared_receipt = None
+            if hasattr(exc, "details"):
+                exc.details.update(
+                    {
+                        "transaction_id": transaction_id,
+                        "phase": phase,
+                        "request_id": phase_request_id,
+                    }
+                )
+            raise
+        except Exception as exc:
+            if phase == "apply" and apply_dispatched:
+                self._set_multi_edit_recovery(
+                    transaction_id,
+                    phase_request_id,
+                    admitted_generation,
+                    "apply_exception_after_dispatch",
+                )
+            elif phase == "apply":
+                # Admission, authorization, or local validation can fail
+                # after a source-free prepare receipt but before apply is
+                # sent. The prepared plan may remain in the plugin's bounded
+                # cache, but no source mutation was dispatched and the host
+                # must not retain a phantom recovery obligation.
+                self.multi_edit_prepared_receipt = None
+            if hasattr(exc, "details"):
+                exc.details.update(
+                    {
+                        "transaction_id": transaction_id,
+                        "phase": phase,
+                        "request_id": phase_request_id,
+                    }
+                )
+            raise
+
+    def _set_multi_edit_recovery(
+        self,
+        transaction_id: str,
+        request_id: str,
+        generation: int,
+        state: str,
+    ) -> None:
+        self.multi_edit_recovery = {
+            "transaction_id": transaction_id,
+            "request_id": request_id,
+            "generation": generation,
+            "state": state,
+        }
+        self.uncertainty_state = "multi_edit:" + state
+
+    async def _invoke_locked(
+        self,
+        remote_tool: str,
+        arguments: Dict[str, Any],
+        timeout_ms: int,
+        *,
+        request_id: Optional[str],
+        admitted_generation: int,
+        before_dispatch: Optional[Callable[[], None]],
+        on_dispatched: Optional[Callable[..., None]],
+    ) -> Any:
+        if remote_tool == "studio_recover_multi_edit" and (
+            self.multi_edit_recovery is None
+            or arguments.get("transaction_id")
+            != self.multi_edit_recovery.get("transaction_id")
+        ):
+            raise SessionConflictError(
+                "No exact recovery-required multi-edit transaction matches "
+                "this explicit Studio session"
+            )
+        # Critical no-replay fence for calls that waited through reconnect.
+        self.assert_operation_admissible(
+            admitted_generation,
+            remote_tool,
+            arguments,
+        )
+        if before_dispatch is not None:
+            before_dispatch()
+        if remote_tool not in self.capabilities:
+            from .errors import CapabilityError
+
+            raise CapabilityError(
+                "The targeted Studio did not advertise " + remote_tool
+            )
+        operation_request_id = request_id or str(uuid.uuid4())
+        if operation_request_id in self.used_request_ids:
+            raise StaleGenerationError(
+                "Request ID reuse is forbidden within a Studio generation"
+            )
+        self.used_request_ids.add(operation_request_id)
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        pending = PendingRequest(
+            request_id=operation_request_id,
+            generation=admitted_generation,
+            remote_tool=remote_tool,
+            arguments=copy.deepcopy(arguments),
+            future=future,
+        )
+        self.pending[operation_request_id] = pending
+        envelope = {
+            "v": 2,
+            "kind": "request",
+            "studio_id": self.studio_id,
+            "document_epoch": self.document_epoch,
+            "generation": admitted_generation,
+            "request_id": operation_request_id,
+            "operation": remote_tool,
+            "args": copy.deepcopy(arguments),
+            "deadline_ms": timeout_ms,
+        }
+        dispatched = False
+        try:
+            assert self.transport is not None
+            await self.transport.send(envelope)
+            dispatched = True
+            if on_dispatched is not None:
+                dispatched_phase = arguments.get("_phase")
+                if not isinstance(dispatched_phase, str):
+                    dispatched_phase = (
+                        "recover"
+                        if remote_tool == "studio_recover_multi_edit"
+                        else "direct"
+                    )
+                try:
+                    on_dispatched(
+                        operation_request_id,
+                        dispatched_phase,
+                        arguments.get("transaction_id"),
+                    )
+                except Exception:
+                    uncertainty = {
+                        "generation": admitted_generation,
+                        "operation": remote_tool,
+                        "reason": "post_dispatch_observer_failed",
+                    }
+                    transaction_id = arguments.get("transaction_id")
+                    if isinstance(transaction_id, str):
+                        uncertainty["transaction_id"] = transaction_id
+                    self.uncertain_requests[
+                        operation_request_id
+                    ] = uncertainty
+                    self.uncertain_pending[
+                        operation_request_id
+                    ] = pending
+                    if (
+                        remote_tool
+                        in {
+                            "studio_multi_edit",
+                            "studio_recover_multi_edit",
+                        }
+                        and dispatched_phase != "prepare"
+                        and isinstance(transaction_id, str)
+                    ):
+                        self._set_multi_edit_recovery(
+                            transaction_id,
+                            operation_request_id,
+                            admitted_generation,
+                            "post_dispatch_observer_failed",
+                        )
+                    else:
+                        self._refresh_uncertainty()
+                    raise
+            result = await asyncio.wait_for(
+                asyncio.shield(future), timeout_ms / 1000
+            )
+            # A response can wake this task just before a reconnect. Fence
+            # only immutable connection identity here; a valid recovery-
+            # required receipt intentionally leaves the session quarantined.
+            self.assert_generation_online(
+                admitted_generation, allow_uncertain=True
+            )
+            return result
+        except asyncio.TimeoutError:
+            self.uncertain_requests[operation_request_id] = {
+                "generation": admitted_generation,
+                "operation": remote_tool,
+                "reason": "response_timeout_after_dispatch",
+            }
+            self.uncertain_pending[operation_request_id] = pending
+            self._refresh_uncertainty()
+            raise RequestTimeoutError(
+                "Timed out waiting for the targeted Studio response"
+            )
+        except asyncio.CancelledError:
+            if dispatched and not future.done():
                 self.uncertain_requests[operation_request_id] = {
                     "generation": admitted_generation,
                     "operation": remote_tool,
-                    "reason": "response_timeout_after_dispatch",
+                    "reason": "local_wait_cancelled_after_dispatch",
                 }
+                self.uncertain_pending[operation_request_id] = pending
                 self._refresh_uncertainty()
-                raise RequestTimeoutError(
-                    "Timed out waiting for the targeted Studio response"
-                )
-            except asyncio.CancelledError:
-                if dispatched and not future.done():
-                    self.uncertain_requests[operation_request_id] = {
-                        "generation": admitted_generation,
-                        "operation": remote_tool,
-                        "reason": "local_wait_cancelled_after_dispatch",
-                    }
-                    self._refresh_uncertainty()
-                raise
-            finally:
-                current = self.pending.get(operation_request_id)
-                if current is pending:
-                    self.pending.pop(operation_request_id, None)
-                if not future.done():
-                    future.cancel()
+            raise
+        finally:
+            current = self.pending.get(operation_request_id)
+            if current is pending:
+                self.pending.pop(operation_request_id, None)
+            if not future.done():
+                future.cancel()
 
     @staticmethod
     def _canonical_uuid(value: Any) -> bool:
@@ -928,6 +1828,27 @@ class StudioSession:
         )
 
     @staticmethod
+    def _valid_tree_cursor(value: Any, *, allow_empty: bool) -> bool:
+        if type(value) is not str:
+            return False
+        if value == "":
+            return allow_empty
+        if len(value) > 512:
+            return False
+        matched = _DURABLE_TREE_CURSOR_RE.fullmatch(value)
+        if matched is None:
+            return False
+        encoded = matched.group(1)
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return False
+        return (
+            bool(decoded)
+            and base64.b64encode(decoded).decode("ascii") == encoded
+        )
+
+    @staticmethod
     def _normalized_script_path(
         value: Any, *, allow_empty: bool
     ) -> Optional[tuple[str, ...]]:
@@ -955,6 +1876,239 @@ class StudioSession:
                 return None
             normalized.append(segment)
         return tuple(normalized)
+
+    def _normalized_tree_request(
+        self, arguments: Any
+    ) -> Optional[Dict[str, Any]]:
+        if (
+            type(arguments) is not dict
+            or not frozenset(arguments).issubset(
+                _DURABLE_TREE_ARGUMENT_KEYS
+            )
+        ):
+            return None
+        root_path = self._normalized_script_path(
+            arguments.get("root_path", []), allow_empty=True
+        )
+        if root_path is None:
+            return None
+        max_depth = arguments.get("max_depth", 2)
+        scan_limit = arguments.get("scan_limit", 2_000)
+        if "max_results" in arguments and "page_size" in arguments:
+            return None
+        page_size = arguments.get(
+            "page_size", arguments.get("max_results", 200)
+        )
+        name_filter = arguments.get("name_filter", "")
+        class_filter = arguments.get("class_filter", "")
+        class_is_a = arguments.get("class_is_a", False)
+        if (
+            not self._bounded_integer(max_depth, 0, 6)
+            or len(root_path) + max_depth > 64
+            or not self._bounded_integer(scan_limit, 1, 5_000)
+            or not self._bounded_integer(page_size, 1, 500)
+            or type(class_is_a) is not bool
+            or (class_is_a and not class_filter)
+        ):
+            return None
+        if name_filter:
+            if (
+                not self._bounded_text(name_filter, 100)
+                or any(
+                    unicodedata.category(character) == "Cc"
+                    for character in name_filter
+                )
+            ):
+                return None
+        elif type(name_filter) is not str:
+            return None
+        if class_filter:
+            if (
+                type(class_filter) is not str
+                or re.fullmatch(
+                    r"[A-Za-z_][A-Za-z0-9_]{0,99}", class_filter
+                )
+                is None
+            ):
+                return None
+        elif type(class_filter) is not str:
+            return None
+        if "continuation_cursor" in arguments and not self._valid_tree_cursor(
+            arguments["continuation_cursor"], allow_empty=False
+        ):
+            return None
+        return {
+            "root_path": root_path,
+            "max_depth": max_depth,
+            "scan_limit": scan_limit,
+            "page_size": page_size,
+            "name_filter": name_filter,
+            "class_filter": class_filter,
+            "class_is_a": class_is_a,
+        }
+
+    def _valid_durable_tree_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        expected = self._normalized_tree_request(pending.arguments)
+        if expected is None:
+            return False
+        if (
+            type(result) is not dict
+            or frozenset(result) != _DURABLE_TREE_RESULT_KEYS
+            or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
+            or type(result.get("v")) is not int
+            or result.get("v") != 1
+            or result.get("operation") != "studio_list_tree"
+            or result.get("operation") != pending.remote_tool
+            or result.get("studio_id") != self.studio_id
+            or result.get("client_instance_id")
+            != self.client_instance_id
+            or result.get("document_epoch") != self.document_epoch
+            or type(result.get("generation")) is not int
+            or result.get("generation") != pending.generation
+            or result.get("generation") != self.generation
+            or result.get("request_id") != pending.request_id
+            or result.get("sort_version") != "name-class-v1"
+            or result.get("output_limit_bytes")
+            != _DURABLE_TREE_OUTPUT_LIMIT_BYTES
+            or type(result.get("output_limit_bytes")) is not int
+        ):
+            return False
+        root_path = self._normalized_script_path(
+            result.get("root_path"), allow_empty=True
+        )
+        if (
+            root_path is None
+            or root_path != expected["root_path"]
+            or result.get("max_depth") != expected["max_depth"]
+            or type(result.get("max_depth")) is not int
+            or result.get("scan_limit") != expected["scan_limit"]
+            or type(result.get("scan_limit")) is not int
+            or result.get("page_size") != expected["page_size"]
+            or type(result.get("page_size")) is not int
+            or result.get("max_results") != expected["page_size"]
+            or type(result.get("max_results")) is not int
+            or result.get("name_filter") != expected["name_filter"]
+            or result.get("class_filter") != expected["class_filter"]
+            or result.get("class_is_a") is not expected["class_is_a"]
+        ):
+            return False
+        scanned = result.get("scanned")
+        returned = result.get("returned")
+        items = result.get("items")
+        output_bytes = result.get("output_bytes")
+        if (
+            not self._bounded_integer(
+                scanned, 0, expected["scan_limit"]
+            )
+            or not self._bounded_integer(
+                returned, 0, expected["page_size"]
+            )
+            or type(items) is not list
+            or len(items) != returned
+            or not self._bounded_integer(
+                output_bytes, 0, _DURABLE_TREE_OUTPUT_LIMIT_BYTES
+            )
+        ):
+            return False
+        truncated = result.get("truncated")
+        has_more = result.get("has_more")
+        cursor = result.get("continuation_cursor")
+        reason = result.get("truncation_reason")
+        if (
+            type(truncated) is not bool
+            or has_more is not truncated
+            or not self._valid_tree_cursor(cursor, allow_empty=True)
+            or type(reason) is not str
+            or reason
+            not in {
+                "complete",
+                "page_size",
+                "scan_limit",
+                "output_bytes",
+            }
+            or truncated is not bool(cursor)
+            or (not truncated and reason != "complete")
+            or (truncated and reason == "complete")
+        ):
+            return False
+        if reason == "page_size" and returned != expected["page_size"]:
+            return False
+        if reason == "scan_limit" and scanned != expected["scan_limit"]:
+            return False
+
+        previous_path: Optional[tuple[str, ...]] = None
+        calculated_output_bytes = 0
+        folded_filter = expected["name_filter"].lower()
+        for item in items:
+            if (
+                type(item) is not dict
+                or frozenset(item) != _DURABLE_TREE_ITEM_KEYS
+            ):
+                return False
+            path = self._normalized_script_path(
+                item.get("path"), allow_empty=True
+            )
+            name = item.get("name")
+            class_name = item.get("class_name")
+            if (
+                path is None
+                or path[: len(root_path)] != root_path
+                or len(path) - len(root_path) > expected["max_depth"]
+                or (previous_path is not None and path <= previous_path)
+                or not self._bounded_text(name, 100)
+                or (path and name != path[-1])
+                or not self._inspection_identifier(class_name)
+                or not self._bounded_integer(
+                    item.get("child_count"), 0, 10_000
+                )
+                or (
+                    folded_filter
+                    and folded_filter not in name.lower()
+                )
+                or (
+                    expected["class_filter"]
+                    and not expected["class_is_a"]
+                    and class_name != expected["class_filter"]
+                )
+            ):
+                return False
+            previous_path = path
+            try:
+                calculated_output_bytes += len(
+                    json.dumps(
+                        item,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ) + 1
+            except (
+                TypeError,
+                ValueError,
+                UnicodeEncodeError,
+                RecursionError,
+            ):
+                return False
+        if output_bytes != calculated_output_bytes:
+            return False
+        try:
+            encoded = json.dumps(
+                result,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (
+            TypeError,
+            ValueError,
+            UnicodeEncodeError,
+            RecursionError,
+        ):
+            return False
+        return len(encoded) <= _DURABLE_TREE_OUTPUT_LIMIT_BYTES
 
     @staticmethod
     def _finite_inspection_number(value: Any) -> bool:
@@ -2224,6 +3378,390 @@ class StudioSession:
             )
         return False
 
+    def _valid_multi_edit_prepared_target(
+        self,
+        target: Any,
+        requested: Dict[str, Any],
+        index: int,
+    ) -> bool:
+        path = self._normalized_script_path(
+            target.get("path") if isinstance(target, dict) else None,
+            allow_empty=False,
+        )
+        expected_path = self._normalized_script_path(
+            requested.get("path"), allow_empty=False
+        )
+        return (
+            type(target) is dict
+            and frozenset(target)
+            == _DURABLE_MULTI_EDIT_PREPARED_TARGET_KEYS
+            and target.get("index") == index
+            and type(target.get("index")) is int
+            and path is not None
+            and path == expected_path
+            and target.get("expected_sha256")
+            == requested.get("expected_sha256")
+            and target.get("prepared_sha256")
+            == requested.get("expected_sha256")
+            and type(target.get("planned_sha256")) is str
+            and SHA256_RE.fullmatch(target["planned_sha256"]) is not None
+            and self._bounded_integer(
+                target.get("source_length"),
+                0,
+                MAX_MULTI_EDIT_SOURCE_BYTES,
+            )
+            and self._bounded_integer(
+                target.get("planned_source_length"),
+                0,
+                MAX_MULTI_EDIT_SOURCE_BYTES,
+            )
+            and target.get("edit_count") == len(requested["edits"])
+            and type(target.get("edit_count")) is int
+            and 1
+            <= target["edit_count"]
+            <= MAX_MULTI_EDIT_EDITS_PER_TARGET
+            and self._bounded_integer(
+                target.get("replacement_count"),
+                target["edit_count"],
+                MAX_MULTI_EDIT_REPLACEMENT_SPANS,
+            )
+            and target.get("status") == "prepared"
+        )
+
+    def _valid_multi_edit_prepare_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        arguments = pending.arguments
+        targets = arguments.get("targets")
+        if (
+            arguments.get("_phase") != "prepare"
+            or arguments.get("datamodel_type") != "Edit"
+            or not self._canonical_uuid(
+                arguments.get("transaction_id")
+            )
+            or type(targets) is not list
+        ):
+            return False
+        if (
+            type(result) is not dict
+            or frozenset(result) != _DURABLE_MULTI_EDIT_PREPARE_KEYS
+            or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
+            or type(result.get("v")) is not int
+            or result.get("v") != 1
+            or result.get("operation") != "studio_multi_edit"
+            or result.get("phase") != "prepare"
+            or result.get("studio_id") != self.studio_id
+            or result.get("client_instance_id")
+            != self.client_instance_id
+            or result.get("document_epoch") != self.document_epoch
+            or type(result.get("generation")) is not int
+            or result.get("generation") != pending.generation
+            or result.get("generation") != self.generation
+            or result.get("request_id") != pending.request_id
+            or result.get("transaction_id")
+            != arguments["transaction_id"]
+            or result.get("ordering_version")
+            != MULTI_EDIT_ORDERING_VERSION
+            or result.get("atomicity") != MULTI_EDIT_ATOMICITY
+            or result.get("target_count") != len(targets)
+            or type(result.get("target_count")) is not int
+            or not 1
+            <= result["target_count"]
+            <= MAX_MULTI_EDIT_TARGETS
+            or result.get("edit_count") != total_edit_count(targets)
+            or type(result.get("edit_count")) is not int
+            or not 1 <= result["edit_count"] <= MAX_MULTI_EDIT_EDITS
+            or result.get("expires_in_ms") != 120_000
+            or type(result.get("expires_in_ms")) is not int
+        ):
+            return False
+        receipt_targets = result.get("targets")
+        if (
+            type(receipt_targets) is not list
+            or len(receipt_targets) != len(targets)
+        ):
+            return False
+        aggregate_source = 0
+        aggregate_planned = 0
+        replacement_total = 0
+        for index, (receipt_target, requested) in enumerate(
+            zip(receipt_targets, targets), start=1
+        ):
+            if not self._valid_multi_edit_prepared_target(
+                receipt_target, requested, index
+            ):
+                return False
+            aggregate_source += receipt_target["source_length"]
+            aggregate_planned += receipt_target[
+                "planned_source_length"
+            ]
+            replacement_total += receipt_target[
+                "replacement_count"
+            ]
+        if (
+            result.get("aggregate_source_bytes") != aggregate_source
+            or type(result.get("aggregate_source_bytes")) is not int
+            or not 0
+            <= aggregate_source
+            <= MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
+            or result.get("aggregate_planned_source_bytes")
+            != aggregate_planned
+            or type(result.get("aggregate_planned_source_bytes"))
+            is not int
+            or not 0
+            <= aggregate_planned
+            <= MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
+            or replacement_total > MAX_MULTI_EDIT_REPLACEMENT_SPANS
+            or type(result.get("prepare_sha256")) is not str
+            or SHA256_RE.fullmatch(result["prepare_sha256"]) is None
+        ):
+            return False
+        try:
+            return result["prepare_sha256"] == prepare_receipt_sha256(
+                result
+            )
+        except (KeyError, TypeError, ValidationError):
+            return False
+
+    def _valid_multi_edit_mutation_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        phase = pending.arguments.get("_phase")
+        is_recovery = pending.remote_tool == "studio_recover_multi_edit"
+        expected_phase = "recover" if is_recovery else "apply"
+        expected_operation = (
+            "studio_recover_multi_edit"
+            if is_recovery
+            else "studio_multi_edit"
+        )
+        prepared = self.multi_edit_prepared_receipt
+        if (
+            (
+                phase is not None
+                if is_recovery
+                else phase != "apply"
+            )
+            or prepared is None
+            or type(result) is not dict
+            or frozenset(result) != _DURABLE_MULTI_EDIT_MUTATION_KEYS
+            or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
+            or type(result.get("v")) is not int
+            or result.get("v") != 1
+            or result.get("operation") != expected_operation
+            or result.get("phase") != expected_phase
+            or result.get("studio_id") != self.studio_id
+            or result.get("client_instance_id")
+            != self.client_instance_id
+            or result.get("document_epoch") != self.document_epoch
+            or type(result.get("generation")) is not int
+            or result.get("generation") != pending.generation
+            or result.get("generation") != self.generation
+            or prepared.get("generation") != pending.generation
+            or result.get("request_id") != pending.request_id
+            or result.get("transaction_id")
+            != prepared.get("transaction_id")
+            or result.get("transaction_id")
+            != pending.arguments.get("transaction_id")
+            or result.get("prepare_request_id")
+            != prepared.get("request_id")
+            or result.get("prepare_sha256")
+            != prepared.get("prepare_sha256")
+            or result.get("ordering_version")
+            != MULTI_EDIT_ORDERING_VERSION
+            or result.get("atomicity") != MULTI_EDIT_ATOMICITY
+            or result.get("receipt_contract")
+            != MULTI_EDIT_RECEIPT_CONTRACT
+            or result.get("target_count")
+            != prepared.get("target_count")
+            or type(result.get("target_count")) is not int
+            or result.get("edit_count") != prepared.get("edit_count")
+            or type(result.get("edit_count")) is not int
+            or type(result.get("safe_terminal")) is not bool
+            or type(result.get("recovery_required")) is not bool
+            or result["recovery_required"] is result["safe_terminal"]
+        ):
+            return False
+        outcome = result.get("outcome")
+        allowed_outcomes = (
+            {"recovered", "recovery_required"}
+            if is_recovery
+            else {
+                "applied",
+                "aborted_preflight",
+                "rolled_back",
+                "recovery_required",
+            }
+        )
+        if (
+            type(outcome) is not str
+            or outcome not in allowed_outcomes
+            or result["safe_terminal"]
+            is (outcome == "recovery_required")
+        ):
+            return False
+        targets = result.get("targets")
+        prepared_targets = prepared.get("targets")
+        if (
+            type(targets) is not list
+            or type(prepared_targets) is not list
+            or len(targets) != result["target_count"]
+            or len(targets) != len(prepared_targets)
+        ):
+            return False
+        saw_recovery = False
+        saw_preflight_conflict = False
+        for index, (target, expected) in enumerate(
+            zip(targets, prepared_targets), start=1
+        ):
+            if (
+                type(target) is not dict
+                or frozenset(target)
+                != _DURABLE_MULTI_EDIT_TARGET_OUTCOME_KEYS
+                or target.get("index") != index
+                or type(target.get("index")) is not int
+                or self._normalized_script_path(
+                    target.get("path"), allow_empty=False
+                )
+                != self._normalized_script_path(
+                    expected.get("path"), allow_empty=False
+                )
+            ):
+                return False
+            for field_name in (
+                "expected_sha256",
+                "prepared_sha256",
+                "planned_sha256",
+                "source_length",
+                "planned_source_length",
+                "edit_count",
+                "replacement_count",
+            ):
+                if target.get(field_name) != expected.get(field_name):
+                    return False
+            before = target.get("observed_before_sha256")
+            after = target.get("observed_after_sha256")
+            if (
+                type(before) is not str
+                or (before and SHA256_RE.fullmatch(before) is None)
+                or type(after) is not str
+                or (after and SHA256_RE.fullmatch(after) is None)
+                or target.get("status")
+                not in {
+                    "applied",
+                    "rolled_back",
+                    "not_applied",
+                    "recovery_required",
+                }
+            ):
+                return False
+            status = target["status"]
+            saw_recovery = saw_recovery or status == "recovery_required"
+            saw_preflight_conflict = saw_preflight_conflict or (
+                not before
+                or before != expected["prepared_sha256"]
+            )
+
+            prepared_sha = expected["prepared_sha256"]
+            planned_sha = expected["planned_sha256"]
+            if expected_phase == "apply":
+                if outcome == "applied" and (
+                    status != "applied"
+                    or before != prepared_sha
+                    or after != planned_sha
+                ):
+                    return False
+                if outcome == "aborted_preflight" and (
+                    status != "not_applied"
+                    or before != after
+                ):
+                    return False
+                if outcome == "rolled_back" and (
+                    status not in {"rolled_back", "not_applied"}
+                    or before != prepared_sha
+                    or after != prepared_sha
+                ):
+                    return False
+                if outcome == "recovery_required":
+                    if status not in {
+                        "rolled_back",
+                        "not_applied",
+                        "recovery_required",
+                    }:
+                        return False
+                    if status in {"rolled_back", "not_applied"} and (
+                        before != prepared_sha
+                        or after != prepared_sha
+                    ):
+                        return False
+            else:
+                if outcome == "recovered" and (
+                    status != "rolled_back"
+                    or before not in {prepared_sha, planned_sha}
+                    or after != prepared_sha
+                ):
+                    return False
+                if outcome == "recovery_required":
+                    if status not in {
+                        "rolled_back",
+                        "recovery_required",
+                    }:
+                        return False
+                    if status == "rolled_back" and (
+                        before not in {prepared_sha, planned_sha}
+                        or after != prepared_sha
+                    ):
+                        return False
+        if outcome == "aborted_preflight" and not saw_preflight_conflict:
+            return False
+        if (outcome == "recovery_required") is not saw_recovery:
+            return False
+        if (
+            type(result.get("receipt_sha256")) is not str
+            or SHA256_RE.fullmatch(result["receipt_sha256"]) is None
+        ):
+            return False
+        try:
+            if result["receipt_sha256"] != mutation_receipt_sha256(
+                result
+            ):
+                return False
+            encoded = json.dumps(
+                result,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            UnicodeEncodeError,
+            RecursionError,
+            ValidationError,
+        ):
+            return False
+        return len(encoded) <= MAX_MULTI_EDIT_RECEIPT_BYTES
+
+    def _valid_multi_edit_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        if (
+            pending.remote_tool == "studio_multi_edit"
+            and pending.arguments.get("_phase") == "prepare"
+        ):
+            return self._valid_multi_edit_prepare_result(
+                pending, result
+            )
+        if pending.remote_tool in {
+            "studio_multi_edit",
+            "studio_recover_multi_edit",
+        }:
+            return self._valid_multi_edit_mutation_result(
+                pending, result
+            )
+        return False
+
     @staticmethod
     def _controller_mode_from_predicates(
         predicates: Dict[str, Dict[str, Any]]
@@ -2452,6 +3990,369 @@ class StudioSession:
             predicates,
         )
 
+    def _observe_multi_edit_receipt(
+        self, pending: PendingRequest, result: Dict[str, Any]
+    ) -> None:
+        if result.get("phase") == "prepare":
+            return
+        transaction_id = result["transaction_id"]
+        if result.get("recovery_required") is True:
+            self.uncertain_requests[pending.request_id] = {
+                "generation": pending.generation,
+                "operation": pending.remote_tool,
+                "reason": "validated_multi_edit_recovery_required",
+                "transaction_id": transaction_id,
+            }
+            self.uncertain_pending[pending.request_id] = pending
+            self._set_multi_edit_recovery(
+                transaction_id,
+                pending.request_id,
+                pending.generation,
+                "validated_recovery_required",
+            )
+            return
+        if result.get("safe_terminal") is True:
+            resolver_job_id = ""
+            for candidate in self.jobs.values():
+                if pending.request_id in candidate.dispatched_request_ids:
+                    resolver_job_id = candidate.job_id
+                    break
+            encoded_resolution = canonical_json_bytes(result)
+            resolution_receipt = {
+                "format": "studio-mcp-v2-job-resolution",
+                "schema_version": 1,
+                "kind": "exact_multi_edit_recovery",
+                "studio_id": self.studio_id,
+                "client_instance_id": self.client_instance_id,
+                "document_epoch": self.document_epoch,
+                "generation": pending.generation,
+                "request_id": pending.request_id,
+                "transaction_id": transaction_id,
+                "operation": "studio_recover_multi_edit",
+                "phase": "recover",
+                "source": (
+                    "job" if resolver_job_id else "direct"
+                ),
+                "resolver_job_id": resolver_job_id,
+                "success": True,
+                "safe_terminal": True,
+                "recovery_required": False,
+                "outcome": "recovered",
+                "receipt_sha256": result["receipt_sha256"],
+                "result_sha256": canonical_json_sha256(result),
+                "result_bytes": len(encoded_resolution),
+                "result": copy.deepcopy(result),
+            }
+            for request_id, context in list(
+                self.uncertain_pending.items()
+            ):
+                if (
+                    context.remote_tool
+                    in {
+                        "studio_multi_edit",
+                        "studio_recover_multi_edit",
+                    }
+                    and context.arguments.get("transaction_id")
+                    == transaction_id
+                ):
+                    self.uncertain_pending.pop(request_id, None)
+                    self.uncertain_requests.pop(request_id, None)
+            if (
+                self.multi_edit_recovery is not None
+                and self.multi_edit_recovery.get("transaction_id")
+                == transaction_id
+            ):
+                self.multi_edit_recovery = None
+            if (
+                self.multi_edit_prepared_receipt is not None
+                and self.multi_edit_prepared_receipt.get("transaction_id")
+                == transaction_id
+            ):
+                self.multi_edit_prepared_receipt = None
+            self._refresh_uncertainty()
+            for job in list(self.jobs.values()):
+                if (
+                    job.transaction_id == transaction_id
+                    and job.status == "outcome_unknown"
+                ):
+                    if (
+                        result.get("phase") != "recover"
+                        or result.get("operation")
+                        != "studio_recover_multi_edit"
+                        or result.get("outcome") != "recovered"
+                    ):
+                        # A matching safe late apply receipt is recorded by
+                        # _record_job_response using its own request
+                        # correlation. Only an independently dispatched exact
+                        # recovery may externally resolve another job.
+                        continue
+                    if any(
+                        receipt.get("request_id")
+                        == pending.request_id
+                        for receipt in job.resolution_receipts
+                    ):
+                        continue
+                    if (
+                        len(job.resolution_receipts)
+                        >= MAX_JOB_RESOLUTION_RECEIPTS
+                    ):
+                        # A terminal job can normally be resolved only once.
+                        # Preserve outcome_unknown rather than discarding an
+                        # audit link if corrupted state reaches this bound.
+                        continue
+                    job.status = "completed"
+                    job.resolution_receipts.append(
+                        copy.deepcopy(resolution_receipt)
+                    )
+                    job.terminal_outcome = (
+                        "resolved_by_exact_recovery:recovered"
+                    )
+                    job.error = None
+                    job.updated_at = time.time()
+                    self._finalize_job_storage(job)
+
+    def _record_job_response(
+        self,
+        pending: PendingRequest,
+        *,
+        success: bool,
+        result: Any = None,
+        error: Any = None,
+        late: bool = False,
+    ) -> None:
+        phase = pending.arguments.get("_phase")
+        if not isinstance(phase, str):
+            phase = (
+                "recover"
+                if pending.remote_tool == "studio_recover_multi_edit"
+                else "direct"
+            )
+        mutation_phase = phase in {"apply", "recover"}
+        for job in self.jobs.values():
+            if pending.request_id not in job.dispatched_request_ids:
+                continue
+            if any(
+                receipt.get("request_id") == pending.request_id
+                for receipt in job.phase_receipts
+            ):
+                return
+            descriptor: Dict[str, Any] = {
+                "request_id": pending.request_id,
+                "generation": pending.generation,
+                "phase": phase,
+                "success": success,
+                "safe_terminal": False,
+                "recovery_required": False,
+                "outcome": None,
+                "result_sha256": None,
+                "result_bytes": None,
+            }
+            if success:
+                encoded = canonical_json_bytes(result)
+                result_sha256 = canonical_json_sha256(result)
+                result_outcome = (
+                    result.get("outcome")
+                    if isinstance(result, dict)
+                    and isinstance(result.get("outcome"), str)
+                    else "completed"
+                )
+                recovery_required = bool(
+                    mutation_phase
+                    and isinstance(result, dict)
+                    and result.get("recovery_required") is True
+                )
+                descriptor.update(
+                    {
+                        "safe_terminal": not recovery_required,
+                        "recovery_required": recovery_required,
+                        "outcome": result_outcome,
+                        "result_sha256": result_sha256,
+                        "result_bytes": len(encoded),
+                    }
+                )
+                if phase != "prepare":
+                    job.result = copy.deepcopy(result)
+                    job.result_sha256 = result_sha256
+                    job.result_bytes = len(encoded)
+                    job.terminal_outcome = (
+                        result_outcome
+                        if result_outcome != "completed"
+                        else (
+                            "completed_late_receipt"
+                            if late
+                            else "completed"
+                        )
+                    )
+                    job.error = None
+                    job.status = (
+                        "outcome_unknown"
+                        if recovery_required
+                        else "completed"
+                    )
+            else:
+                safe_error = not mutation_phase
+                descriptor.update(
+                    {
+                        "safe_terminal": safe_error,
+                        "recovery_required": not safe_error,
+                        "outcome": (
+                            "failed"
+                            if safe_error
+                            else "mutation_error_unproven"
+                        ),
+                    }
+                )
+                if safe_error:
+                    message = (
+                        error.get("message")
+                        if isinstance(error, dict)
+                        and isinstance(error.get("message"), str)
+                        else "Studio tool failed"
+                    )
+                    job.status = "failed"
+                    job.terminal_outcome = (
+                        "prepare_failed_no_apply"
+                        if phase == "prepare"
+                        else (
+                            "failed_late_receipt"
+                            if late
+                            else "failed"
+                        )
+                    )
+                    job.error = {
+                        "code": "studio_tool_error",
+                        "message": message[:240],
+                    }
+                else:
+                    job.status = "outcome_unknown"
+                    job.terminal_outcome = (
+                        "mutation_error_without_safe_receipt"
+                    )
+            job.phase_receipts.append(descriptor)
+            job.updated_at = time.time()
+            if job.status in self.TERMINAL_JOB_STATES:
+                self._finalize_job_storage(job)
+            return
+
+    def _settle_safe_unapplied_job(
+        self, request_id: str, terminal_outcome: str
+    ) -> None:
+        for job in self.jobs.values():
+            if (
+                request_id not in job.dispatched_request_ids
+                or job.status != "outcome_unknown"
+            ):
+                continue
+            job.status = "failed"
+            job.terminal_outcome = terminal_outcome
+            job.error = {
+                "code": "multi_edit_not_applied",
+                "message": (
+                    "Multi-edit prepare settled, but apply was not "
+                    "dispatched"
+                ),
+            }
+            job.updated_at = time.time()
+            self._finalize_job_storage(job)
+            return
+
+    def _settle_safe_missing_receipt_job(self, request_id: str) -> None:
+        for job in self.jobs.values():
+            if (
+                request_id not in job.dispatched_request_ids
+                or job.status != "outcome_unknown"
+            ):
+                continue
+            job.status = "failed"
+            job.terminal_outcome = (
+                "settled_terminal_receipt_unavailable"
+            )
+            job.error = {
+                "code": "terminal_receipt_unavailable",
+                "message": (
+                    "Studio proved the request terminal during reconnect, "
+                    "but no validated result receipt was retained"
+                ),
+            }
+            job.updated_at = time.time()
+            self._finalize_job_storage(job)
+            return
+
+    def _settle_late_job(
+        self,
+        request_id: str,
+        *,
+        success: bool,
+        result: Any = None,
+        error: Any = None,
+    ) -> None:
+        for job in self.jobs.values():
+            if (
+                request_id not in job.dispatched_request_ids
+                or job.status != "outcome_unknown"
+            ):
+                continue
+            if success:
+                if (
+                    job.remote_tool == "studio_multi_edit"
+                    and isinstance(result, dict)
+                    and result.get("phase") == "prepare"
+                ):
+                    self._settle_safe_unapplied_job(
+                        request_id,
+                        "prepare_completed_after_deadline_no_apply",
+                    )
+                    return
+                job.status = "completed"
+                job.result = copy.deepcopy(result)
+                encoded = canonical_json_bytes(result)
+                job.result_bytes = len(encoded)
+                job.result_sha256 = canonical_json_sha256(result)
+                job.terminal_outcome = (
+                    result.get("outcome")
+                    if isinstance(result, dict)
+                    and isinstance(result.get("outcome"), str)
+                    else "completed_late_receipt"
+                )
+                job.error = None
+            else:
+                job.status = "failed"
+                job.terminal_outcome = "failed_late_receipt"
+                job.error = (
+                    copy.deepcopy(error)
+                    if isinstance(error, dict)
+                    else {
+                        "code": "studio_tool_error",
+                        "message": "Studio tool failed",
+                    }
+                )
+            job.updated_at = time.time()
+            self._finalize_job_storage(job)
+            return
+
+    def _valid_success_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        if pending.remote_tool == "studio_get_state":
+            return self._valid_durable_state_result(result)
+        if pending.remote_tool == "studio_list_tree":
+            return self._valid_durable_tree_result(pending, result)
+        if pending.remote_tool in {
+            "studio_search_scripts",
+            "studio_grep_scripts",
+        }:
+            return self._valid_durable_script_result(pending, result)
+        if pending.remote_tool == "studio_inspect_instance":
+            return self._valid_durable_inspection_result(
+                pending, result
+            )
+        if pending.remote_tool in {
+            "studio_multi_edit",
+            "studio_recover_multi_edit",
+        }:
+            return self._valid_multi_edit_result(pending, result)
+        return True
+
     def receive_response(
         self,
         generation: int,
@@ -2467,9 +4368,60 @@ class StudioSession:
         if pending is None:
             uncertain = self.uncertain_requests.get(request_id)
             if uncertain is not None and uncertain.get("generation") == generation:
-                # A late response is not delivered to the timed-out caller, but
-                # it proves the operation terminated and releases quarantine.
+                context = self.uncertain_pending.get(request_id)
+                if context is None:
+                    return False
+                if success:
+                    if not self._valid_success_result(context, result):
+                        return False
+                    self._record_job_response(
+                        context,
+                        success=True,
+                        result=result,
+                        late=True,
+                    )
+                    if context.remote_tool in {
+                        "studio_multi_edit",
+                        "studio_recover_multi_edit",
+                    }:
+                        self._observe_multi_edit_receipt(
+                            context, result
+                        )
+                        if result.get("recovery_required") is True:
+                            return True
+                    self._settle_late_job(
+                        request_id,
+                        success=True,
+                        result=result,
+                    )
+                    self.uncertain_requests.pop(request_id, None)
+                    self.uncertain_pending.pop(request_id, None)
+                    self._refresh_uncertainty()
+                    return True
+                self._record_job_response(
+                    context,
+                    success=False,
+                    error=error,
+                    late=True,
+                )
+                if (
+                    context.remote_tool
+                    in {
+                        "studio_multi_edit",
+                        "studio_recover_multi_edit",
+                    }
+                    and context.arguments.get("_phase") != "prepare"
+                ):
+                    # A generic mutation error does not prove no source
+                    # changed. Exact recovery remains required.
+                    return False
                 self.uncertain_requests.pop(request_id, None)
+                self.uncertain_pending.pop(request_id, None)
+                self._settle_late_job(
+                    request_id,
+                    success=False,
+                    error=error,
+                )
                 self._refresh_uncertainty()
                 return True
             return False
@@ -2481,12 +4433,69 @@ class StudioSession:
         self.pending.pop(request_id, None)
         if success:
             if (
+                pending.remote_tool
+                in {
+                    "studio_multi_edit",
+                    "studio_recover_multi_edit",
+                }
+                and not self._valid_multi_edit_result(
+                    pending, result
+                )
+            ):
+                if pending.arguments.get("_phase") == "prepare":
+                    pending.future.set_exception(
+                        RemoteToolError(
+                            "Targeted Studio returned an invalid "
+                            "multi-edit prepare receipt"
+                        )
+                    )
+                    return True
+                self.uncertain_requests[pending.request_id] = {
+                    "generation": pending.generation,
+                    "operation": pending.remote_tool,
+                    "reason": "invalid_mutation_receipt",
+                    "transaction_id": pending.arguments.get(
+                        "transaction_id"
+                    ),
+                }
+                self.uncertain_pending[pending.request_id] = pending
+                self._set_multi_edit_recovery(
+                    pending.arguments.get("transaction_id", ""),
+                    pending.request_id,
+                    pending.generation,
+                    "invalid_mutation_receipt",
+                )
+                pending.future.set_exception(
+                    RemoteToolError(
+                        "Targeted Studio returned an invalid mutation "
+                        "receipt; the session remains quarantined"
+                    )
+                )
+                return True
+            if pending.remote_tool in {
+                "studio_multi_edit",
+                "studio_recover_multi_edit",
+            }:
+                self._observe_multi_edit_receipt(pending, result)
+            if (
                 pending.remote_tool == "studio_get_state"
                 and not self._valid_durable_state_result(result)
             ):
                 pending.future.set_exception(
                     RemoteToolError(
                         "Targeted Studio returned an invalid state response"
+                    )
+                )
+                return True
+            if (
+                pending.remote_tool == "studio_list_tree"
+                and not self._valid_durable_tree_result(
+                    pending, result
+                )
+            ):
+                pending.future.set_exception(
+                    RemoteToolError(
+                        "Targeted Studio returned an invalid tree response"
                     )
                 )
                 return True
@@ -2517,11 +4526,44 @@ class StudioSession:
                     )
                 )
                 return True
+            self._record_job_response(
+                pending,
+                success=True,
+                result=result,
+            )
             self._observe_result(
                 pending.remote_tool, pending.arguments, result
             )
             pending.future.set_result(copy.deepcopy(result))
         else:
+            self._record_job_response(
+                pending,
+                success=False,
+                error=error,
+            )
+            if (
+                pending.remote_tool
+                in {
+                    "studio_multi_edit",
+                    "studio_recover_multi_edit",
+                }
+                and pending.arguments.get("_phase") != "prepare"
+            ):
+                self.uncertain_requests[pending.request_id] = {
+                    "generation": pending.generation,
+                    "operation": pending.remote_tool,
+                    "reason": "mutation_error_without_safe_receipt",
+                    "transaction_id": pending.arguments.get(
+                        "transaction_id"
+                    ),
+                }
+                self.uncertain_pending[pending.request_id] = pending
+                self._set_multi_edit_recovery(
+                    pending.arguments.get("transaction_id", ""),
+                    pending.request_id,
+                    pending.generation,
+                    "mutation_error_without_safe_receipt",
+                )
             message = (
                 error.get("message")
                 if isinstance(error, dict) and isinstance(error.get("message"), str)
@@ -2554,18 +4596,10 @@ class StudioSession:
                 return True
             return False
         if event_type == "job":
-            job_id = payload.get("job_id")
-            if not isinstance(job_id, str):
-                return False
-            job = self.jobs.get(job_id)
-            if job is None or job.generation != generation:
-                return False
-            # Only known fields are updated; the Studio cannot retarget the job.
-            status = payload.get("status")
-            if isinstance(status, str):
-                job.status = status
-            job.updated_at = time.time()
-            return True
+            # Jobs are broker-owned wrappers around ordinary correlated
+            # requests. Studio does not receive job_id and may not forge job
+            # status, cancellation, or terminal results through events.
+            return False
         return False
 
     def _observe_result(
@@ -2617,25 +4651,90 @@ class StudioSession:
         arguments: Dict[str, Any],
         timeout_ms: int,
         before_dispatch: Optional[Callable[[], None]] = None,
+        *,
+        input_schema_sha256: str = "",
+        output_schema_sha256: str = "",
+        handler_contract_sha256: str = "",
     ) -> JobRecord:
+        admitted_arguments = copy.deepcopy(arguments)
+        active_jobs = sum(
+            job.status not in self.TERMINAL_JOB_STATES
+            for job in self.jobs.values()
+        )
+        if active_jobs >= MAX_ACTIVE_SESSION_JOBS:
+            raise SessionConflictError(
+                "This Studio already has the maximum number of active jobs"
+            )
+        admitted_contract = _job_admitted_contract(
+            remote_tool, admitted_arguments
+        )
+        required_bytes = len(
+            canonical_json_bytes(
+                {
+                    "arguments": admitted_arguments,
+                    "admitted_contract": admitted_contract,
+                }
+            )
+        )
+        self._compact_terminal_jobs(required_bytes=required_bytes)
+        retained_bytes = sum(
+            self._job_retained_bytes(job)
+            for job in self.jobs.values()
+        )
+        if (
+            len(self.jobs) >= MAX_SESSION_JOBS
+            or retained_bytes + required_bytes
+            > MAX_RETAINED_JOB_BYTES
+        ):
+            raise SessionConflictError(
+                "Session job retention is full of active or uncertain "
+                "records; no history was discarded"
+            )
+        admission = self.reserve_operation()
         job = JobRecord(
             job_id=str(uuid.uuid4()),
             studio_id=self.studio_id,
             generation=self.generation,
             public_tool=public_tool,
             remote_tool=remote_tool,
-            arguments=copy.deepcopy(arguments),
+            arguments=copy.deepcopy(admitted_arguments),
             timeout_ms=timeout_ms,
+            client_instance_id=self.client_instance_id,
+            document_epoch=self.document_epoch,
+            input_schema_sha256=input_schema_sha256,
+            output_schema_sha256=output_schema_sha256,
+            handler_contract_sha256=handler_contract_sha256,
+            arguments_sha256=canonical_json_sha256(
+                admitted_arguments
+            ),
+            admitted_contract=admitted_contract,
+            admission_sequence=admission.sequence,
+            admission=admission,
         )
         self.jobs[job.job_id] = job
 
-        def mark_dispatched() -> None:
+        def mark_dispatched(
+            operation_request_id: str,
+            phase: str,
+            transaction_id: Optional[str],
+        ) -> None:
             if job.status in self.TERMINAL_JOB_STATES:
                 raise StaleGenerationError(
                     "Job became terminal before Studio dispatch"
                 )
             job.dispatched = True
             job.status = "running"
+            job.dispatched_request_ids.append(operation_request_id)
+            job.dispatched_phases.append(phase)
+            if transaction_id is not None:
+                if (
+                    job.transaction_id is not None
+                    and job.transaction_id != transaction_id
+                ):
+                    raise StaleGenerationError(
+                        "Job transaction identity changed between phases"
+                    )
+                job.transaction_id = transaction_id
             job.updated_at = time.time()
 
         async def run() -> None:
@@ -2644,32 +4743,92 @@ class StudioSession:
                     return
                 result = await self.invoke(
                     remote_tool,
-                    arguments,
+                    copy.deepcopy(admitted_arguments),
                     timeout_ms,
                     expected_generation=job.generation,
                     before_dispatch=before_dispatch,
                     on_dispatched=mark_dispatched,
+                    admission=admission,
                 )
-                if job.status != "disconnected":
+                job.result = result
+                encoded_result = canonical_json_bytes(result)
+                job.result_bytes = len(encoded_result)
+                job.result_sha256 = canonical_json_sha256(result)
+                if (
+                    remote_tool
+                    in {
+                        "studio_multi_edit",
+                        "studio_recover_multi_edit",
+                    }
+                    and isinstance(result, dict)
+                    and result.get("recovery_required") is True
+                ):
+                    job.status = "outcome_unknown"
+                    job.terminal_outcome = "recovery_required"
+                else:
                     job.status = "completed"
-                    job.result = result
+                    job.terminal_outcome = (
+                        result.get("outcome")
+                        if isinstance(result, dict)
+                        and isinstance(result.get("outcome"), str)
+                        else "completed"
+                    )
             except asyncio.CancelledError:
-                if job.status != "disconnected":
+                if job.status in self.TERMINAL_JOB_STATES:
+                    return
+                if job.dispatched:
+                    job.status = "outcome_unknown"
+                    job.cancellation_state = (
+                        "requested_after_dispatch_not_acknowledged"
+                    )
+                    job.terminal_outcome = (
+                        "local_wait_cancelled_after_dispatch"
+                    )
+                else:
                     job.status = "cancelled"
+                    job.cancellation_state = (
+                        "acknowledged_before_dispatch"
+                    )
+                    job.terminal_outcome = "cancelled_before_dispatch"
             except (SessionDisconnectedError, StaleGenerationError) as exc:
-                job.status = "disconnected"
+                if job.status in self.TERMINAL_JOB_STATES:
+                    return
                 job.error = exc.as_dict()
+                if job.dispatched:
+                    job.status = "outcome_unknown"
+                    job.terminal_outcome = (
+                        "connection_or_generation_lost_after_dispatch"
+                    )
+                else:
+                    job.status = "failed"
+                    job.terminal_outcome = (
+                        "not_dispatched_connection_or_generation_lost"
+                    )
             except Exception as exc:
-                job.status = "failed"
+                if job.status in self.TERMINAL_JOB_STATES:
+                    return
                 if hasattr(exc, "as_dict"):
                     job.error = exc.as_dict()
                 else:
                     job.error = {
                         "code": "internal_error",
-                        "message": str(exc),
+                        "message": "Job execution failed internally",
                     }
+                if any(
+                    request_id in self.uncertain_requests
+                    for request_id in job.dispatched_request_ids
+                ):
+                    job.status = "outcome_unknown"
+                    job.terminal_outcome = (
+                        "receipt_or_outcome_unproven"
+                    )
+                else:
+                    job.status = "failed"
+                    job.terminal_outcome = "failed"
             finally:
                 job.updated_at = time.time()
+                self._finalize_job_storage(job)
+                self._recompute_terminal_disconnect_candidate()
 
         job.task = asyncio.create_task(run())
         return job
@@ -2687,11 +4846,19 @@ class StudioSession:
         if job.status in self.TERMINAL_JOB_STATES:
             return job
         if job.dispatched:
+            job.cancellation_state = (
+                "requested_after_dispatch_refused"
+            )
             raise UnsafeCancellationError(
                 "The job was already sent to Studio; v2 will not claim it was cancelled"
             )
         if job.task is not None:
+            if job.admission is not None:
+                job.admission.retire_after_predecessor()
             job.task.cancel()
         job.status = "cancelled"
+        job.cancellation_state = "acknowledged_before_dispatch"
+        job.terminal_outcome = "cancelled_before_dispatch"
         job.updated_at = time.time()
+        self._finalize_job_storage(job)
         return job

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_version": "0.4.0-dev.3",
+  "release_version": "0.4.0-rc.1",
   "baseline": {
     "catalog_path": "config/tool-catalog.json",
     "modern_tool_count": 25,
@@ -149,10 +149,14 @@
       "references": [
         {
           "kind": "durable_tool",
-          "name": "studio_update_script"
+          "name": "studio_multi_edit"
+        },
+        {
+          "kind": "durable_tool",
+          "name": "studio_recover_multi_edit"
         }
       ],
-      "gap": "V2 provides whole-source compare-and-swap updates but not the upstream multi-patch edit shape.",
+      "gap": "V2 provides bounded, revision-protected ordered edits across 1-16 existing exact script paths with all-target preflight, per-target compare-and-swap, identity-bound receipts, compensating rollback, and explicit recovery. It intentionally does not create scripts and does not claim impossible cross-script atomicity, so the upstream creation and atomic-operation claims remain incomplete.",
       "phase": "phase_2"
     },
     {

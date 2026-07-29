@@ -47,6 +47,15 @@ def validate_reconnect_id(value: Any) -> str:
         )
 
 
+def validate_transaction_id(value: Any) -> str:
+    try:
+        return validate_studio_id(value)
+    except ValidationError:
+        raise ValidationError(
+            "transaction_id must be a canonical lowercase UUID"
+        )
+
+
 def validate_registration_secret(value: Any) -> str:
     if not isinstance(value, str) or not 32 <= len(value) <= 256:
         raise ValidationError(
@@ -90,10 +99,13 @@ def validate_arguments(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ValidationError("tool arguments must be an object")
     try:
-        encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode(
-            "utf-8"
-        )
-    except (TypeError, ValueError):
+        encoded = json.dumps(
+            value,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
         raise ValidationError("tool arguments must be JSON-serializable")
     if len(encoded) > MAX_ARGUMENT_BYTES:
         raise ValidationError("tool arguments exceed the 1 MB limit")

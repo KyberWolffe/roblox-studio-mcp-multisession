@@ -9,11 +9,12 @@ multiple Studio sessions from concurrent Codex tasks. Every Studio-bound tool
 requires an explicit, server-assigned `studio_id`. There is no active Studio
 pointer, implicit single-session choice, or default-session fallback.
 
-Version `0.4.0-dev.3` is the isolated Phase 2 parity-development line based on
+Version `0.4.0-rc.1` is the first isolated Phase 2 release candidate based on
 the frozen, live-validated `0.3.0-rc.4` checkpoint. It is not installed and has
-not been published to GitHub. It carries the bounded instance-inspection slice
-from dev.2 and adds a guarded cross-version catalog-contract reset so a
-candidate never inherits active catalog bytes reviewed for an older release.
+not been published to GitHub. It carries the bounded tree, state, script
+search, literal grep, and instance-inspection slices; adds revision-protected
+multi-edit plus exact recovery; and closes direct/job identity, schema,
+result, ordering, and retention contracts for the accumulated workflow tools.
 
 > **Experimental prerelease:** the safe v2 surface does not yet cover all 25
 > modern v1 capabilities. Twelve P0 rows remain partial or deferred. Publication

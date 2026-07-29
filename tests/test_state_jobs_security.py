@@ -5,12 +5,15 @@ import ast
 import unittest
 
 from studio_mcp_v2.auth import Principal
+from studio_mcp_v2.catalog import ToolCatalog
 from studio_mcp_v2.errors import (
     AuthorizationError,
     JobNotFoundError,
     UnsafeCancellationError,
 )
 from studio_mcp_v2.session import JobRecord
+from studio_mcp_v2.registry import SessionRegistry
+from studio_mcp_v2.service import ProxyService
 
 from .helpers import ALLOW_ALL, PROJECT_ROOT, FakeStudio, make_service
 
@@ -24,6 +27,69 @@ class StateJobsSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.b = await FakeStudio.create(
             self.registry, "B", self.catalog.remote_names
         )
+        self.job_registry = SessionRegistry()
+        self.job_catalog = ToolCatalog.from_file(
+            PROJECT_ROOT / "config" / "durable-tool-catalog.json"
+        )
+        self.job_service = ProxyService(
+            self.job_registry, self.job_catalog
+        )
+        self.job_a = await FakeStudio.create(
+            self.job_registry,
+            "Job A",
+            self.job_catalog.remote_names,
+        )
+        self.job_b = await FakeStudio.create(
+            self.job_registry,
+            "Job B",
+            self.job_catalog.remote_names,
+        )
+
+    @staticmethod
+    def search_arguments():
+        return {
+            "keywords": "Player",
+            "root_path": ["Workspace"],
+            "max_depth": 3,
+            "scan_limit": 10,
+            "page_size": 2,
+            "time_limit_ms": 1_000,
+        }
+
+    @staticmethod
+    def valid_search_result(studio, request):
+        arguments = request["args"]
+        return {
+            "adapter": "studio-mcp-v2-durable-plugin",
+            "v": 1,
+            "operation": "studio_search_scripts",
+            "studio_id": studio.studio_id,
+            "client_instance_id": studio.client_instance_id,
+            "document_epoch": studio.registration.document_epoch,
+            "generation": studio.generation,
+            "request_id": request["request_id"],
+            "root_path": list(arguments["root_path"]),
+            "sort_version": "name-class-v1",
+            "max_depth": arguments["max_depth"],
+            "scan_limit": arguments["scan_limit"],
+            "page_size": arguments["page_size"],
+            "time_limit_ms": arguments["time_limit_ms"],
+            "items": [],
+            "returned": 0,
+            "scanned_instances": 0,
+            "scanned_scripts": 0,
+            "truncated": False,
+            "has_more": False,
+            "continuation_cursor": "",
+            "truncation_reason": "complete",
+            "output_limit_bytes": 200_000,
+            "keywords": ["player"],
+            "match_semantics": (
+                "all_keywords_ascii_case_insensitive_"
+                "literal_subsequence"
+            ),
+            "query_version": "script-name-query-v1",
+        }
 
     async def test_console_mode_and_events_are_generation_and_session_scoped(self):
         self.assertTrue(self.a.event("console", {"message": "A only"}))
@@ -103,23 +169,32 @@ class StateJobsSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_jobs_are_scoped_and_dispatched_under_session_lock(self):
-        job_a = self.service.start_job(
+        job_a = self.job_service.start_job(
             ALLOW_ALL,
-            self.a.studio_id,
-            "execute_luau_v2",
-            {"code": "return 'A'", "datamodel_type": "Edit"},
+            self.job_a.studio_id,
+            "studio_search_scripts_v2",
+            self.search_arguments(),
             1000,
         )
-        request_a = await self.a.next_request()
+        request_a = await self.job_a.next_request()
         with self.assertRaises(JobNotFoundError):
-            self.service.get_job(ALLOW_ALL, self.b.studio_id, job_a["job_id"])
-        self.a.respond(request_a, {"value": "A"})
-        await self.a.session.jobs[job_a["job_id"]].task
-        completed = self.service.get_job(
-            ALLOW_ALL, self.a.studio_id, job_a["job_id"]
+            self.job_service.get_job(
+                ALLOW_ALL,
+                self.job_b.studio_id,
+                job_a["job_id"],
+            )
+        result = self.valid_search_result(
+            self.job_a, request_a
+        )
+        self.job_a.respond(request_a, result)
+        await self.job_a.session.jobs[job_a["job_id"]].task
+        completed = self.job_service.get_job(
+            ALLOW_ALL,
+            self.job_a.studio_id,
+            job_a["job_id"],
         )
         self.assertEqual("completed", completed["status"])
-        self.assertEqual({"value": "A"}, completed["result"])
+        self.assertEqual(result, completed["result"])
 
     async def test_identical_job_ids_do_not_collide_across_sessions(self):
         shared_id = "same-job-id"
@@ -157,18 +232,25 @@ class StateJobsSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_dispatched_job_is_not_unsafely_claimed_cancelled(self):
-        job = self.service.start_job(
+        job = self.job_service.start_job(
             ALLOW_ALL,
-            self.a.studio_id,
-            "multi_edit_v2",
-            {"file_path": "game.A", "edits": [], "datamodel_type": "Edit"},
+            self.job_a.studio_id,
+            "studio_search_scripts_v2",
+            self.search_arguments(),
             1000,
         )
-        request = await self.a.next_request()
+        request = await self.job_a.next_request()
         with self.assertRaises(UnsafeCancellationError):
-            self.service.cancel_job(ALLOW_ALL, self.a.studio_id, job["job_id"])
-        self.a.respond(request, "finished")
-        await self.a.session.jobs[job["job_id"]].task
+            self.job_service.cancel_job(
+                ALLOW_ALL,
+                self.job_a.studio_id,
+                job["job_id"],
+            )
+        self.job_a.respond(
+            request,
+            self.valid_search_result(self.job_a, request),
+        )
+        await self.job_a.session.jobs[job["job_id"]].task
 
     async def test_authorization_is_independent_from_routing(self):
         restricted = Principal.create(
@@ -195,21 +277,25 @@ class StateJobsSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([self.a.studio_id], [item["studio_id"] for item in visible])
 
     async def test_queued_job_cannot_cross_reconnect_generation(self):
-        job = self.service.start_job(
+        job = self.job_service.start_job(
             ALLOW_ALL,
-            self.a.studio_id,
-            "multi_edit_v2",
-            {"file_path": "game.A", "edits": [], "datamodel_type": "Edit"},
+            self.job_a.studio_id,
+            "studio_search_scripts_v2",
+            self.search_arguments(),
             1000,
         )
         # Do not yield to the job task before fencing generation 1.
-        self.a.disconnect()
-        await self.a.reconnect()
+        self.job_a.disconnect()
+        await self.job_a.reconnect()
         await asyncio.sleep(0)
-        record = self.a.session.jobs[job["job_id"]]
-        self.assertEqual("disconnected", record.status)
+        record = self.job_a.session.jobs[job["job_id"]]
+        self.assertEqual("failed", record.status)
+        self.assertEqual(
+            "not_dispatched_connection_lost",
+            record.terminal_outcome,
+        )
         self.assertFalse(record.dispatched)
-        self.assertTrue(self.a.transport._queue.empty())
+        self.assertTrue(self.job_a.transport._queue.empty())
 
     async def test_shell_like_luau_is_forwarded_as_inert_data(self):
         payload = "`touch /tmp/never` $(id); os.execute('nope')"

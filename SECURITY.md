@@ -30,6 +30,12 @@ not send tokens.
 - The broker publishes only an operator-reviewed closed catalog. A Studio can
   advertise a subset of approved capabilities; it cannot define a public tool
   or schema.
+- Public direct and nested job arguments are validated against the selected
+  immutable handler schema before dispatch or job creation. Job admission
+  freezes those arguments so later caller mutation cannot change what is sent.
+- Connected results for job-admissible operations are checked against a
+  closed handler-specific validator and the admitted Studio/client/document/
+  generation identity before delivery or retention.
 - Request bodies and returned screenshots are bounded. Credentials and
   operational payloads are not logged.
 
@@ -37,8 +43,8 @@ not send tokens.
 
 The broker maintains a dynamic map keyed by exact `studio_id`; it has no
 active/default/current Studio pointer. Every session owns its own queue, lock,
-mode, console, jobs, correlation state, uncertainty ledger, and Play
-transition.
+mode, console, jobs, correlation state, uncertainty ledger, multi-edit
+transaction/recovery ledger, and Play transition.
 
 Current Studio operations serialize within one session. Different sessions
 use different locks and may progress concurrently. Knowing another
@@ -89,6 +95,29 @@ the session. A same-generation late response or an authenticated plugin
 settlement ledger can clear it. A dispatched job is not falsely reported
 cancelled without downstream acknowledgement.
 
+Direct calls and jobs share a per-session FIFO admission lane; there is no
+separate job path that can bypass session ordering. Job/result retention is
+bounded. Only positively terminal records may become non-secret hash-chained
+audit tombstones; active, uncertain, or recovery-required evidence is never
+retired.
+
+Multi-edit is never automatically replayed. Its internal prepare phase is
+read-only and becomes apply-authoritative only after the broker validates its
+exact Studio/client/document/generation identity, normalized argument digest,
+target order, source revisions, bounds, and receipt digest. Apply rechecks
+every target before its first write and records a read-back acknowledgement
+for each dispatched target.
+
+There is no cross-script transaction primitive. If a later target fails, an
+earlier target is compensatingly restored only while its current SHA-256 still
+equals the transaction's planned SHA-256. Any target whose applied, untouched,
+or restored state cannot be positively proven yields `recovery_required` and
+quarantines the session mutation lane. Recovery accepts only the exact
+transaction UUID under its original `studio_id`, client identity, document
+epoch, and generation; it cannot accept caller-supplied edits, paths, source,
+or replacement revisions. A reconnect never rebinds or silently replays that
+transaction.
+
 An incomplete Play transition enters recovery-only state after disconnect or
 generation replacement. Bounded host and server watchdogs can request or
 attempt Stop, but cannot report success. Normal operations remain fenced until
@@ -109,6 +138,14 @@ Script updates are bounded compare-and-swap edits to an exact
 `LuaSourceContainer` path in the targeted DataModel. Attribute changes require
 expected prior state. Input can only fire an existing Scriptable
 `InputBinding`. Studio paths are arrays of exact child-name segments, not code.
+
+Multi-edit permits only existing exact `LuaSourceContainer` paths and requires
+a lowercase expected source SHA-256 for each target. It cannot create an
+Instance or script, choose a class, evaluate Luau, or reflect arbitrary
+properties. Its target/edit/span/source/argument bounds are independently
+enforced by the host and Studio before mutation. Invalid UTF-8, duplicate or
+ambiguous paths, overlapping matches, stale revisions, and unbounded plans fail
+closed.
 
 The plugin's loopback origin, endpoint allowlist, Play bridge source, and
 Studio handlers are fixed. Enabling Studio's HTTP requests allows the plugin
@@ -153,3 +190,6 @@ to reach that fixed local broker; it does not permit caller-controlled URLs.
   is a safe unregistered state.
 - Screenshot and Scriptable `InputBinding` behavior remains subject to Roblox
   permissions and API availability.
+- Multi-edit provides all-target preflight, deterministic ordered per-target
+  CAS, and bounded compensating recovery; it does not provide or claim
+  cross-script atomicity, and script creation remains deferred.

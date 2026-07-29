@@ -37,11 +37,48 @@ Individual stages:
 python3 -B scripts/audit_release.py --repo .
 python3 -B scripts/build_durable_release.py --output-dir dist
 python3 -B scripts/audit_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-dev.3-macos-arm64.tar.gz
+  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.1-macos-arm64.tar.gz
 python3 -B scripts/prove_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-dev.3-macos-arm64.tar.gz \
-  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-dev.3-macos-arm64.tar.gz.sha256
+  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.1-macos-arm64.tar.gz \
+  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-rc.1-macos-arm64.tar.gz.sha256
 ```
+
+The generic proof's update fixture is deliberately synthetic. The release
+gate additionally runs both real portable installers against the immutable
+rc.4 restore bundle:
+
+```bash
+python3 -B scripts/prove_cross_version_rollback.py \
+  --restore-bundle RESTORE_BUNDLE \
+  --prior-archive RESTORE_BUNDLE/artifacts/roblox-studio-mcp-v2-0.3.0-rc.4-macos-arm64.tar.gz \
+  --prior-checksum-file RESTORE_BUNDLE/artifacts/roblox-studio-mcp-v2-0.3.0-rc.4-macos-arm64.tar.gz.sha256 \
+  --candidate-archive CANDIDATE_ARCHIVE \
+  --candidate-checksum-file CANDIDATE_CHECKSUM \
+  --candidate-expected-sha256 CANDIDATE_SHA256 \
+  --candidate-version 0.4.0-rc.1 \
+  --source-commit CANDIDATE_COMMIT \
+  --source-tree CANDIDATE_TREE \
+  --output EXTERNAL_ARTIFACT_DIR/CROSS_VERSION_ROLLBACK_PROOF.json
+```
+
+That proof SHA-checks the complete restore bundle and both archives before
+creating its temporary home, installs the real rc.4 package, recreates a
+reviewed catalog state through the real rc.4 import path, updates with the real
+candidate installer, verifies rc.4 is the one-step rollback target, rolls back
+with the candidate updater, and compares every active file byte and mode in
+the transaction scope. Retained packages, backups, and transaction receipts
+remain auditable expected history and are not misclassified as active-byte
+drift. It then runs the restored rc.4 doctor and uninstall, proves exact
+synthetic Codex/v1 restoration, and removes the temporary home.
+
+A fresh disposable rc.4 install generates new credentials and therefore a
+different rendered plugin from the live immutable plugin hash. The proof
+compares that disposable rc.4 state to its own post-rollback bytes while
+retaining the live rc.4 catalog/plugin hashes as provenance.
+
+The restore bundle's Git bundle is verified from repository context, for
+example `git -C SOURCE_REPOSITORY bundle verify ABSOLUTE_BUNDLE_PATH`; the
+bundle bytes and historical restore instructions remain immutable.
 
 ## Test matrix
 
@@ -70,7 +107,11 @@ python3 -B scripts/prove_release.py \
 | Tree/state same-session serialization, cross-session isolation, and reconnect fencing | `test_phase2_tree_state_isolation.py` |
 | Phase 2 script-name search and cross-script literal grep schemas, cursor domains, deterministic pagination, traversal/source/output bounds, upstream quarantine, and malicious connected-result rejection | `test_phase2_script_catalog_contract.py`, `test_phase2_script_luau.py`, `test_phase2_script_pagination_model.py`, `test_phase2_script_response_validation.py` |
 | Script search/grep same-session serialization, cross-session isolation, reconnect fencing, and explicit-target stripping | `test_phase2_script_isolation.py` |
-| Phase 2 dev.3 detailed instance inspection schema, fixed value codec, bounded tree summaries, malicious-result rejection, same-session FIFO, cross-session overlap/isolation, and reconnect-generation fencing | `test_phase2_instance_inspect_contract.py`, `test_phase2_inspect_luau.py`, `test_phase2_inspect_response_validation.py`, `test_phase2_inspect_isolation.py` |
+| Phase 2 detailed instance inspection schema, fixed value codec, bounded tree summaries, malicious-result rejection, same-session FIFO, cross-session overlap/isolation, and reconnect-generation fencing | `test_phase2_instance_inspect_contract.py`, `test_phase2_inspect_luau.py`, `test_phase2_inspect_response_validation.py`, `test_phase2_inspect_isolation.py` |
+| Revision-protected multi-edit normalization, deterministic edit order, UTF-8/range/overlap rejection, target/source/receipt bounds, all-target prepare, CAS apply, compensation, exact recovery, and no cross-script atomicity claim | `test_phase2_multi_edit_model.py`, `test_phase2_multi_edit_luau.py`, `test_phase2_multi_edit_session_integrity.py` |
+| Closed direct/nested-job input validation, frozen admitted arguments, exact job allowlist, handler output validation, and identity/schema/result receipts | `test_phase2_input_schema_enforcement.py`, `test_phase2_output_schema_parity.py`, `test_phase2_job_state_parity.py` |
+| Same-session direct/job FIFO, cross-session overlap/isolation, reconnect-generation fencing, bounded job/result retention, and hash-chained terminal tombstones | `test_phase2_job_fifo_isolation.py`, `test_phase2_job_retention_audit.py`, `test_phase2_multi_edit_session_integrity.py` |
+| Cross-file/package release-version coherence and exact real rc.4→candidate→rc.4 active-byte/mode proof boundaries | `test_release_version_coherence.py`, `test_cross_version_rollback_proof.py`, external `prove_cross_version_rollback.py` evidence |
 
 ## Explicit-targeting contract
 

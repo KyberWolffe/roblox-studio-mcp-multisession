@@ -24,7 +24,11 @@ First connection:
     "place_id": 0,
     "mode": "edit"
   },
-  "capabilities": ["get_studio_state", "multi_edit"]
+  "capabilities": [
+    "studio_get_state",
+    "studio_multi_edit",
+    "studio_recover_multi_edit"
+  ]
 }
 ```
 
@@ -70,7 +74,7 @@ A queued operation is returned as:
   "document_epoch": "document-a",
   "generation": 3,
   "request_id": "f5f1403f-2f12-4225-b1ac-8dd8c87295f4",
-  "operation": "multi_edit",
+  "operation": "studio_multi_edit",
   "args": {},
   "deadline_ms": 30000
 }
@@ -118,6 +122,132 @@ The thin frontend uses authenticated `/v2/client/*` endpoints:
 Missing, malformed, unknown, disconnected, or unauthorized IDs fail closed.
 The router never substitutes another session, even when exactly one Studio is
 connected.
+
+## Direct and job contract receipts
+
+The host validates each public call against the exact closed input schema
+stored for its durable handler before it creates a job or sends a Studio
+request. Job admission then freezes the validated arguments and records:
+
+```text
+studio_id
+client_instance_id
+document_epoch
+generation
+job_id
+admission_sequence
+operation and durable handler
+input/output/handler schema SHA-256 values
+canonical argument SHA-256
+phase request IDs
+cancellation state
+terminal outcome and result SHA-256
+```
+
+Only state, tree, script-name search, literal grep, instance inspection,
+multi-edit, and exact multi-edit recovery are job-admissible. This is an exact
+allowlist: operations without a complete closed host result validator are
+rejected before a job record or downstream request is created.
+
+Direct calls and jobs share one FIFO admission sequence per session. Different
+`studio_id` sessions have independent sequences and locks. A returned job
+receipt preserves the admitted Studio/client/document/generation identity and
+schema hashes; metadata drift or an impossible handler result is rejected
+before delivery or retention.
+
+An exact recovery of a job-backed multi-edit appends a bounded resolution
+receipt containing the recovery request identity, validated recovery result,
+result digest, and terminal resolution. It does not overwrite the original
+apply request/result digest. Terminal jobs may retire only when no associated
+request is active, uncertain, or recovery-required. Retirement emits a
+bounded hash-chain tombstone; uncertain or active evidence is never
+compacted.
+
+## Revision-protected multi-edit
+
+`studio_multi_edit_v2` is an Edit-only mutation addressed to one explicit
+`studio_id`. Its public arguments contain exactly `studio_id`,
+`datamodel_type: "Edit"`, and `targets`; transaction phase and credentials are
+broker-owned and cannot be supplied by the caller. Each of the 1-16 targets
+contains:
+
+```json
+{
+  "path": ["ServerScriptService", "RoundController"],
+  "expected_sha256": "64-lowercase-hex-source-revision",
+  "edits": [
+    {
+      "old_string": "local limit = 4",
+      "new_string": "local limit = 6",
+      "replace_all": false
+    }
+  ]
+}
+```
+
+Paths are nonempty arrays of exact child-name segments and must be unique
+within the transaction. Targets execute in input order. Each target's 1-64
+edits executes in input order against the result of its preceding edit.
+`old_string` is nonempty and must differ from `new_string`. Optional
+`start_byte` and `end_byte` are a paired, zero-based, half-open UTF-8 byte
+range that must contain exactly `old_string`; a ranged edit cannot set
+`replace_all: true`. Overlapping expanded matches, ambiguity, stale revisions,
+invalid UTF-8, creation, and out-of-range offsets fail before mutation.
+
+Both host and Studio independently enforce 16 targets, 64 edits per target,
+128 edits total, 1024 expanded replacement spans, 8192 aggregate UTF-8 path
+bytes, 262144 aggregate literal bytes, 350000 canonical public argument bytes,
+262144 source bytes per target, 1048576 aggregate bytes each for original and
+planned source, and 100000 encoded receipt bytes. The private phase envelope
+allows 351000 bytes so host-added transaction fields cannot invalidate a
+maximally bounded public request.
+
+The mutation is a broker-owned two-phase transaction:
+
+1. The broker normalizes the entire plan, binds a fresh `transaction_id` to
+   `(studio_id, client_instance_id, document_epoch, generation)`, and dispatches
+   an internal prepare request.
+2. Studio resolves every exact path, reads every source, checks every expected
+   SHA-256, expands every edit deterministically, and returns a closed prepare
+   receipt. It has not mutated source at this point.
+3. The broker validates the complete identity, target order, paths, revisions,
+   counts, planned revisions, and canonical `prepare_sha256`; any drift aborts.
+4. An apply request carries only the broker-owned prepared transaction. Studio
+   rechecks every target before the first write, then applies per-target
+   compare-and-swap updates in input order.
+5. Every downstream update is read back. If a later target fails, Studio
+   attempts compensating rollback of already applied targets only when their
+   revisions still match the transaction's planned revisions.
+
+The prepare receipt is internal and never returned as a successful public
+multi-edit result. It binds the identity tuple, prepare request and transaction
+IDs, `target-input-edit-input-v1` ordering, the
+`preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1`
+atomicity statement, aggregate source bounds, and per-target expected,
+prepared, and planned revisions and counts.
+
+The public result is a closed, broker-validated downstream receipt. It repeats
+the exact Studio/client/document/generation/request/transaction identity,
+`prepare_request_id`, `prepare_sha256`, ordering and atomicity versions,
+`broker-validated-downstream-ack-v1`, per-target before/after revisions and
+statuses, and a canonical `receipt_sha256`. Target receipt `index` values are
+one-based and exactly follow caller target order. Apply outcomes are:
+
+- `applied`: every target was applied and acknowledged;
+- `aborted_preflight`: the apply recheck found drift before the first write;
+- `rolled_back`: a partial apply was compensatingly restored and acknowledged;
+- `recovery_required`: at least one dispatched mutation cannot be proven
+  applied or restored.
+
+This is intentionally not cross-script atomicity. A safe terminal outcome is
+reported only when all target revisions prove it. `recovery_required` marks
+the transaction and session mutation lane quarantined. The caller may invoke
+`studio_recover_multi_edit_v2` with the same explicit `studio_id` and exact
+`transaction_id`; recovery cannot accept new edit text or rebind the
+transaction to another client, document, or generation. Its only outcomes are
+`recovered` after every target is positively terminal, or
+`recovery_required`. Disconnects and generation changes never cause replay or
+manufactured success.
 
 ## Play bridge context
 

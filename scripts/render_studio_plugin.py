@@ -210,7 +210,7 @@ local MAX_HTTP_RESPONSE_BYTES = 65_536
 local MAX_ARGS_BYTES = 4_096""",
         """local MAX_HTTP_BODY_BYTES = 1_000_000
 local MAX_HTTP_RESPONSE_BYTES = 1_000_000
-local MAX_ARGS_BYTES = 350_000""",
+local MAX_ARGS_BYTES = 351_000""",
         "plugin durable bounds",
     )
     source = _replace_region(
@@ -225,6 +225,8 @@ local MAX_ARGS_BYTES = 350_000""",
 \t"studio_inspect_instance",
 \t"studio_read_script",
 \t"studio_update_script",
+\t"studio_multi_edit",
+\t"studio_recover_multi_edit",
 \t"studio_set_attribute",
 \t"studio_get_console",
 \t"studio_capture_screenshot",
@@ -240,6 +242,8 @@ local CAPABILITY_SET = table.freeze({
 \tstudio_inspect_instance = true,
 \tstudio_read_script = true,
 \tstudio_update_script = true,
+\tstudio_multi_edit = true,
+\tstudio_recover_multi_edit = true,
 \tstudio_set_attribute = true,
 \tstudio_get_console = true,
 \tstudio_capture_screenshot = true,

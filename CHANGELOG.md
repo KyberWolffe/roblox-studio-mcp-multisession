@@ -4,6 +4,42 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.4.0-rc.1 — unreleased
+
+First isolated Phase 2 release candidate. The installed `0.3.0-rc.4` bytes and
+restore bundle remain immutable and are the required immediate rollback
+target. No live Studio or installation action is part of this candidate build.
+
+### Revision-protected multi-edit
+
+- Added bounded all-target prepare, deterministic ordered per-target CAS
+  apply, read-back acknowledgements, compensating rollback, and exact
+  transaction recovery for existing script sources.
+- Required exact source SHA-256 revisions and rejected stale, duplicate,
+  ambiguous, overlapping, invalid UTF-8/range, or unbounded plans before
+  mutation.
+- Preserved honest non-atomic semantics: unprovable partial dispatch is
+  quarantined and cannot be retried or rebound across reconnect generations.
+
+### Direct/job state and result contracts
+
+- Added fail-closed selected-handler input validation for direct and nested job
+  calls, immutable admitted argument snapshots, and closed result validators
+  for every job-admissible workflow operation.
+- Added identity/schema/argument/request/result receipts, one same-session FIFO
+  lane for direct and job work, cross-session isolation, bounded result
+  retention, and hash-chained terminal tombstones.
+- Exact recovery appends a validated resolution receipt without overwriting
+  the original uncertain apply evidence.
+
+### Hardening
+
+- Fenced broker and Studio recovery to the exact original generation.
+- Made apply CAS strict against an externally pre-existing planned revision;
+  idempotence remains limited to rollback and recovery.
+- Hardened huge-integer and nested JSON equality handling in catalog input
+  validation.
+
 ## 0.4.0-dev.3 — unreleased
 
 Phase 2 installer/update hardening on the isolated parity line. The immutable

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "roblox-studio-mcp-v2-prototype"
-version = "0.4.0.dev1"
+version = "0.4.0rc1"
 description = "Explicitly targeted concurrent Roblox Studio MCP sessions for Apple Silicon macOS"
 requires-python = ">=3.9"
 dependencies = []

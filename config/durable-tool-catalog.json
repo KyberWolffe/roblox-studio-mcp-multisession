@@ -1,6 +1,6 @@
 {
   "format": "studio-mcp-v2-durable-catalog",
-  "catalog_version": "0.4.0-dev.3",
+  "catalog_version": "0.4.0-rc.1",
   "upstream": {
     "version": "production-v1-snapshot-2026-07-26",
     "source_sha256": "96130d76240be565f98417414f86e0776a5b73d880f4fadbc5de0bd1c915535b",
@@ -14,6 +14,885 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "$defs": {
+          "predicate": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/predicateObserved"
+              },
+              {
+                "$ref": "#/$defs/predicateUnavailable"
+              }
+            ]
+          },
+          "predicateObserved": {
+            "type": "object",
+            "properties": {
+              "read_ok": {
+                "type": "boolean",
+                "const": true
+              },
+              "value": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "read_ok",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "predicateUnavailable": {
+            "type": "object",
+            "properties": {
+              "read_ok": {
+                "type": "boolean",
+                "const": false
+              }
+            },
+            "required": [
+              "read_ok"
+            ],
+            "additionalProperties": false
+          },
+          "predicateTrue": {
+            "type": "object",
+            "properties": {
+              "read_ok": {
+                "type": "boolean",
+                "const": true
+              },
+              "value": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "read_ok",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "predicateFalse": {
+            "type": "object",
+            "properties": {
+              "read_ok": {
+                "type": "boolean",
+                "const": true
+              },
+              "value": {
+                "type": "boolean",
+                "const": false
+              }
+            },
+            "required": [
+              "read_ok",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "rawModePredicates": {
+            "type": "object",
+            "properties": {
+              "is_studio": {
+                "$ref": "#/$defs/predicate"
+              },
+              "is_edit": {
+                "$ref": "#/$defs/predicate"
+              },
+              "is_running": {
+                "$ref": "#/$defs/predicate"
+              },
+              "is_run_mode": {
+                "$ref": "#/$defs/predicate"
+              },
+              "is_server": {
+                "$ref": "#/$defs/predicate"
+              },
+              "is_client": {
+                "$ref": "#/$defs/predicate"
+              },
+              "edit_mode_active": {
+                "$ref": "#/$defs/predicate"
+              }
+            },
+            "required": [
+              "is_studio",
+              "is_edit",
+              "is_running",
+              "is_run_mode",
+              "is_server",
+              "is_client",
+              "edit_mode_active"
+            ],
+            "additionalProperties": false
+          },
+          "controllerPlay": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "active": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "edit"
+                  }
+                },
+                "required": [
+                  "active",
+                  "state"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "active": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "edit"
+                  },
+                  "last_state": {
+                    "type": "string",
+                    "enum": [
+                      "stopped_edit_confirmed",
+                      "natural_stop_edit_confirmed",
+                      "recovery_natural_stop_edit_confirmed"
+                    ]
+                  },
+                  "last_outcome": {
+                    "type": "string",
+                    "enum": [
+                      "stopped_edit_confirmed",
+                      "natural_stop_edit_confirmed",
+                      "recovery_natural_stop_edit_confirmed"
+                    ]
+                  },
+                  "last_transition_nonce": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "active",
+                  "state",
+                  "last_state",
+                  "last_outcome",
+                  "last_transition_nonce"
+                ],
+                "allOf": [
+                  {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "last_state": {
+                            "const": "stopped_edit_confirmed"
+                          },
+                          "last_outcome": {
+                            "const": "stopped_edit_confirmed"
+                          }
+                        }
+                      },
+                      {
+                        "properties": {
+                          "last_state": {
+                            "const": "natural_stop_edit_confirmed"
+                          },
+                          "last_outcome": {
+                            "const": "natural_stop_edit_confirmed"
+                          }
+                        }
+                      },
+                      {
+                        "properties": {
+                          "last_state": {
+                            "const": "recovery_natural_stop_edit_confirmed"
+                          },
+                          "last_outcome": {
+                            "const": "recovery_natural_stop_edit_confirmed"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "active": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "edit"
+                  },
+                  "last_state": {
+                    "type": "string",
+                    "const": "start_failed_edit_confirmed"
+                  },
+                  "last_outcome": {
+                    "type": "string",
+                    "const": "start_failed_edit_confirmed"
+                  },
+                  "last_transition_nonce": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "active",
+                  "state",
+                  "last_state",
+                  "last_outcome",
+                  "last_transition_nonce"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "active": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "edit"
+                  },
+                  "last_state": {
+                    "type": "string",
+                    "const": "start_failed_edit_confirmed"
+                  },
+                  "last_outcome": {
+                    "type": "string",
+                    "const": "start_failed_edit_confirmed"
+                  },
+                  "last_transition_nonce": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "last_failure_code": {
+                    "type": "string",
+                    "enum": [
+                      "request_blocked",
+                      "request_encode_invalid",
+                      "request_exception",
+                      "request_exception_http_disabled",
+                      "response_invalid",
+                      "response_non_success",
+                      "response_oversize",
+                      "envelope_invalid",
+                      "bridge_already_ended"
+                    ]
+                  }
+                },
+                "required": [
+                  "active",
+                  "state",
+                  "last_state",
+                  "last_outcome",
+                  "last_transition_nonce",
+                  "last_failure_code"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "transitionStarting": {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean",
+                "const": false
+              },
+              "state": {
+                "type": "string",
+                "const": "starting"
+              },
+              "accepted": {
+                "type": "boolean",
+                "const": true
+              },
+              "server_ready": {
+                "type": "boolean",
+                "const": false
+              },
+              "runner_finished": {
+                "type": "boolean",
+                "const": false
+              },
+              "transition_nonce": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "active",
+              "state",
+              "accepted",
+              "server_ready",
+              "runner_finished",
+              "transition_nonce"
+            ],
+            "additionalProperties": false
+          },
+          "transitionPlay": {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean",
+                "const": true
+              },
+              "state": {
+                "type": "string",
+                "const": "play"
+              },
+              "accepted": {
+                "type": "boolean",
+                "const": true
+              },
+              "server_ready": {
+                "type": "boolean",
+                "const": true
+              },
+              "runner_finished": {
+                "type": "boolean",
+                "const": false
+              },
+              "transition_nonce": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "active",
+              "state",
+              "accepted",
+              "server_ready",
+              "runner_finished",
+              "transition_nonce"
+            ],
+            "additionalProperties": false
+          },
+          "transitionStopping": {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean",
+                "const": true
+              },
+              "state": {
+                "type": "string",
+                "const": "stopping"
+              },
+              "accepted": {
+                "type": "boolean",
+                "const": true
+              },
+              "server_ready": {
+                "type": "boolean"
+              },
+              "runner_finished": {
+                "type": "boolean",
+                "const": false
+              },
+              "transition_nonce": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "stop_command_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "error": {
+                "type": "string",
+                "maxLength": 240
+              }
+            },
+            "required": [
+              "active",
+              "state",
+              "accepted",
+              "server_ready",
+              "runner_finished",
+              "transition_nonce",
+              "stop_command_id"
+            ],
+            "additionalProperties": false
+          },
+          "transitionSettling": {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean",
+                "const": false
+              },
+              "state": {
+                "type": "string",
+                "const": "settling"
+              },
+              "accepted": {
+                "type": "boolean",
+                "const": true
+              },
+              "server_ready": {
+                "type": "boolean"
+              },
+              "runner_finished": {
+                "type": "boolean",
+                "const": true
+              },
+              "transition_nonce": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "stop_command_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "error": {
+                "type": "string",
+                "maxLength": 240
+              }
+            },
+            "required": [
+              "active",
+              "state",
+              "accepted",
+              "server_ready",
+              "runner_finished",
+              "transition_nonce"
+            ],
+            "additionalProperties": false
+          },
+          "transitionRecoveryRequired": {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean",
+                "const": false
+              },
+              "state": {
+                "type": "string",
+                "const": "recovery_required"
+              },
+              "accepted": {
+                "type": "boolean",
+                "const": true
+              },
+              "server_ready": {
+                "type": "boolean",
+                "const": false
+              },
+              "runner_finished": {
+                "type": "boolean",
+                "const": false
+              },
+              "transition_nonce": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "error": {
+                "type": "string",
+                "maxLength": 240
+              }
+            },
+            "required": [
+              "active",
+              "state",
+              "accepted",
+              "server_ready",
+              "runner_finished",
+              "transition_nonce",
+              "error"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "source": {
+            "type": "string",
+            "const": "studio_controller"
+          },
+          "connected": {
+            "type": "boolean",
+            "const": true
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "broker_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9]{16,64}$"
+          },
+          "session_tag": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "place_id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "game_id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "edit",
+              "starting",
+              "play",
+              "settling",
+              "stopping",
+              "unknown"
+            ]
+          },
+          "is_edit": {
+            "type": "boolean"
+          },
+          "mode_source": {
+            "type": "string",
+            "enum": [
+              "controller_predicates",
+              "play_transition"
+            ]
+          },
+          "controller_context": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "type": "string",
+                "const": "edit_controller"
+              },
+              "datamodel_type": {
+                "type": "string",
+                "const": "Edit"
+              },
+              "request_channel_available": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "role",
+              "datamodel_type",
+              "request_channel_available"
+            ],
+            "additionalProperties": false
+          },
+          "available_datamodel_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "const": "Edit"
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "raw_mode_predicates": {
+            "$ref": "#/$defs/rawModePredicates"
+          },
+          "play": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/controllerPlay"
+              },
+              {
+                "$ref": "#/$defs/transitionStarting"
+              },
+              {
+                "$ref": "#/$defs/transitionPlay"
+              },
+              {
+                "$ref": "#/$defs/transitionStopping"
+              },
+              {
+                "$ref": "#/$defs/transitionSettling"
+              },
+              {
+                "$ref": "#/$defs/transitionRecoveryRequired"
+              }
+            ]
+          }
+        },
+        "required": [
+          "adapter",
+          "source",
+          "connected",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "broker_instance_id",
+          "run_id",
+          "session_tag",
+          "name",
+          "place_id",
+          "game_id",
+          "mode",
+          "is_edit",
+          "mode_source",
+          "controller_context",
+          "available_datamodel_types",
+          "raw_mode_predicates",
+          "play"
+        ],
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "mode": {
+                    "const": "edit"
+                  },
+                  "is_edit": {
+                    "const": true
+                  },
+                  "mode_source": {
+                    "const": "controller_predicates"
+                  },
+                  "raw_mode_predicates": {
+                    "properties": {
+                      "is_edit": {
+                        "$ref": "#/$defs/predicateTrue"
+                      },
+                      "is_running": {
+                        "$ref": "#/$defs/predicateFalse"
+                      },
+                      "edit_mode_active": {
+                        "$ref": "#/$defs/predicateTrue"
+                      }
+                    }
+                  },
+                  "play": {
+                    "$ref": "#/$defs/controllerPlay"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "play"
+                  },
+                  "is_edit": {
+                    "const": false
+                  },
+                  "mode_source": {
+                    "const": "controller_predicates"
+                  },
+                  "play": {
+                    "$ref": "#/$defs/controllerPlay"
+                  }
+                },
+                "anyOf": [
+                  {
+                    "properties": {
+                      "raw_mode_predicates": {
+                        "properties": {
+                          "is_running": {
+                            "$ref": "#/$defs/predicateTrue"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "raw_mode_predicates": {
+                        "properties": {
+                          "edit_mode_active": {
+                            "$ref": "#/$defs/predicateFalse"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "unknown"
+                  },
+                  "is_edit": {
+                    "const": false
+                  },
+                  "mode_source": {
+                    "const": "controller_predicates"
+                  },
+                  "play": {
+                    "$ref": "#/$defs/controllerPlay"
+                  }
+                },
+                "not": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "raw_mode_predicates": {
+                          "properties": {
+                            "is_edit": {
+                              "$ref": "#/$defs/predicateTrue"
+                            },
+                            "is_running": {
+                              "$ref": "#/$defs/predicateFalse"
+                            },
+                            "edit_mode_active": {
+                              "$ref": "#/$defs/predicateTrue"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "raw_mode_predicates": {
+                          "properties": {
+                            "is_running": {
+                              "$ref": "#/$defs/predicateTrue"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "raw_mode_predicates": {
+                          "properties": {
+                            "edit_mode_active": {
+                              "$ref": "#/$defs/predicateFalse"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "starting"
+                  },
+                  "is_edit": {
+                    "const": false
+                  },
+                  "mode_source": {
+                    "const": "play_transition"
+                  },
+                  "play": {
+                    "$ref": "#/$defs/transitionStarting"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "play"
+                  },
+                  "is_edit": {
+                    "const": false
+                  },
+                  "mode_source": {
+                    "const": "play_transition"
+                  },
+                  "play": {
+                    "$ref": "#/$defs/transitionPlay"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "stopping"
+                  },
+                  "is_edit": {
+                    "const": false
+                  },
+                  "mode_source": {
+                    "const": "play_transition"
+                  },
+                  "play": {
+                    "$ref": "#/$defs/transitionStopping"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "settling"
+                  },
+                  "is_edit": {
+                    "const": false
+                  },
+                  "mode_source": {
+                    "const": "play_transition"
+                  },
+                  "play": {
+                    "$ref": "#/$defs/transitionSettling"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "unknown"
+                  },
+                  "is_edit": {
+                    "const": false
+                  },
+                  "mode_source": {
+                    "const": "play_transition"
+                  },
+                  "play": {
+                    "$ref": "#/$defs/transitionRecoveryRequired"
+                  }
+                }
+              }
+            ]
+          }
+        ],
         "additionalProperties": false
       },
       "annotations": {
@@ -92,6 +971,244 @@
           }
         },
         "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "$defs": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            },
+            "minItems": 0,
+            "maxItems": 64
+          },
+          "item": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/path"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "class_name": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$"
+              },
+              "child_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              }
+            },
+            "required": [
+              "path",
+              "name",
+              "class_name",
+              "child_count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "v": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation": {
+            "type": "string",
+            "const": "studio_list_tree"
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "root_path": {
+            "$ref": "#/$defs/path"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/item"
+            },
+            "maxItems": 500
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "continuation_cursor": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^(?:|[A-Za-z0-9+/]+={0,2}\\.[0-9a-f]{64})$"
+          },
+          "truncation_reason": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "page_size",
+              "scan_limit",
+              "output_bytes"
+            ]
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000
+          },
+          "scanned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "returned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 500
+          },
+          "output_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 600000
+          },
+          "name_filter": {
+            "type": "string",
+            "maxLength": 100,
+            "pattern": "^(?:|[^\\u0000-\\u001f\\u007f]+)$"
+          },
+          "class_filter": {
+            "type": "string",
+            "maxLength": 100,
+            "pattern": "^(?:|[A-Za-z_][A-Za-z0-9_]*)$"
+          },
+          "class_is_a": {
+            "type": "boolean"
+          },
+          "sort_version": {
+            "type": "string",
+            "const": "name-class-v1"
+          },
+          "output_limit_bytes": {
+            "type": "integer",
+            "const": 600000
+          }
+        },
+        "required": [
+          "adapter",
+          "v",
+          "operation",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "request_id",
+          "root_path",
+          "items",
+          "truncated",
+          "has_more",
+          "continuation_cursor",
+          "truncation_reason",
+          "max_depth",
+          "max_results",
+          "page_size",
+          "scan_limit",
+          "scanned",
+          "returned",
+          "output_bytes",
+          "name_filter",
+          "class_filter",
+          "class_is_a",
+          "sort_version",
+          "output_limit_bytes"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "truncated": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "has_more": {
+                  "const": false
+                },
+                "continuation_cursor": {
+                  "const": ""
+                },
+                "truncation_reason": {
+                  "const": "complete"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "has_more": {
+                  "const": true
+                },
+                "continuation_cursor": {
+                  "minLength": 66
+                },
+                "truncation_reason": {
+                  "enum": [
+                    "page_size",
+                    "scan_limit",
+                    "output_bytes"
+                  ]
+                }
+              }
+            }
+          }
+        ],
         "additionalProperties": false
       },
       "annotations": {
@@ -1274,6 +2391,582 @@
         "readOnlyHint": false,
         "destructiveHint": true,
         "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_multi_edit",
+      "description": "Apply one closed, revision-protected multi-script edit plan in Edit mode through an internal prepare/apply transaction. Every target is an existing exact, unambiguous LuaSourceContainer path with a required lowercase SHA-256 revision. The plugin preflights every target and every ordered edit before mutation. Targets execute in input order and each target's edits execute in input order against the preceding edit's result. Creation is not supported. The operation provides per-target compare-and-swap and compensating rollback, not cross-script atomicity. A dispatched mutation that cannot be proven applied or rolled back returns recovery_required and quarantines further mutation until explicit recovery proves a safe terminal outcome. Bounds enforced independently by the host and Studio include 1-16 unique targets, 1-64 edits per target, 128 edits total, 1024 expanded replacement spans total, 8192 aggregate UTF-8 path bytes, 262144 aggregate UTF-8 literal bytes, 350000 canonical public argument bytes, 262144 source bytes per target, 1048576 aggregate original and planned source bytes, and 100000 encoded receipt bytes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "datamodel_type": {
+            "type": "string",
+            "const": "Edit",
+            "description": "The only permitted DataModel request channel. The explicitly targeted Studio session must positively expose Edit."
+          },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "description": "Existing scripts in deterministic input order. Paths must be unique. Across all targets there may be at most 128 edits, 1024 expanded replacement spans, 8192 UTF-8 path bytes, 262144 UTF-8 bytes of old_string plus new_string literals, 350000 canonical public argument bytes, and 1048576 bytes each of original and planned source.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "description": "Exact child-name segments from the DataModel root. Each segment is also limited to 100 UTF-8 bytes. Duplicate sibling names make the path ambiguous and fail closed."
+                },
+                "expected_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "Exact lowercase SHA-256 revision of the editor source that must still exist at prepare and apply."
+                },
+                "edits": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "description": "Ordered edits applied sequentially to this target's preflight source. Every old_string must match the current intermediate source exactly; creation and an empty old_string are rejected.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "old_string": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 262144,
+                        "description": "Nonempty exact UTF-8 text to replace, independently limited to 262144 encoded bytes."
+                      },
+                      "new_string": {
+                        "type": "string",
+                        "maxLength": 262144,
+                        "description": "Replacement UTF-8 text, independently limited to 262144 encoded bytes and required to differ from old_string."
+                      },
+                      "replace_all": {
+                        "type": "boolean",
+                        "description": "When true, replace every non-overlapping occurrence in the current intermediate source. Defaults to false and cannot be combined with byte offsets."
+                      },
+                      "start_byte": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 262143,
+                        "description": "Optional zero-based inclusive UTF-8 byte offset into the current intermediate source. Must appear with end_byte, cannot be combined with replace_all=true, and must begin an exact old_string match."
+                      },
+                      "end_byte": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 262144,
+                        "description": "Optional zero-based exclusive UTF-8 byte offset. Must appear with start_byte; the range must be nonempty and exactly the encoded byte length and content of old_string."
+                      }
+                    },
+                    "required": [
+                      "old_string",
+                      "new_string"
+                    ],
+                    "dependentRequired": {
+                      "start_byte": [
+                        "end_byte"
+                      ],
+                      "end_byte": [
+                        "start_byte"
+                      ]
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "path",
+                "expected_sha256",
+                "edits"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "datamodel_type",
+          "targets"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "$defs": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "targetReceipt": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16
+              },
+              "path": {
+                "$ref": "#/$defs/path"
+              },
+              "expected_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "prepared_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "planned_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "observed_before_sha256": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})?$",
+                "description": "Observed source revision immediately before this target's apply decision. Empty means the revision was unavailable or could not be proven; the corresponding status must be recovery_required, or not_applied for an aborted_preflight outcome."
+              },
+              "observed_after_sha256": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})?$",
+                "description": "Observed source revision after this target's apply or compensating action. Empty means the revision was unavailable or could not be proven; the corresponding status must be recovery_required, or not_applied for an aborted_preflight outcome."
+              },
+              "source_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "planned_source_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "edit_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
+              "replacement_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1024
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "applied",
+                  "rolled_back",
+                  "not_applied",
+                  "recovery_required"
+                ]
+              }
+            },
+            "required": [
+              "index",
+              "path",
+              "expected_sha256",
+              "prepared_sha256",
+              "planned_sha256",
+              "observed_before_sha256",
+              "observed_after_sha256",
+              "source_length",
+              "planned_source_length",
+              "edit_count",
+              "replacement_count",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "v": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation": {
+            "type": "string",
+            "const": "studio_multi_edit"
+          },
+          "phase": {
+            "type": "string",
+            "const": "apply"
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "transaction_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "prepare_request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "prepare_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "ordering_version": {
+            "type": "string",
+            "const": "target-input-edit-input-v1"
+          },
+          "atomicity": {
+            "type": "string",
+            "const": "preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1"
+          },
+          "receipt_contract": {
+            "type": "string",
+            "const": "broker-validated-downstream-ack-v1"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "aborted_preflight",
+              "rolled_back",
+              "recovery_required"
+            ]
+          },
+          "safe_terminal": {
+            "type": "boolean"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "target_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16
+          },
+          "edit_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128
+          },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/$defs/targetReceipt"
+            }
+          },
+          "receipt_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "adapter",
+          "v",
+          "operation",
+          "phase",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "request_id",
+          "transaction_id",
+          "prepare_request_id",
+          "prepare_sha256",
+          "ordering_version",
+          "atomicity",
+          "receipt_contract",
+          "outcome",
+          "safe_terminal",
+          "recovery_required",
+          "target_count",
+          "edit_count",
+          "targets",
+          "receipt_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Revision-Protected Studio Multi-Edit",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_recover_multi_edit",
+      "description": "Recover one exact, previously accepted multi-edit transaction for the explicitly targeted Studio session. The original studio_id, client_instance_id, document_epoch, transaction ID, prepare generation, prepare request, revisions, and prepare receipt remain immutable. After an authenticated same-runtime, same-document reconnect, recovery may run under the new fenced generation and its recovery receipt binds that current generation; it never adopts another runtime, document, or transaction. Recovery never guesses success: it proves the current revision of every target, performs only the transaction's pre-authorized compensating action when safe, and otherwise returns recovery_required while mutation remains quarantined.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Canonical transaction UUID returned by studio_multi_edit_v2 for this same explicit Studio identity."
+          }
+        },
+        "required": [
+          "transaction_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "$defs": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "targetReceipt": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16
+              },
+              "path": {
+                "$ref": "#/$defs/path"
+              },
+              "expected_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "prepared_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "planned_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "observed_before_sha256": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})?$",
+                "description": "Observed source revision immediately before this target's recovery decision. Empty means the revision was unavailable or could not be proven; the corresponding status must be recovery_required."
+              },
+              "observed_after_sha256": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})?$",
+                "description": "Observed source revision after this target's recovery action. Empty means the revision was unavailable or could not be proven; the corresponding status must be recovery_required."
+              },
+              "source_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "planned_source_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "edit_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
+              "replacement_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1024
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "applied",
+                  "rolled_back",
+                  "not_applied",
+                  "recovery_required"
+                ]
+              }
+            },
+            "required": [
+              "index",
+              "path",
+              "expected_sha256",
+              "prepared_sha256",
+              "planned_sha256",
+              "observed_before_sha256",
+              "observed_after_sha256",
+              "source_length",
+              "planned_source_length",
+              "edit_count",
+              "replacement_count",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "v": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation": {
+            "type": "string",
+            "const": "studio_recover_multi_edit"
+          },
+          "phase": {
+            "type": "string",
+            "const": "recover"
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "transaction_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "prepare_request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "prepare_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "ordering_version": {
+            "type": "string",
+            "const": "target-input-edit-input-v1"
+          },
+          "atomicity": {
+            "type": "string",
+            "const": "preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1"
+          },
+          "receipt_contract": {
+            "type": "string",
+            "const": "broker-validated-downstream-ack-v1"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "recovered",
+              "recovery_required"
+            ]
+          },
+          "safe_terminal": {
+            "type": "boolean"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "target_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16
+          },
+          "edit_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128
+          },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/$defs/targetReceipt"
+            }
+          },
+          "receipt_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "adapter",
+          "v",
+          "operation",
+          "phase",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "request_id",
+          "transaction_id",
+          "prepare_request_id",
+          "prepare_sha256",
+          "ordering_version",
+          "atomicity",
+          "receipt_contract",
+          "outcome",
+          "safe_terminal",
+          "recovery_required",
+          "target_count",
+          "edit_count",
+          "targets",
+          "receipt_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Recover Studio Multi-Edit",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
         "openWorldHint": false
       }
     },

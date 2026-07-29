@@ -44,6 +44,7 @@ pending request map
 mode and outcome uncertainty
 console sequence/buffer
 job map
+multi-edit transaction/recovery ledger
 metadata
 Play-transition state
 ```
@@ -126,6 +127,46 @@ uncertainty ledger. The session is quarantined until a late
 current-generation response or an authenticated plugin settlement ledger
 clears it.
 
+## Multi-edit transactions
+
+Revision-protected multi-edit reuses the session's exclusive operation lane;
+there is no global transaction lock. Writes for one `studio_id` therefore
+remain FIFO-serialized, while a different Studio session can prepare or apply
+its own transaction concurrently.
+
+The broker, not the caller, owns transaction phases. One public
+`studio_multi_edit_v2` call is decomposed into an internal prepare request and
+a separately correlated apply request. A transaction record binds:
+
+```text
+studio_id
+client_instance_id
+document_epoch
+generation
+transaction_id
+prepare_request_id
+prepare_sha256
+normalized bounded arguments
+ordered target paths and expected/prepared/planned revisions
+downstream per-target acknowledgements
+terminal or recovery-required outcome
+```
+
+Prepare resolves and validates every existing exact script path, revision,
+ordered edit, expanded replacement span, source limit, and final revision
+without writing. Apply rechecks all revisions before its first write and then
+uses per-target compare-and-swap in input order. Each write is read back. A
+later failure triggers compensating rollback only for a target whose observed
+revision still equals the transaction's planned revision.
+
+This provides all-target preflight plus per-target CAS; Roblox exposes no
+transaction primitive spanning multiple script sources, so v2 does not claim
+cross-script atomicity. If every target cannot be proven applied, untouched,
+or compensatingly restored, the exact transaction enters recovery-required
+state and the session's mutation lane is quarantined. Recovery accepts only
+that `transaction_id` under its original Studio/client/document/generation
+identity. It cannot accept a replacement plan or replay across reconnect.
+
 ## Play/Stop lifecycle
 
 Roblox documents `StudioTestService:ExecutePlayModeAsync()` as a yielding
@@ -193,13 +234,14 @@ References:
 ## Tool catalog
 
 `config/durable-tool-catalog.json` is the default runtime catalog. It exposes
-exactly twelve audited operations: state, tree, fixed-allowlist instance
+exactly fourteen audited operations: state, tree, fixed-allowlist instance
 inspection, script-name search, literal cross-script grep, script read/update,
-attribute update, console, screenshot, Scriptable `InputBinding`, and
-Play/Stop. Instance inspection is an Edit-only observational snapshot of one
-exact unambiguous path. It uses bounded closed value encoding and does not
-reflect arbitrary properties, read source, or expose security identities. At
-the public MCP boundary the catalog:
+revision-protected multi-edit and its exact-transaction recovery, attribute
+update, console, screenshot, Scriptable `InputBinding`, and Play/Stop.
+Instance inspection is an Edit-only observational snapshot of one exact
+unambiguous path. It uses bounded closed value encoding and does not reflect
+arbitrary properties, read source, or expose security identities. At the
+public MCP boundary the catalog:
 
 1. preserves descriptions and annotations;
 2. injects a required UUID `studio_id`;
@@ -226,9 +268,30 @@ Jobs are broker-managed and stored in their target session. Status and
 cancellation require both `studio_id` and `job_id`; identical job IDs in two
 sessions do not collide.
 
+Job admission freezes a deep copy of the already schema-validated arguments
+and binds the exact Studio/client/document/generation identity, durable
+handler, handler/input/output schema hashes, argument hash, admission
+sequence, request IDs, and terminal outcome. The public job allowlist contains
+only operations with a closed host-side result validator. A response is
+validated against both that handler contract and the admitted identity before
+it can be retained or delivered.
+
+Same-session direct calls and jobs share one FIFO admission lane; a job cannot
+overtake a direct call accepted earlier for the same Studio. Different
+sessions own independent admission lanes and can overlap.
+
 Queued jobs may be cancelled. A dispatched job keeps the Studio lock until its
 response, timeout, or disconnect. Without an acknowledged downstream cancel
-protocol, v2 refuses to report a dispatched mutation as cancelled.
+protocol, v2 refuses to report a dispatched mutation as cancelled. A
+multi-edit recovery appends an identity-bound resolution receipt to the
+original job without replacing its original apply request, result digest, or
+terminal evidence.
+
+The in-memory job ledger is bounded by active count, retained count, and
+retained result bytes. Only positively terminal jobs with no active,
+uncertain, or recovery-required work can retire. Retirement creates a bounded,
+hash-chained, non-secret tombstone containing contract and outcome digests;
+active or uncertain records are never compacted.
 
 ## Coexistence with production v1
 
