@@ -52,7 +52,19 @@ FAMILY_TO_DURABLE_HANDLER = {
 
 FAMILY_ALLOWED_ARGUMENTS = {
     "state_read": frozenset(),
-    "tree_read": frozenset({"root_path", "max_depth", "max_results"}),
+    "tree_read": frozenset(
+        {
+            "root_path",
+            "max_depth",
+            "max_results",
+            "name_filter",
+            "class_filter",
+            "class_is_a",
+            "scan_limit",
+            "page_size",
+            "continuation_cursor",
+        }
+    ),
     "script_read": frozenset({"path", "max_chars"}),
     "script_update": frozenset(
         {"path", "expected_sha256", "new_source"}
@@ -87,6 +99,7 @@ class CompatibilityManifest:
     manifest_version: str
     durable_catalog_version: str
     schema_policy: str
+    durable_handler_schema_sha256: Mapping[str, str]
     mappings: Mapping[str, CompatibilityMapping]
 
 
@@ -149,7 +162,14 @@ def _validate_schema(schema: Any, tool_name: str) -> Dict[str, Any]:
         )
     properties = schema.get("properties", {})
     required = schema.get("required", [])
-    if not isinstance(properties, dict) or len(properties) > 128:
+    if (
+        not isinstance(properties, dict)
+        or len(properties) > 128
+        or any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in properties.items()
+        )
+    ):
         raise ValidationError(
             "Tool " + tool_name + " schema properties are invalid"
         )
@@ -245,6 +265,15 @@ def load_compatibility_manifest(path: Path) -> CompatibilityManifest:
         ) from exc
     if (
         not isinstance(payload, dict)
+        or set(payload)
+        != {
+            "format",
+            "manifest_version",
+            "durable_catalog_version",
+            "schema_policy",
+            "durable_handler_schema_sha256",
+            "mappings",
+        }
         or payload.get("format")
         != "studio-mcp-v2-upstream-compatibility-map"
         or not isinstance(payload.get("manifest_version"), str)
@@ -253,6 +282,22 @@ def load_compatibility_manifest(path: Path) -> CompatibilityManifest:
         or not isinstance(payload.get("mappings"), list)
     ):
         raise ValidationError("Compatibility manifest header is invalid")
+    schema_digests = payload["durable_handler_schema_sha256"]
+    expected_handlers = frozenset(FAMILY_TO_DURABLE_HANDLER.values())
+    if (
+        not isinstance(schema_digests, dict)
+        or frozenset(schema_digests) != expected_handlers
+        or any(
+            not isinstance(handler, str)
+            or not isinstance(digest, str)
+            or SHA256.fullmatch(digest) is None
+            for handler, digest in schema_digests.items()
+        )
+    ):
+        raise ValidationError(
+            "Compatibility manifest must pin every durable handler schema "
+            "to one exact lowercase SHA-256"
+        )
     mappings: Dict[str, CompatibilityMapping] = {}
     for raw in payload["mappings"]:
         if not isinstance(raw, dict) or set(raw) != {
@@ -285,6 +330,7 @@ def load_compatibility_manifest(path: Path) -> CompatibilityManifest:
         manifest_version=payload["manifest_version"],
         durable_catalog_version=payload["durable_catalog_version"],
         schema_policy=payload["schema_policy"],
+        durable_handler_schema_sha256=dict(schema_digests),
         mappings=mappings,
     )
 
@@ -590,11 +636,47 @@ def validate_durable_contract(
             "Generated durable catalog version does not match the manifest"
         )
     expected_handlers = frozenset(FAMILY_TO_DURABLE_HANDLER.values())
-    actual_handlers = frozenset(_tool_map(durable))
+    durable_tools = _tool_map(durable)
+    actual_handlers = frozenset(durable_tools)
     if actual_handlers != expected_handlers:
         raise ValidationError(
             "Generated catalog changed the exact durable handler allowlist"
         )
+    for family, handler in FAMILY_TO_DURABLE_HANDLER.items():
+        schema = durable_tools[handler]["inputSchema"]
+        properties = schema.get("properties")
+        if (
+            set(schema)
+            != {
+                "type",
+                "properties",
+                "required",
+                "additionalProperties",
+            }
+            or schema.get("type") != "object"
+            or not isinstance(properties, dict)
+            or set(properties) != FAMILY_ALLOWED_ARGUMENTS[family]
+            or schema.get("additionalProperties") is not False
+        ):
+            raise ValidationError(
+                "Generated durable "
+                + family
+                + " schema changed its exact closed argument contract"
+            )
+        actual_schema_sha256 = _sha256(
+            _canonical(schema).encode("utf-8")
+        )
+        if (
+            compatibility_manifest.durable_handler_schema_sha256.get(
+                handler
+            )
+            != actual_schema_sha256
+        ):
+            raise ValidationError(
+                "Generated durable "
+                + handler
+                + " input schema does not match its reviewed SHA-256"
+            )
     handler_path = Path(handler_source_path)
     if handler_path.is_symlink() or not handler_path.is_file():
         raise ValidationError(
@@ -654,6 +736,9 @@ def validate_durable_contract(
         "mcp_names": sorted(tool["name"] for tool in exposed),
         "all_operations_require_studio_id": True,
         "handler_allowlist_unchanged": True,
+        "closed_handler_schemas": True,
+        "reviewed_handler_schema_count": len(expected_handlers),
+        "schema_policy": compatibility_manifest.schema_policy,
     }
 
 

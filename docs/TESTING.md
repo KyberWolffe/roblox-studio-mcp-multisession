@@ -65,6 +65,9 @@ python3 -B scripts/prove_release.py \
 | Repository/archive secrets and portability audit | release audit tests |
 | Isolated install/update/rollback proof | release proof tests |
 | Exact 25-tool set, valid route references, negative parity claims, and prerelease gating | `test_capability_parity.py` |
+| Phase 2 tree schema, literal filters, cursor fencing, executable pagination model, traversal/output bounds, and upstream quarantine | `test_phase2_tree_contract.py`, `test_phase2_tree_luau.py`, `test_phase2_tree_pagination_model.py` |
+| Phase 2 state predicate/context contract and malicious connected-result rejection | `test_phase2_state_contract.py`, `test_phase2_state_luau.py`, `test_phase2_state_response_validation.py` |
+| Tree/state same-session serialization, cross-session isolation, and reconnect fencing | `test_phase2_tree_state_isolation.py` |
 
 ## Explicit-targeting contract
 

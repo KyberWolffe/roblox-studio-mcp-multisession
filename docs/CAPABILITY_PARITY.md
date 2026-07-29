@@ -35,14 +35,14 @@ delegates automatically.
 | `http_get` | P1 | native Codex equivalent | No | Codex web browsing | None |
 | `character_navigation` | P0 | deferred | **Yes** | None | No bounded session-local character navigation adapter exists. |
 | `user_mouse_input` | P0 | v2 partial | **Yes** | `studio_fire_input_binding_v2` | V2 can fire an existing Scriptable InputBinding but cannot inject arbitrary mouse or Studio UI input. |
-| `search_game_tree` | P0 | v2 partial | **Yes** | `studio_list_tree_v2` | The bounded tree reader lacks the upstream keyword, class, summary, and pagination semantics. |
+| `search_game_tree` | P0 | v2 partial | **Yes** | `studio_list_tree_v2` | V2 now provides exact-path traversal, bounded literal name/ClassName-or-IsA filters, scan/output caps, and session-fenced cursor pagination. It still differs from the upstream multi-keyword parser, dot-path/depth-10/head-limit shape, and depth-limit child summaries. |
 | `script_search` | P0 | v2 partial | **Yes** | `studio_list_tree_v2` | Tree inspection can locate known paths but there is no bounded fuzzy script-name search adapter. |
 | `upload_image` | P1 | deferred | No | None | No reviewed authenticated Roblox asset-upload adapter exists. |
 | `script_read` | P0 | v2 full | No | `studio_read_script_v2` | None |
 | `insert_asset` | P1 | deferred | No | None | No bounded asset insertion adapter or permission contract exists. |
 | `subagent` | P1 | native Codex equivalent | No | Codex multi-agent delegation | None |
 | `multi_edit` | P0 | v2 partial | **Yes** | `studio_update_script_v2` | V2 provides whole-source compare-and-swap updates but not the upstream multi-patch edit shape. |
-| `get_studio_state` | P0 | v2 partial | **Yes** | `studio_get_state_v2` | V2 returns identity, mode, and Play state but not the v1 list of available DataModel types. |
+| `get_studio_state` | P0 | v2 partial | **Yes** | `studio_get_state_v2` | V2 reports normalized lifecycle state, raw controller predicates, and the sole routable Edit DataModel channel. General Server/Client operation channels remain unavailable; the PlayServer bridge is lifecycle-only and is intentionally not advertised as a route. |
 | `search_asset` | P1 | deferred | No | None | Web search is not equivalent to Creator Store and authenticated inventory search. |
 | `execute_luau` | P0 | deferred | **Yes** | None | Arbitrary Luau evaluation is intentionally absent pending a reviewed capability and authorization design. |
 | `skill` | P1 | deferred | No | None | No Roblox-specific skill content equivalent to the v1 skill catalog is shipped. |

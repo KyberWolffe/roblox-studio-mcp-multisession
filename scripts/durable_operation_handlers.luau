@@ -29,6 +29,16 @@ local MAX_ATTRIBUTE_STRING_BYTES = 4_096
 local MAX_CONSOLE_MESSAGE_BYTES = 2_000
 local MAX_SCREENSHOT_BYTES = 600_000
 local SCREENSHOT_READY_SECONDS = 5
+local MAX_TREE_FILTER_BYTES = 100
+local MAX_TREE_CURSOR_BYTES = 512
+local MAX_TREE_SCAN_LIMIT = 5_000
+local DEFAULT_TREE_SCAN_LIMIT = 2_000
+local MAX_TREE_PAGE_SIZE = 500
+local MAX_TREE_CHILDREN_PER_INSTANCE = 10_000
+local MAX_TREE_OUTPUT_BYTES = 600_000
+local TREE_COOPERATIVE_YIELD_INTERVAL = 100
+local TREE_CURSOR_VERSION = 1
+local TREE_SORT_VERSION = "name-class-v1"
 
 local OPERATION_ARG_KEYS = table.freeze({
 	studio_get_state = table.freeze({}),
@@ -36,6 +46,12 @@ local OPERATION_ARG_KEYS = table.freeze({
 		root_path = true,
 		max_depth = true,
 		max_results = true,
+		name_filter = true,
+		class_filter = true,
+		class_is_a = true,
+		scan_limit = true,
+		page_size = true,
+		continuation_cursor = true,
 	}),
 	studio_read_script = table.freeze({
 		path = true,
@@ -123,6 +139,21 @@ local function validatePath(path, allowEmpty, label)
 		end
 	end
 	return path
+end
+
+local function validateTreeFilter(value, label)
+	if type(value) ~= "string"
+		or #value < 1
+		or #value > MAX_TREE_FILTER_BYTES
+		or string.find(value, "[%c]") ~= nil
+	then
+		adapterError(
+			"invalid_args",
+			label .. " must be bounded literal text without controls",
+			false
+		)
+	end
+	return value
 end
 
 local function copyPath(path)
@@ -290,12 +321,84 @@ local function validateDurableArgs(operation, args, deadlineMs)
 	if operation == "studio_get_state" then
 		return
 	elseif operation == "studio_list_tree" then
-		validatePath(args.root_path or {}, true, "root_path")
+		local rootPath = validatePath(
+			args.root_path or {},
+			true,
+			"root_path"
+		)
 		if args.max_depth ~= nil then
 			validateIntegerRange(args.max_depth, 0, 6, "max_depth")
 		end
+		local maxDepth = args.max_depth or 2
+		if #rootPath + maxDepth > MAX_PATH_SEGMENTS then
+			adapterError(
+				"invalid_args",
+				"root_path plus max_depth exceeds the reusable path bound",
+				false
+			)
+		end
 		if args.max_results ~= nil then
 			validateIntegerRange(args.max_results, 1, 500, "max_results")
+		end
+		if args.name_filter ~= nil then
+			validateTreeFilter(args.name_filter, "name_filter")
+		end
+		if args.class_filter ~= nil then
+			validateTreeFilter(args.class_filter, "class_filter")
+			if string.find(args.class_filter, "^[%a_][%w_]*$") == nil then
+				adapterError(
+					"invalid_args",
+					"class_filter must be a literal Roblox class name",
+					false
+				)
+			end
+		end
+		if args.class_is_a ~= nil
+			and type(args.class_is_a) ~= "boolean"
+		then
+			adapterError("invalid_args", "class_is_a must be boolean", false)
+		end
+		if args.class_is_a ~= nil and args.class_filter == nil then
+			adapterError(
+				"invalid_args",
+				"class_is_a requires class_filter",
+				false
+			)
+		end
+		if args.scan_limit ~= nil then
+			validateIntegerRange(
+				args.scan_limit,
+				1,
+				MAX_TREE_SCAN_LIMIT,
+				"scan_limit"
+			)
+		end
+		if args.page_size ~= nil then
+			validateIntegerRange(
+				args.page_size,
+				1,
+				MAX_TREE_PAGE_SIZE,
+				"page_size"
+			)
+		end
+		if args.max_results ~= nil and args.page_size ~= nil then
+			adapterError(
+				"invalid_args",
+				"max_results and page_size are mutually exclusive",
+				false
+			)
+		end
+		if args.continuation_cursor ~= nil
+			and (type(args.continuation_cursor) ~= "string"
+				or #args.continuation_cursor < 1
+				or #args.continuation_cursor > MAX_TREE_CURSOR_BYTES
+				or string.find(args.continuation_cursor, "[%c%s]") ~= nil)
+		then
+			adapterError(
+				"invalid_args",
+				"continuation_cursor is invalid or exceeds its bound",
+				false
+			)
 		end
 	elseif operation == "studio_read_script" then
 		validatePath(args.path, false, "path")
@@ -457,9 +560,12 @@ end
 
 local function durableGetState()
 	local play = playStateSnapshot()
-	local mode = observedMode(play)
+	local controllerMode = modeSnapshot()
+	local mode, modeSource = observedMode(play, controllerMode)
 	return {
 		adapter = "studio-mcp-v2-durable-plugin",
+		source = "studio_controller",
+		connected = true,
 		studio_id = peer.studio_id,
 		client_instance_id = CLIENT_INSTANCE_ID,
 		document_epoch = DOCUMENT_EPOCH,
@@ -472,54 +578,655 @@ local function durableGetState()
 		game_id = EXPECTED_GAME_ID,
 		mode = mode,
 		is_edit = mode == "edit",
+		mode_source = modeSource,
+		raw_mode_predicates = controllerMode.raw_mode_predicates,
+		controller_context = {
+			role = "edit_controller",
+			datamodel_type = "Edit",
+			request_channel_available = true,
+		},
+		available_datamodel_types = { "Edit" },
 		play = play,
 	}
+end
+
+local TREE_CURSOR_KEYS = table.freeze({
+	v = true,
+	s = true,
+	d = true,
+	g = true,
+	q = true,
+	p = true,
+	l = true,
+})
+
+local function appendCanonicalTreeValue(parts, value)
+	local text = tostring(value)
+	table.insert(parts, tostring(#text))
+	table.insert(parts, ":")
+	table.insert(parts, text)
+	table.insert(parts, ";")
+end
+
+local function treeSha256(value)
+	if EncodingService == nil then
+		adapterError(
+			"tree_cursor_unavailable",
+			"Studio SHA-256 support is unavailable for tree pagination",
+			false
+		)
+	end
+	local ok, binaryDigest = pcall(function()
+		return EncodingService:ComputeStringHash(
+			value,
+			Enum.HashAlgorithm.Sha256
+		)
+	end)
+	if not ok
+		or type(binaryDigest) ~= "string"
+		or #binaryDigest ~= 32
+	then
+		adapterError(
+			"tree_cursor_unavailable",
+			"Studio could not compute a tree cursor digest",
+			false
+		)
+	end
+	local hexadecimal = table.create(32)
+	for index = 1, 32 do
+		hexadecimal[index] = string.format(
+			"%02x",
+			string.byte(binaryDigest, index)
+		)
+	end
+	return table.concat(hexadecimal)
+end
+
+local function treeCursorIntegrity(payload)
+	return treeSha256(
+		REGISTRATION_SECRET
+			.. "\0studio-tree-cursor-v1\0"
+			.. payload
+			.. "\0"
+			.. REGISTRATION_SECRET
+	)
+end
+
+local function constantTimeTextEqual(left, right)
+	if type(left) ~= "string"
+		or type(right) ~= "string"
+		or #left ~= #right
+	then
+		return false
+	end
+	local different = 0
+	for index = 1, #left do
+		if string.byte(left, index) ~= string.byte(right, index) then
+			different = 1
+		end
+	end
+	return different == 0
+end
+
+local function encodeTreeCursorPayload(payload)
+	local jsonOk, json = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if not jsonOk or type(json) ~= "string" or #json > 1_024 then
+		adapterError(
+			"tree_cursor_unavailable",
+			"Tree cursor state could not be encoded within its bound",
+			false
+		)
+	end
+	local base64Ok, encodedBuffer = pcall(function()
+		return EncodingService:Base64Encode(buffer.fromstring(json))
+	end)
+	if not base64Ok or typeof(encodedBuffer) ~= "buffer" then
+		adapterError(
+			"tree_cursor_unavailable",
+			"Studio could not encode tree cursor state",
+			false
+		)
+	end
+	local encoded = buffer.tostring(encodedBuffer)
+	local cursor = encoded .. "." .. treeCursorIntegrity(json)
+	if #cursor > MAX_TREE_CURSOR_BYTES then
+		adapterError(
+			"tree_cursor_unavailable",
+			"Encoded tree cursor exceeds its durable bound",
+			false
+		)
+	end
+	return cursor
+end
+
+local function decodeTreeCursorPayload(cursor, querySha256, maxDepth)
+	local encodedCore, padding, suppliedIntegrity = string.match(
+		cursor,
+		"^([A-Za-z0-9+/]+)(=*)%.([0-9a-f]+)$"
+	)
+	if encodedCore == nil
+		or padding == nil
+		or #padding > 2
+		or suppliedIntegrity == nil
+		or #suppliedIntegrity ~= 64
+	then
+		adapterError(
+			"invalid_continuation_cursor",
+			"Tree continuation cursor encoding is invalid",
+			false
+		)
+	end
+	local encoded = encodedCore .. padding
+	local decodeOk, decodedBuffer = pcall(function()
+		return EncodingService:Base64Decode(buffer.fromstring(encoded))
+	end)
+	if not decodeOk or typeof(decodedBuffer) ~= "buffer" then
+		adapterError(
+			"invalid_continuation_cursor",
+			"Tree continuation cursor payload is invalid",
+			false
+		)
+	end
+	local json = buffer.tostring(decodedBuffer)
+	if #json < 1 or #json > 1_024 then
+		adapterError(
+			"invalid_continuation_cursor",
+			"Tree continuation cursor payload exceeds its bound",
+			false
+		)
+	end
+	if not constantTimeTextEqual(
+		suppliedIntegrity,
+		treeCursorIntegrity(json)
+	) then
+		adapterError(
+			"invalid_continuation_cursor",
+			"Tree continuation cursor integrity check failed",
+			false
+		)
+	end
+	local payloadOk, payload = pcall(function()
+		return HttpService:JSONDecode(json)
+	end)
+	if not payloadOk or type(payload) ~= "table" then
+		adapterError(
+			"invalid_continuation_cursor",
+			"Tree continuation cursor JSON is invalid",
+			false
+		)
+	end
+	for key in pairs(payload) do
+		if type(key) ~= "string" or TREE_CURSOR_KEYS[key] ~= true then
+			adapterError(
+				"invalid_continuation_cursor",
+				"Tree continuation cursor contains an unexpected field",
+				false
+			)
+		end
+	end
+	for key in pairs(TREE_CURSOR_KEYS) do
+		if payload[key] == nil then
+			adapterError(
+				"invalid_continuation_cursor",
+				"Tree continuation cursor is missing required state",
+				false
+			)
+		end
+	end
+	if payload.v ~= TREE_CURSOR_VERSION
+		or payload.s ~= peer.studio_id
+		or payload.d ~= DOCUMENT_EPOCH
+		or payload.g ~= peer.generation
+	then
+		adapterError(
+			"stale_continuation_cursor",
+			"Tree continuation cursor belongs to another session generation",
+			false
+		)
+	end
+	if payload.q ~= querySha256 then
+		adapterError(
+			"continuation_cursor_query_mismatch",
+			"Tree continuation cursor does not match this query",
+			false
+		)
+	end
+	if type(payload.l) ~= "string"
+		or #payload.l ~= 64
+		or string.find(payload.l, "[^0-9a-f]") ~= nil
+		or type(payload.p) ~= "table"
+		or #payload.p > maxDepth
+	then
+		adapterError(
+			"invalid_continuation_cursor",
+			"Tree continuation cursor traversal state is invalid",
+			false
+		)
+	end
+	local positionCount = #payload.p
+	for key in pairs(payload.p) do
+		if not isInteger(key) or key < 1 or key > positionCount then
+			adapterError(
+				"invalid_continuation_cursor",
+				"Tree continuation position must be a dense array",
+				false
+			)
+		end
+	end
+	for _, ordinal in ipairs(payload.p) do
+		if not isInteger(ordinal)
+			or ordinal < 1
+			or ordinal > MAX_TREE_CHILDREN_PER_INSTANCE
+		then
+			adapterError(
+				"invalid_continuation_cursor",
+				"Tree continuation child ordinal is invalid",
+				false
+			)
+		end
+	end
+	return payload.p, payload.l
+end
+
+local function canonicalTreeQuery(
+	rootPath,
+	maxDepth,
+	nameFilter,
+	classFilter,
+	classIsA,
+	scanLimit,
+	pageSize
+)
+	local parts = {}
+	appendCanonicalTreeValue(parts, "studio-tree-query-v1")
+	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, maxDepth)
+	appendCanonicalTreeValue(parts, string.lower(nameFilter or ""))
+	appendCanonicalTreeValue(parts, classFilter or "")
+	appendCanonicalTreeValue(parts, classIsA and "1" or "0")
+	appendCanonicalTreeValue(parts, scanLimit)
+	appendCanonicalTreeValue(parts, pageSize)
+	appendCanonicalTreeValue(parts, #rootPath)
+	for _, segment in ipairs(rootPath) do
+		appendCanonicalTreeValue(parts, segment)
+	end
+	return table.concat(parts)
+end
+
+local function sortedTreeChildren(instance)
+	local children = instance:GetChildren()
+	if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+		adapterError(
+			"tree_width_unsupported",
+			"One tree node exceeds the deterministic child-order bound",
+			false
+		)
+	end
+	local decorated = table.create(#children)
+	for index, child in ipairs(children) do
+		if type(child.Name) ~= "string"
+			or #child.Name < 1
+			or #child.Name > MAX_PATH_SEGMENT_BYTES
+			or string.find(child.Name, "[%c]") ~= nil
+		then
+			adapterError(
+				"tree_name_unsupported",
+				"One tree child name cannot form a reusable exact path",
+				false
+			)
+		end
+		decorated[index] = {
+			instance = child,
+			original_index = index,
+		}
+	end
+	table.sort(decorated, function(left, right)
+		local leftInstance = left.instance
+		local rightInstance = right.instance
+		if leftInstance.Name == rightInstance.Name then
+			if leftInstance.ClassName == rightInstance.ClassName then
+				return left.original_index < right.original_index
+			end
+			return leftInstance.ClassName < rightInstance.ClassName
+		end
+		return leftInstance.Name < rightInstance.Name
+	end)
+	for index = 2, #decorated do
+		local previous = decorated[index - 1].instance
+		local current = decorated[index].instance
+		if previous.Name == current.Name then
+			adapterError(
+				"ambiguous_tree_order",
+				"Sibling instances with duplicate names cannot produce "
+					.. "reusable exact paths",
+				false
+			)
+		end
+	end
+	local sorted = table.create(#decorated)
+	for index, entry in ipairs(decorated) do
+		sorted[index] = entry.instance
+	end
+	return sorted
+end
+
+local function boundedTreeChildCount(instance)
+	local children = instance:GetChildren()
+	if #children > MAX_TREE_CHILDREN_PER_INSTANCE then
+		adapterError(
+			"tree_width_unsupported",
+			"One tree node exceeds the deterministic child-count bound",
+			false
+		)
+	end
+	return #children
+end
+
+local function treePositionLineage(root, position)
+	local parts = {}
+	appendCanonicalTreeValue(parts, "studio-tree-lineage-v1")
+	appendCanonicalTreeValue(parts, TREE_SORT_VERSION)
+	appendCanonicalTreeValue(parts, root.Name)
+	appendCanonicalTreeValue(parts, root.ClassName)
+	local current = root
+	for _, ordinal in ipairs(position) do
+		local children = sortedTreeChildren(current)
+		if ordinal > #children then
+			adapterError(
+				"stale_continuation_cursor",
+				"Tree continuation location no longer exists",
+				false
+			)
+		end
+		appendCanonicalTreeValue(parts, #children)
+		appendCanonicalTreeValue(parts, ordinal)
+		local first = math.max(1, ordinal - 2)
+		local last = math.min(#children, ordinal + 2)
+		appendCanonicalTreeValue(parts, first)
+		appendCanonicalTreeValue(parts, last)
+		for index = first, last do
+			local child = children[index]
+			appendCanonicalTreeValue(parts, index)
+			appendCanonicalTreeValue(parts, child.Name)
+			appendCanonicalTreeValue(parts, child.ClassName)
+		end
+		current = children[ordinal]
+	end
+	appendCanonicalTreeValue(parts, current.Name)
+	appendCanonicalTreeValue(parts, current.ClassName)
+	return treeSha256(table.concat(parts))
+end
+
+local function newTreeTraversal(root, rootPath, position, maxDepth)
+	local frames = {}
+	local current = root
+	local currentPath = copyPath(rootPath)
+	local currentPosition = {}
+	for level, ordinal in ipairs(position) do
+		if level > maxDepth then
+			adapterError(
+				"invalid_continuation_cursor",
+				"Tree continuation exceeds max_depth",
+				false
+			)
+		end
+		local children = sortedTreeChildren(current)
+		if ordinal > #children then
+			adapterError(
+				"stale_continuation_cursor",
+				"Tree continuation location no longer exists",
+				false
+			)
+		end
+		table.insert(frames, {
+			instance = current,
+			path = copyPath(currentPath),
+			position = copyPath(currentPosition),
+			depth = level - 1,
+			emitted = true,
+			children = children,
+			next_child = ordinal + 1,
+		})
+		table.insert(currentPosition, ordinal)
+		current = children[ordinal]
+		currentPath = appendPath(currentPath, current.Name)
+	end
+	table.insert(frames, {
+		instance = current,
+		path = copyPath(currentPath),
+		position = copyPath(currentPosition),
+		depth = #position,
+		emitted = false,
+		children = nil,
+		next_child = 1,
+	})
+	return frames
+end
+
+local function nextTreeNode(frames, maxDepth)
+	while #frames > 0 do
+		local frame = frames[#frames]
+		if not frame.emitted then
+			frame.emitted = true
+			return frame.instance,
+				frame.path,
+				frame.depth,
+				frame.position
+		end
+		if frame.depth < maxDepth then
+			if frame.children == nil then
+				frame.children = sortedTreeChildren(frame.instance)
+			end
+			local ordinal = frame.next_child
+			if ordinal <= #frame.children then
+				frame.next_child = ordinal + 1
+				local child = frame.children[ordinal]
+				table.insert(frames, {
+					instance = child,
+					path = appendPath(frame.path, child.Name),
+					position = appendPath(frame.position, ordinal),
+					depth = frame.depth + 1,
+					emitted = false,
+					children = nil,
+					next_child = 1,
+				})
+			else
+				table.remove(frames)
+			end
+		else
+			table.remove(frames)
+		end
+	end
+	return nil, nil, nil, nil
+end
+
+local function treeInstanceMatches(
+	instance,
+	nameFilterLower,
+	classFilter,
+	classIsA
+)
+	if nameFilterLower ~= nil
+		and string.find(
+			string.lower(instance.Name),
+			nameFilterLower,
+			1,
+			true
+		) == nil
+	then
+		return false
+	end
+	if classFilter == nil then
+		return true
+	end
+	if not classIsA then
+		return instance.ClassName == classFilter
+	end
+	local ok, matches = pcall(function()
+		return instance:IsA(classFilter)
+	end)
+	if not ok then
+		adapterError(
+			"invalid_class_filter",
+			"Studio rejected class_filter for IsA matching",
+			false
+		)
+	end
+	return matches == true
 end
 
 local function listTree(args)
 	local rootPath = args.root_path or {}
 	local root = resolveExactPath(rootPath, true)
 	local maxDepth = args.max_depth or 2
-	local maxResults = args.max_results or 200
-	local items = {}
-	local truncated = false
-
-	local function visit(instance, path, depth)
-		if #items >= maxResults then
-			truncated = true
-			return
-		end
-		table.insert(items, {
-			path = copyPath(path),
-			name = instance == game and game.Name or instance.Name,
-			class_name = instance.ClassName,
-			child_count = #instance:GetChildren(),
-		})
-		if depth >= maxDepth then
-			return
-		end
-		local children = instance:GetChildren()
-		table.sort(children, function(left, right)
-			if left.Name == right.Name then
-				return left.ClassName < right.ClassName
-			end
-			return left.Name < right.Name
+	local pageSize = args.page_size or args.max_results or 200
+	local scanLimit = args.scan_limit or DEFAULT_TREE_SCAN_LIMIT
+	local nameFilter = args.name_filter
+	local nameFilterLower = nameFilter ~= nil
+		and string.lower(nameFilter) or nil
+	local classFilter = args.class_filter
+	local classIsA = args.class_is_a == true
+	if classFilter ~= nil and classIsA then
+		local classOk = pcall(function()
+			return root:IsA(classFilter)
 		end)
-		for _, child in ipairs(children) do
-			visit(child, appendPath(path, child.Name), depth + 1)
-			if truncated then
-				return
-			end
+		if not classOk then
+			adapterError(
+				"invalid_class_filter",
+				"Studio rejected class_filter for IsA matching",
+				false
+			)
+		end
+	end
+	local queryCanonical = canonicalTreeQuery(
+		rootPath,
+		maxDepth,
+		nameFilter,
+		classFilter,
+		classIsA,
+		scanLimit,
+		pageSize
+	)
+	local querySha256 = nil
+	local startPosition = {}
+	local expectedLineage = nil
+	if args.continuation_cursor ~= nil then
+		querySha256 = treeSha256(queryCanonical)
+		startPosition, expectedLineage = decodeTreeCursorPayload(
+			args.continuation_cursor,
+			querySha256,
+			maxDepth
+		)
+		local observedLineage = treePositionLineage(root, startPosition)
+		if not constantTimeTextEqual(expectedLineage, observedLineage) then
+			adapterError(
+				"stale_continuation_cursor",
+				"Tree changed at the continuation location",
+				false
+			)
 		end
 	end
 
-	visit(root, rootPath, 0)
+	local frames = newTreeTraversal(
+		root,
+		rootPath,
+		startPosition,
+		maxDepth
+	)
+	local items = {}
+	local scanned = 0
+	local outputBytes = 0
+	local nextPosition = nil
+	local truncationReason = nil
+
+	while true do
+		local instance, path, _, position = nextTreeNode(frames, maxDepth)
+		if instance == nil then
+			break
+		end
+		scanned = scanned + 1
+		if treeInstanceMatches(
+			instance,
+			nameFilterLower,
+			classFilter,
+			classIsA
+		) then
+				local item = {
+					path = copyPath(path),
+					name = instance == game and game.Name or instance.Name,
+					class_name = instance.ClassName,
+					child_count = boundedTreeChildCount(instance),
+				}
+			local itemJsonOk, itemJson = pcall(function()
+				return HttpService:JSONEncode(item)
+			end)
+			if not itemJsonOk or type(itemJson) ~= "string" then
+				adapterError(
+					"tree_encoding_unavailable",
+					"Studio could not encode a bounded tree item",
+					false
+				)
+			end
+			local encodedBytes = #itemJson + 1
+			if outputBytes + encodedBytes > MAX_TREE_OUTPUT_BYTES then
+				nextPosition = copyPath(position)
+				truncationReason = "output_bytes"
+				break
+			end
+			table.insert(items, item)
+			outputBytes = outputBytes + encodedBytes
+		end
+
+		if #items >= pageSize or scanned >= scanLimit then
+			local _, _, _, followingPosition =
+				nextTreeNode(frames, maxDepth)
+			if followingPosition ~= nil then
+				nextPosition = copyPath(followingPosition)
+				truncationReason = #items >= pageSize
+					and "page_size" or "scan_limit"
+			end
+			break
+		end
+		if scanned % TREE_COOPERATIVE_YIELD_INTERVAL == 0 then
+			task.wait()
+			assertExpectedDocument()
+		end
+	end
+
+	assertExpectedDocument()
+	local continuationCursor = nil
+	if nextPosition ~= nil then
+		querySha256 = querySha256 or treeSha256(queryCanonical)
+		continuationCursor = encodeTreeCursorPayload({
+			v = TREE_CURSOR_VERSION,
+			s = peer.studio_id,
+			d = DOCUMENT_EPOCH,
+			g = peer.generation,
+			q = querySha256,
+			p = nextPosition,
+			l = treePositionLineage(root, nextPosition),
+		})
+	end
 	return {
 		root_path = copyPath(rootPath),
 		items = items,
-		truncated = truncated,
+		truncated = continuationCursor ~= nil,
+		has_more = continuationCursor ~= nil,
+		continuation_cursor = continuationCursor,
+		truncation_reason = truncationReason,
 		max_depth = maxDepth,
-		max_results = maxResults,
+		max_results = pageSize,
+		page_size = pageSize,
+		scan_limit = scanLimit,
+		scanned = scanned,
+		returned = #items,
+		output_bytes = outputBytes,
+		name_filter = nameFilter,
+		class_filter = classFilter,
+		class_is_a = classIsA,
+		sort_version = TREE_SORT_VERSION,
 	}
 end
 

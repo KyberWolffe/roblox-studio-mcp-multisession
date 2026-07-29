@@ -78,7 +78,7 @@
           "name": "studio_list_tree"
         }
       ],
-      "gap": "The bounded tree reader lacks the upstream keyword, class, summary, and pagination semantics.",
+      "gap": "V2 now provides exact-path traversal, bounded literal name/ClassName-or-IsA filters, scan/output caps, and session-fenced cursor pagination. It still differs from the upstream multi-keyword parser, dot-path/depth-10/head-limit shape, and depth-limit child summaries.",
       "phase": "phase_2"
     },
     {
@@ -166,7 +166,7 @@
           "name": "studio_get_state"
         }
       ],
-      "gap": "V2 returns identity, mode, and Play state but not the v1 list of available DataModel types.",
+      "gap": "V2 reports normalized lifecycle state, raw controller predicates, and the sole routable Edit DataModel channel. General Server/Client operation channels remain unavailable; the PlayServer bridge is lifecycle-only and is intentionally not advertised as a route.",
       "phase": "phase_2"
     },
     {

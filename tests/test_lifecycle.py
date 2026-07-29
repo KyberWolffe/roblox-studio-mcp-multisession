@@ -177,7 +177,7 @@ class LifecycleConfigurationTests(unittest.TestCase):
         self.assertEqual(
             "studio-mcp-v2-durable-catalog", report["format"]
         )
-        self.assertEqual("0.2.0", report["catalog_version"])
+        self.assertEqual("0.4.0-dev.1", report["catalog_version"])
         self.assertEqual(
             "production-v1-snapshot-2026-07-26",
             report["upstream"]["version"],

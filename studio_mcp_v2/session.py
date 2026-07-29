@@ -18,6 +18,93 @@ from .errors import (
     UnsafeCancellationError,
 )
 
+_DURABLE_STATE_MODES = frozenset(
+    {"edit", "starting", "play", "settling", "stopping", "unknown"}
+)
+_DURABLE_STATE_MODE_SOURCES = frozenset(
+    {"controller_predicates", "play_transition"}
+)
+_DURABLE_STATE_RAW_PREDICATES = frozenset(
+    {
+        "is_studio",
+        "is_edit",
+        "is_running",
+        "is_run_mode",
+        "is_server",
+        "is_client",
+        "edit_mode_active",
+    }
+)
+_DURABLE_STATE_KEYS = frozenset(
+    {
+        "adapter",
+        "source",
+        "connected",
+        "studio_id",
+        "client_instance_id",
+        "document_epoch",
+        "generation",
+        "broker_instance_id",
+        "run_id",
+        "session_tag",
+        "name",
+        "place_id",
+        "game_id",
+        "mode",
+        "is_edit",
+        "mode_source",
+        "controller_context",
+        "available_datamodel_types",
+        "raw_mode_predicates",
+        "play",
+    }
+)
+_DURABLE_CONTROLLER_PLAY_KEYS = frozenset({"active", "state"})
+_DURABLE_CONTROLLER_LAST_PLAY_KEYS = frozenset(
+    {"last_state", "last_outcome", "last_transition_nonce"}
+)
+_DURABLE_TRANSITION_PLAY_KEYS = frozenset(
+    {
+        "active",
+        "state",
+        "accepted",
+        "server_ready",
+        "runner_finished",
+        "transition_nonce",
+    }
+)
+_DURABLE_TRANSITION_OPTIONAL_PLAY_KEYS = frozenset(
+    {"stop_command_id", "error"}
+)
+_DURABLE_TRANSITION_MODE_BY_STATE = {
+    "starting": "starting",
+    "play": "play",
+    "stopping": "stopping",
+    "settling": "settling",
+    "recovery_required": "unknown",
+}
+_DURABLE_LAST_PLAY_OUTCOMES = frozenset(
+    {
+        "stopped_edit_confirmed",
+        "natural_stop_edit_confirmed",
+        "recovery_natural_stop_edit_confirmed",
+        "start_failed_edit_confirmed",
+    }
+)
+_DURABLE_PLAY_FAILURE_CODES = frozenset(
+    {
+        "request_blocked",
+        "request_encode_invalid",
+        "request_exception",
+        "request_exception_http_disabled",
+        "response_invalid",
+        "response_non_success",
+        "response_oversize",
+        "envelope_invalid",
+        "bridge_already_ended",
+    }
+)
+
 
 class LongPollTransport:
     """One Studio connection generation's outbound request queue."""
@@ -417,6 +504,254 @@ class StudioSession:
                 if not future.done():
                     future.cancel()
 
+    @staticmethod
+    def _canonical_uuid(value: Any) -> bool:
+        if not isinstance(value, str) or len(value) != 36:
+            return False
+        try:
+            return str(uuid.UUID(value)) == value
+        except (ValueError, AttributeError, TypeError):
+            return False
+
+    @staticmethod
+    def _bounded_text(
+        value: Any, maximum: int, *, allow_empty: bool = False
+    ) -> bool:
+        if not isinstance(value, str) or (not allow_empty and not value):
+            return False
+        try:
+            return len(value.encode("utf-8")) <= maximum
+        except UnicodeEncodeError:
+            return False
+
+    @staticmethod
+    def _controller_mode_from_predicates(
+        predicates: Dict[str, Dict[str, Any]]
+    ) -> str:
+        def observed(name: str, expected: bool) -> bool:
+            predicate = predicates[name]
+            return (
+                predicate["read_ok"]
+                and predicate["value"] is expected
+            )
+
+        if (
+            observed("is_edit", True)
+            and observed("is_running", False)
+            and observed("edit_mode_active", True)
+        ):
+            return "edit"
+        if observed("is_running", True) or observed(
+            "edit_mode_active", False
+        ):
+            return "play"
+        return "unknown"
+
+    def _valid_durable_play_result(
+        self,
+        play: Any,
+        mode: str,
+        mode_source: str,
+        predicates: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        if not isinstance(play, dict):
+            return False
+        play_keys = frozenset(play)
+
+        if mode_source == "controller_predicates":
+            allowed_key_sets = {
+                _DURABLE_CONTROLLER_PLAY_KEYS,
+                _DURABLE_CONTROLLER_PLAY_KEYS
+                | _DURABLE_CONTROLLER_LAST_PLAY_KEYS,
+                _DURABLE_CONTROLLER_PLAY_KEYS
+                | _DURABLE_CONTROLLER_LAST_PLAY_KEYS
+                | {"last_failure_code"},
+            }
+            if play_keys not in allowed_key_sets:
+                return False
+            if play.get("active") is not False or play.get("state") != "edit":
+                return False
+            if mode != self._controller_mode_from_predicates(predicates):
+                return False
+            if "last_state" in play:
+                outcome = play["last_outcome"]
+                if (
+                    not isinstance(outcome, str)
+                    or play["last_state"] != outcome
+                    or outcome not in _DURABLE_LAST_PLAY_OUTCOMES
+                    or not self._canonical_uuid(
+                        play["last_transition_nonce"]
+                    )
+                ):
+                    return False
+                if "last_failure_code" in play and (
+                    outcome != "start_failed_edit_confirmed"
+                    or not isinstance(play["last_failure_code"], str)
+                    or play["last_failure_code"]
+                    not in _DURABLE_PLAY_FAILURE_CODES
+                ):
+                    return False
+            return True
+
+        if (
+            not _DURABLE_TRANSITION_PLAY_KEYS.issubset(play_keys)
+            or not play_keys.issubset(
+                _DURABLE_TRANSITION_PLAY_KEYS
+                | _DURABLE_TRANSITION_OPTIONAL_PLAY_KEYS
+            )
+        ):
+            return False
+        state = play.get("state")
+        if not isinstance(state, str):
+            return False
+        expected_mode = _DURABLE_TRANSITION_MODE_BY_STATE.get(state)
+        if expected_mode is None or mode != expected_mode:
+            return False
+        expected_active = state in {"play", "stopping"}
+        if (
+            play.get("active") is not expected_active
+            or play.get("accepted") is not True
+            or type(play.get("server_ready")) is not bool
+            or type(play.get("runner_finished")) is not bool
+            or not self._canonical_uuid(play.get("transition_nonce"))
+        ):
+            return False
+        if "stop_command_id" in play and not self._canonical_uuid(
+            play["stop_command_id"]
+        ):
+            return False
+        if "error" in play and not self._bounded_text(
+            play["error"], 240, allow_empty=True
+        ):
+            return False
+
+        has_stop = "stop_command_id" in play
+        has_error = "error" in play
+        server_ready = play["server_ready"]
+        runner_finished = play["runner_finished"]
+        if state == "starting":
+            return (
+                not server_ready
+                and not runner_finished
+                and not has_stop
+                and not has_error
+            )
+        if state == "play":
+            return (
+                server_ready
+                and not runner_finished
+                and not has_stop
+                and not has_error
+            )
+        if state == "stopping":
+            return not runner_finished and has_stop
+        if state == "settling":
+            return runner_finished
+        return (
+            state == "recovery_required"
+            and not server_ready
+            and not runner_finished
+            and not has_stop
+            and has_error
+        )
+
+    def _valid_durable_state_result(self, result: Any) -> bool:
+        if (
+            not isinstance(result, dict)
+            or frozenset(result) != _DURABLE_STATE_KEYS
+        ):
+            return False
+        if (
+            result.get("adapter") != "studio-mcp-v2-durable-plugin"
+            or result.get("source") != "studio_controller"
+            or result.get("connected") is not True
+            or result.get("studio_id") != self.studio_id
+            or result.get("client_instance_id") != self.client_instance_id
+            or result.get("document_epoch") != self.document_epoch
+            or type(result.get("generation")) is not int
+            or result.get("generation") != self.generation
+        ):
+            return False
+        if not self._canonical_uuid(result.get("broker_instance_id")):
+            return False
+        run_id = result.get("run_id")
+        session_tag = result.get("session_tag")
+        name = result.get("name")
+        if (
+            not isinstance(run_id, str)
+            or not 16 <= len(run_id) <= 64
+            or not run_id.isascii()
+            or not run_id.isalnum()
+            or run_id != self.metadata.get("run_id")
+            or not isinstance(session_tag, str)
+            or len(session_tag) != 12
+            or any(
+                character not in "0123456789abcdef"
+                for character in session_tag
+            )
+            or session_tag != self.metadata.get("session_tag")
+            or not self._bounded_text(name, 256)
+            or name != self.metadata.get("name")
+        ):
+            return False
+        for document_id in ("place_id", "game_id"):
+            value = result.get(document_id)
+            if (
+                type(value) is not int
+                or value < 0
+                or value != self.metadata.get(document_id)
+            ):
+                return False
+
+        mode = result.get("mode")
+        mode_source = result.get("mode_source")
+        if (
+            type(mode) is not str
+            or mode not in _DURABLE_STATE_MODES
+            or type(result.get("is_edit")) is not bool
+            or result["is_edit"] != (mode == "edit")
+            or type(mode_source) is not str
+            or mode_source not in _DURABLE_STATE_MODE_SOURCES
+        ):
+            return False
+
+        if result.get("controller_context") != {
+            "role": "edit_controller",
+            "datamodel_type": "Edit",
+            "request_channel_available": True,
+        }:
+            return False
+        if result.get("available_datamodel_types") != ["Edit"]:
+            return False
+
+        predicates = result.get("raw_mode_predicates")
+        if (
+            not isinstance(predicates, dict)
+            or frozenset(predicates) != _DURABLE_STATE_RAW_PREDICATES
+        ):
+            return False
+        for predicate in predicates.values():
+            if not isinstance(predicate, dict):
+                return False
+            read_ok = predicate.get("read_ok")
+            if type(read_ok) is not bool:
+                return False
+            expected_keys = (
+                frozenset({"read_ok", "value"})
+                if read_ok
+                else frozenset({"read_ok"})
+            )
+            if frozenset(predicate) != expected_keys:
+                return False
+            if read_ok and type(predicate["value"]) is not bool:
+                return False
+        return self._valid_durable_play_result(
+            result.get("play"),
+            mode,
+            mode_source,
+            predicates,
+        )
+
     def receive_response(
         self,
         generation: int,
@@ -445,6 +780,16 @@ class StudioSession:
         # resumes cannot misclassify it as outcome-unknown.
         self.pending.pop(request_id, None)
         if success:
+            if (
+                pending.remote_tool == "studio_get_state"
+                and not self._valid_durable_state_result(result)
+            ):
+                pending.future.set_exception(
+                    RemoteToolError(
+                        "Targeted Studio returned an invalid state response"
+                    )
+                )
+                return True
             self._observe_result(
                 pending.remote_tool, pending.arguments, result
             )

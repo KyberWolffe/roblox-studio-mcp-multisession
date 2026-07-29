@@ -19,6 +19,25 @@ Phase 2 capability-parity development based on the immutable
 - A future installable candidate must retain rc.4 as its immediate guarded
   rollback target.
 
+### Phase 2 tree and state slice
+
+- The durable catalog and exact-schema compatibility manifest advance to the
+  isolated `0.4.0-dev.1` line; the frozen rc.4 catalog bytes remain unchanged.
+- `studio_list_tree` retains its exact segment-array path contract and adds
+  bounded literal name and class filters, deterministic iterative traversal,
+  scan/page/output limits, and opaque session-, generation-, query-, and
+  lineage-fenced continuation cursors.
+- Durable catalog review now pins every handler to its exact closed argument
+  schema; incompatible or unknown upstream shapes remain review-only and are
+  never auto-enabled.
+- `studio_get_state` now distinguishes normalized Play-transition state from
+  raw controller predicates and reports only the actually routable Edit
+  DataModel channel. The PlayServer lifecycle bridge is not presented as a
+  general Server or Client request channel.
+- Connected durable state results are identity- and generation-checked on the
+  host before they can update cached mode. Disconnected recovery reports no
+  available request channel and never infers Server or Client routability.
+
 ## 0.3.0-rc.4 — 2026-07-28
 
 PlayServer HTTP-independence and terminal-session lifecycle correction.

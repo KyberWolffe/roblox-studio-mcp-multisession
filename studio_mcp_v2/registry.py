@@ -37,6 +37,15 @@ def _token_hash(token: str) -> bytes:
 
 MAX_LIFECYCLE_STATUS_DETAILS = 256
 MAX_RETIRED_SESSION_AUDIT = 256
+RAW_MODE_PREDICATE_NAMES = (
+    "is_studio",
+    "is_edit",
+    "is_running",
+    "is_run_mode",
+    "is_server",
+    "is_client",
+    "edit_mode_active",
+)
 
 
 @dataclass(frozen=True)
@@ -864,6 +873,17 @@ class SessionRegistry:
             "adapter": "studio-mcp-v2-broker-recovery-view",
             "source": "broker",
             "connected": session.connected,
+            "mode_source": "broker_play_transition",
+            "controller_context": {
+                "role": "edit_controller",
+                "datamodel_type": "Edit",
+                "request_channel_available": False,
+            },
+            "available_datamodel_types": [],
+            "raw_mode_predicates": {
+                name: {"read_ok": False}
+                for name in RAW_MODE_PREDICATE_NAMES
+            },
             "studio_id": session.studio_id,
             "client_instance_id": session.client_instance_id,
             "document_epoch": session.document_epoch,

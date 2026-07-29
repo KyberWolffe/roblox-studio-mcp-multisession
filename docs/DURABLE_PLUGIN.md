@@ -31,9 +31,21 @@ are validation-only and are not advertised by the durable plugin.
 
 Instance paths are arrays of exact child-name segments. They are not Luau
 expressions. Duplicate sibling names make a path ambiguous and fail closed.
+Tree queries add bounded literal name and class filters, deterministic
+depth-first ordering, explicit scan/page/output caps, and opaque continuation
+cursors. Cursors are integrity-protected and fenced to the exact Studio,
+document epoch, generation, normalized query, sort version, and continuation
+lineage; a mismatched or stale cursor fails closed.
 Script updates use `ScriptEditorService:UpdateSourceAsync` with a required
 SHA-256 compare-and-swap revision. Primitive attribute updates require an exact
 expected prior state and confirm the result.
+
+State reads keep lifecycle state and controller execution predicates separate.
+The bound plugin controller is an Edit DataModel request channel, so connected
+state reports `available_datamodel_types: ["Edit"]`. Raw `IsServer()` or
+`IsClient()` observations do not create general Server/Client routes, and the
+PlayServer bridge remains lifecycle-only. Broker recovery reports no available
+request channel.
 
 Screenshot capture uses the documented Studio capture APIs and returns bounded
 `image_base64`, `mime_type`, `width`, and `height` fields. Missing permission,

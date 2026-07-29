@@ -1,6 +1,6 @@
 {
   "format": "studio-mcp-v2-durable-catalog",
-  "catalog_version": "0.2.0",
+  "catalog_version": "0.4.0-dev.1",
   "upstream": {
     "version": "production-v1-snapshot-2026-07-26",
     "source_sha256": "96130d76240be565f98417414f86e0776a5b73d880f4fadbc5de0bd1c915535b",
@@ -9,7 +9,7 @@
   "tools": [
     {
       "name": "studio_get_state",
-      "description": "Read bounded connection, document, and Play state from one explicitly targeted Studio session.",
+      "description": "Read bounded connection, document, controller-predicate, and Play-transition state from one explicitly targeted Studio session. available_datamodel_types lists only general-operation request channels that are actually routable through v2; the lifecycle-only PlayServer bridge is never reported as a Server or Client route.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -26,7 +26,7 @@
     },
     {
       "name": "studio_list_tree",
-      "description": "List a bounded descendant tree beneath one exact Studio instance path.",
+      "description": "Query a bounded, deterministic descendant tree beneath one exact Studio instance path. Optional filters use literal matching only. The response retains root_path, items, truncated, max_depth, and max_results for compatibility and adds returned, scanned, scan_limit, page_size, has_more, continuation_cursor, and the normalized filters. A returned continuation_cursor is opaque and bound to the explicit Studio session, document epoch, generation, query, ordering, and continuation lineage.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -44,12 +44,51 @@
           "max_depth": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 6
+            "maximum": 6,
+            "description": "Maximum descendant depth. The root_path segment count plus max_depth must not exceed the shared 64-segment reusable path bound."
           },
           "max_results": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 500,
+            "description": "Legacy page-size alias retained for compatibility. Range 1 through 500. Do not combine with page_size."
+          },
+          "name_filter": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+            "description": "Literal substring matched against Instance.Name, case-insensitive for ASCII letters and byte-literal for other UTF-8. Patterns and control characters are not accepted; the UTF-8 encoding is limited to 100 bytes."
+          },
+          "class_filter": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Case-sensitive literal Roblox class name identifier. Uses exact ClassName equality unless class_is_a is true; the UTF-8 encoding is limited to 100 bytes."
+          },
+          "class_is_a": {
+            "type": "boolean",
+            "description": "When true, evaluate class_filter with Instance:IsA instead of exact ClassName equality. Invalid unless class_filter is supplied."
+          },
+          "scan_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum number of deterministic traversal candidates examined in this call. Default: 2000."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum number of matching items returned in this page. Default: max_results when supplied, otherwise 200. Do not combine with max_results."
+          },
+          "continuation_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[A-Za-z0-9+/]+={0,2}\\.[0-9a-f]{64}$",
+            "description": "Opaque cursor returned by a prior page for the same explicit Studio session, client, document epoch, generation, root, filters, depth, limits, ordering version, and unchanged continuation lineage. Never construct or reuse it for another query."
           }
         },
         "required": [],

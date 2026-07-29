@@ -451,32 +451,74 @@ local function normalizedError(value, fallbackCode)
 	}, false
 end
 
+local function booleanModeProbe(callback)
+	local readOk, value = pcall(callback)
+	if readOk and type(value) == "boolean" then
+		return {
+			read_ok = true,
+			value = value,
+		}
+	end
+	return {
+		read_ok = false,
+	}
+end
+
 local function modeSnapshot()
-	local editOk, isEdit = pcall(function()
-		return RunService:IsEdit()
-	end)
-	local runningOk, isRunning = pcall(function()
-		return RunService:IsRunning()
-	end)
-	local testEditOk, testEdit = pcall(function()
-		return StudioTestService.EditModeActive
-	end)
+	local rawPredicates = {
+		is_studio = booleanModeProbe(function()
+			return RunService:IsStudio()
+		end),
+		is_edit = booleanModeProbe(function()
+			return RunService:IsEdit()
+		end),
+		is_running = booleanModeProbe(function()
+			return RunService:IsRunning()
+		end),
+		is_run_mode = booleanModeProbe(function()
+			return RunService:IsRunMode()
+		end),
+		is_server = booleanModeProbe(function()
+			return RunService:IsServer()
+		end),
+		is_client = booleanModeProbe(function()
+			return RunService:IsClient()
+		end),
+		edit_mode_active = booleanModeProbe(function()
+			return StudioTestService.EditModeActive
+		end),
+	}
 	local mode = "unknown"
-	if editOk and isEdit == true
-		and runningOk and isRunning == false
-		and testEditOk and testEdit == true
+	if rawPredicates.is_edit.read_ok
+		and rawPredicates.is_edit.value == true
+		and rawPredicates.is_running.read_ok
+		and rawPredicates.is_running.value == false
+		and rawPredicates.edit_mode_active.read_ok
+		and rawPredicates.edit_mode_active.value == true
 	then
 		mode = "edit"
-	elseif (runningOk and isRunning == true)
-		or (testEditOk and testEdit == false)
+	elseif (
+		rawPredicates.is_running.read_ok
+			and rawPredicates.is_running.value == true
+	) or (
+		rawPredicates.edit_mode_active.read_ok
+			and rawPredicates.edit_mode_active.value == false
+	)
 	then
 		mode = "play"
 	end
 	return {
 		mode = mode,
-		is_edit = editOk and isEdit == true or false,
-		is_running = runningOk and isRunning == true or false,
-		edit_mode_active = testEditOk and testEdit == true or false,
+		is_edit = rawPredicates.is_edit.read_ok
+			and rawPredicates.is_edit.value == true
+			or false,
+		is_running = rawPredicates.is_running.read_ok
+			and rawPredicates.is_running.value == true
+			or false,
+		edit_mode_active = rawPredicates.edit_mode_active.read_ok
+			and rawPredicates.edit_mode_active.value == true
+			or false,
+		raw_mode_predicates = rawPredicates,
 	}
 end
 
@@ -1303,19 +1345,20 @@ local function playStateSnapshot()
 	return result
 end
 
-local function observedMode(play)
+local function observedMode(play, controllerMode)
 	if play.state == "starting" then
-		return "starting"
+		return "starting", "play_transition"
 	elseif play.state == "play" then
-		return "play"
+		return "play", "play_transition"
 	elseif play.state == "stopping" then
-		return "stopping"
+		return "stopping", "play_transition"
 	elseif play.state == "settling" then
-		return "settling"
+		return "settling", "play_transition"
 	elseif play.state == "recovery_required" then
-		return "unknown"
+		return "unknown", "play_transition"
 	end
-	return modeSnapshot().mode
+	local sampledMode = controllerMode or modeSnapshot()
+	return sampledMode.mode, "controller_predicates"
 end
 
 local function monitorPlayTransition(transition)
