@@ -790,12 +790,21 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
                 "pid": 123,
                 "started_at": 1234.5,
                 "version": "0.4.0-rc.4",
-                "catalog_sha256": "b" * 64,
+                "catalog_sha256": "c" * 64,
                 "stop_safe": True,
             }
             expected = gate._cleanup_broker_record(
                 identity_bytes, identity, health
             )
+            self.assertEqual("c" * 64, expected["catalog_sha256"])
+            invalid_health = dict(health)
+            invalid_health["catalog_sha256"] = "not-a-sha256"
+            with self.assertRaisesRegex(
+                RuntimeError, "broker health drifted"
+            ):
+                gate._cleanup_broker_record(
+                    identity_bytes, identity, invalid_health
+                )
             drifted = dict(expected)
             drifted["broker_instance_id"] = (
                 "123e4567-e89b-42d3-a456-426614174222"

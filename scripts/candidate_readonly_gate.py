@@ -1475,8 +1475,8 @@ def _cleanup_broker_record(
         or not math.isfinite(float(started_at))
         or started_at <= 0
         or version != identity["version"]
-        or catalog_sha256
-        != identity["durable_catalog_file_sha256"]
+        or not isinstance(catalog_sha256, str)
+        or SHA256_PATTERN.fullmatch(catalog_sha256) is None
     ):
         raise RuntimeError(
             "candidate cleanup broker health drifted"
