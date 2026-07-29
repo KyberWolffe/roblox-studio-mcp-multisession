@@ -295,7 +295,7 @@
     },
     {
       "name": "studio_start_stop_play",
-      "description": "Start or stop one guarded Play transition in the explicitly targeted Studio session.",
+      "description": "Accept one guarded Start or Stop transition in the explicitly targeted Studio session. Start returns a correlated starting receipt and Stop returns a correlated stopping receipt; observe studio_get_state_v2 until the exact transition reaches Play or Edit.",
       "inputSchema": {
         "type": "object",
         "properties": {

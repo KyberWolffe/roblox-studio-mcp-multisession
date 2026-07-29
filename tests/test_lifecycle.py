@@ -374,6 +374,93 @@ class LifecycleSafetySummaryTests(unittest.IsolatedAsyncioTestCase):
             summary["stop_blockers"][0]["reasons"],
         )
 
+    async def test_terminal_disconnected_session_is_safe_then_audited_and_retired(
+        self,
+    ):
+        registry = SessionRegistry(terminal_retirement_grace_seconds=60)
+        session, _ = await registry.register(
+            client_instance_id=str(uuid.uuid4()),
+            registration_secret="t" * 48,
+            document_epoch="terminal-disconnected-document",
+            metadata={"name": "terminal", "mode": "edit"},
+            capabilities=[],
+        )
+        self.assertTrue(
+            session.disconnect(session.generation, "clean plugin shutdown")
+        )
+
+        retained = registry.lifecycle_summary()
+        self.assertTrue(retained["stop_safe"])
+        self.assertEqual(1, retained["session_count"])
+        self.assertTrue(
+            retained["sessions"][0]["retained_terminal_disconnected"]
+        )
+        self.assertEqual([], retained["sessions"][0]["blockers"])
+
+        assert session.disconnected_at_monotonic is not None
+        session.disconnected_at_monotonic -= 61
+        compacted = registry.lifecycle_summary()
+        self.assertTrue(compacted["stop_safe"])
+        self.assertEqual(0, compacted["session_count"])
+        self.assertEqual(1, compacted["retired_session_count"])
+        audit = compacted["retired_session_audit"][0]
+        self.assertEqual(session.studio_id, audit["studio_id"])
+        self.assertEqual(session.document_epoch, audit["document_epoch"])
+        self.assertEqual("edit", audit["last_confirmed_mode"])
+        self.assertIn("retirement_grace_elapsed", audit["basis"])
+
+    async def test_uncertain_disconnected_session_is_never_compacted(self):
+        registry = SessionRegistry(terminal_retirement_grace_seconds=0)
+        session, _ = await registry.register(
+            client_instance_id=str(uuid.uuid4()),
+            registration_secret="u" * 48,
+            document_epoch="uncertain-disconnected-document",
+            metadata={"name": "uncertain", "mode": "edit"},
+            capabilities=[],
+        )
+        session.uncertain_requests["unknown-outcome"] = {
+            "reason": "response_timeout_after_dispatch"
+        }
+        session.disconnect(session.generation, "connection lost")
+
+        summary = registry.lifecycle_summary()
+        self.assertFalse(summary["stop_safe"])
+        self.assertEqual(1, summary["session_count"])
+        self.assertEqual(0, summary["retired_session_count"])
+        self.assertIn(
+            "uncertain_requests",
+            summary["stop_blockers"][0]["reasons"],
+        )
+
+    async def test_active_play_transition_prevents_terminal_retirement(self):
+        registry = SessionRegistry(terminal_retirement_grace_seconds=0)
+        session, _ = await registry.register(
+            client_instance_id=str(uuid.uuid4()),
+            registration_secret="a" * 48,
+            document_epoch="active-play-disconnected-document",
+            metadata={"name": "active", "mode": "edit"},
+            capabilities=[],
+        )
+        registry.play_bridges.prepare(
+            session.studio_id,
+            session.client_instance_id,
+            session.document_epoch,
+            session.generation,
+            str(uuid.uuid4()),
+            1001,
+            2002,
+        )
+        session.disconnect(session.generation, "connection lost")
+
+        summary = registry.lifecycle_summary()
+        self.assertFalse(summary["stop_safe"])
+        self.assertEqual(1, summary["session_count"])
+        self.assertEqual(0, summary["retired_session_count"])
+        self.assertIn(
+            "play_transition_active",
+            summary["stop_blockers"][0]["reasons"],
+        )
+
 
 class LifecycleProcessTests(unittest.TestCase):
     def setUp(self):

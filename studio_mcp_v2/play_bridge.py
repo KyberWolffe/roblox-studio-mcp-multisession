@@ -127,18 +127,22 @@ class PlayBridgeManager:
         self,
         *,
         clock: Callable[[], float] = time.monotonic,
-        default_ttl_seconds: int = 45,
+        default_ttl_seconds: int = 90,
         max_ttl_seconds: int = 300,
+        active_ttl_seconds: int = 210,
         stop_watchdog_seconds: int = 12,
         token_key: Optional[bytes] = None,
     ) -> None:
         if not 5 <= default_ttl_seconds <= max_ttl_seconds:
             raise ValueError("Invalid default Play bridge TTL")
+        if not 5 <= active_ttl_seconds <= max_ttl_seconds:
+            raise ValueError("Invalid active Play bridge TTL")
         if not 1 <= stop_watchdog_seconds <= max_ttl_seconds:
             raise ValueError("Invalid Play bridge watchdog")
         self._clock = clock
         self.default_ttl_seconds = default_ttl_seconds
         self.max_ttl_seconds = max_ttl_seconds
+        self.active_ttl_seconds = active_ttl_seconds
         self.stop_watchdog_seconds = stop_watchdog_seconds
         self._token_key = token_key or secrets.token_bytes(32)
         if len(self._token_key) < 32:
@@ -769,7 +773,13 @@ class PlayBridgeManager:
                         "Watchdog cannot be armed in the current state"
                     )
                 transition.watchdog_ack_id = operation_id
-                transition.watchdog_armed_at = self._clock()
+                now = self._clock()
+                transition.watchdog_armed_at = now
+                # PREPARED expiry protects the one-time bootstrap token. Once
+                # the exact server has attached and armed its own watchdog,
+                # give the active transition a fresh bounded lifetime instead
+                # of charging slow Studio startup against playable time.
+                transition.expires_at = now + self.active_ttl_seconds
                 return self._snapshot(transition)
 
             command_id = _validate_nonce(
@@ -989,6 +999,56 @@ class PlayBridgeManager:
                 raise SessionConflictError(
                     "The prior document has an unsafe Play transition"
                 )
+
+    def retire_completed(
+        self,
+        studio_id: Any,
+        client_instance_id: Any,
+        document_epoch: Any,
+    ) -> bool:
+        """Forget only an exact, positively completed transition record."""
+
+        target_id = validate_studio_id(studio_id)
+        instance_id = validate_client_instance_id(client_instance_id)
+        epoch = validate_document_epoch(document_epoch)
+        with self._lock_for(target_id):
+            transition = self._transitions.get(target_id)
+            if transition is None:
+                return False
+            if (
+                transition.client_instance_id != instance_id
+                or transition.document_epoch != epoch
+                or transition.state != PlayBridgeState.COMPLETED
+            ):
+                raise SessionConflictError(
+                    "Refusing to retire an uncertain or active Play transition"
+                )
+            self._transitions.pop(target_id, None)
+            return True
+
+    def public_summary(self, studio_id: Any) -> Optional[Dict[str, Any]]:
+        """Return bounded non-secret state for observation and recovery."""
+
+        target_id = validate_studio_id(studio_id)
+        with self._lock_for(target_id):
+            transition = self._transitions.get(target_id)
+            if transition is None:
+                return None
+            self._advance_watchdog(transition)
+            return {
+                "state": transition.state.value,
+                "transition_nonce": transition.transition_nonce,
+                "play_request_id": transition.play_request_id,
+                "attached": transition.attach_id is not None,
+                "watchdog_armed": transition.watchdog_ack_id is not None,
+                "recovery_only": transition.recovery_only,
+                "stop_requested": transition.stop_command_id is not None,
+                "stop_acked": transition.stop_ack_id is not None,
+                "completion_outcome": transition.completion_outcome,
+                "watchdog_expired": (
+                    transition.watchdog_expired_reason is not None
+                ),
+            }
 
     def lifecycle_summaries(self) -> Dict[str, Dict[str, Any]]:
         """Return non-secret transition state for shutdown safety checks."""

@@ -43,6 +43,31 @@ class ConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.a.respond(request_a, "A finished")
         self.assertEqual("A finished", await call_a)
 
+    async def test_play_uses_timeout_longer_than_plugin_recovery_bound(self):
+        play = asyncio.create_task(
+            self.service.call_tool(
+                ALLOW_ALL,
+                "start_stop_play_v2",
+                {"studio_id": self.a.studio_id, "is_start": True},
+            )
+        )
+        request = await self.a.next_request()
+        self.assertEqual(120_000, request["deadline_ms"])
+        self.a.respond(request, "playing")
+        self.assertEqual("playing", await play)
+
+        ordinary = asyncio.create_task(
+            self.service.call_tool(
+                ALLOW_ALL,
+                "get_console_output_v2",
+                {"studio_id": self.a.studio_id},
+            )
+        )
+        ordinary_request = await self.a.next_request()
+        self.assertEqual(30_000, ordinary_request["deadline_ms"])
+        self.a.respond(ordinary_request, "console")
+        self.assertEqual("console", await ordinary)
+
     async def test_session_map_is_not_limited_to_two_studios(self):
         c = await FakeStudio.create(
             self.registry, "C", self.catalog.remote_names
@@ -167,6 +192,39 @@ class ConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         stop_request = await self.a.next_request()
         self.a.respond(stop_request, "A stopped")
         await stop_a
+
+    async def test_two_play_sessions_stop_in_requested_order(self):
+        starts = []
+        for studio in (self.a, self.b):
+            task = asyncio.create_task(
+                self.service.call_tool(
+                    ALLOW_ALL,
+                    "start_stop_play_v2",
+                    {"studio_id": studio.studio_id, "is_start": True},
+                )
+            )
+            request = await studio.next_request()
+            self.assertEqual(120_000, request["deadline_ms"])
+            studio.respond(request, {"started": True})
+            await task
+            starts.append(studio.studio_id)
+        self.assertEqual([self.a.studio_id, self.b.studio_id], starts)
+
+        stopped = []
+        for studio in (self.a, self.b):
+            task = asyncio.create_task(
+                self.service.call_tool(
+                    ALLOW_ALL,
+                    "start_stop_play_v2",
+                    {"studio_id": studio.studio_id, "is_start": False},
+                )
+            )
+            request = await studio.next_request()
+            self.assertEqual(120_000, request["deadline_ms"])
+            studio.respond(request, {"stopped": True})
+            await task
+            stopped.append(studio.studio_id)
+        self.assertEqual([self.a.studio_id, self.b.studio_id], stopped)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ class PlayBridgeStateMachineTests(unittest.TestCase):
         self.manager = PlayBridgeManager(
             clock=self.clock,
             default_ttl_seconds=10,
+            active_ttl_seconds=10,
             stop_watchdog_seconds=3,
             token_key=b"k" * 32,
         )
@@ -342,6 +343,39 @@ class PlayBridgeStateMachineTests(unittest.TestCase):
                 self.studio_id, self.client_instance_id
             )
 
+    def test_server_ready_gets_fresh_active_ttl_and_public_state(self):
+        prepared = self.prepare()
+        self.clock.advance(8)
+        attached = self.attach(prepared)
+        full = self.context + (prepared["transition_nonce"],)
+        self.manager.server_ack(
+            *full,
+            "server-a",
+            "watchdog_armed",
+            "watchdog-ack",
+            None,
+            attached["server_token"],
+        )
+        summary = self.manager.public_summary(self.studio_id)
+        self.assertEqual("attached", summary["state"])
+        self.assertTrue(summary["attached"])
+        self.assertTrue(summary["watchdog_armed"])
+        self.assertFalse(summary["stop_requested"])
+
+        # The original PREPARED lease would have expired at t=110. Readiness
+        # at t=108 grants a fresh active lease through t=118.
+        self.clock.advance(8)
+        polled = self.manager.server_poll(
+            *full, "server-a", attached["server_token"]
+        )
+        self.assertEqual("wait", polled["command"])
+        self.clock.advance(3)
+        polled = self.manager.server_poll(
+            *full, "server-a", attached["server_token"]
+        )
+        self.assertEqual("stop", polled["command"])
+        self.assertEqual("play_ttl_watchdog", polled["stop_source"])
+
     def test_recovery_retains_only_stop_path_until_proven_complete(self):
         prepared = self.prepare()
         attached = self.attach(prepared)
@@ -641,6 +675,109 @@ class PlayBridgeStateMachineTests(unittest.TestCase):
         )
         self.assertEqual(
             "prepared", self.manager.status(*second_full)["state"]
+        )
+
+    def test_two_ready_sessions_stop_independently_in_acceptance_order(self):
+        experiments_context = self.context
+        olympus_studio = str(uuid.uuid4())
+        olympus_context = (
+            olympus_studio,
+            str(uuid.uuid4()),
+            "olympus-document",
+            1,
+            "olympus-play-request",
+            102,
+            202,
+        )
+
+        def make_ready(context, label):
+            prepared = self.manager.prepare(*context)
+            full = context + (prepared["transition_nonce"],)
+            attached = self.manager.attach(
+                *full,
+                label + "-attach",
+                label + "-server",
+                prepared["bridge_token"],
+            )
+            self.manager.server_ack(
+                *full,
+                label + "-server",
+                "watchdog_armed",
+                label + "-watchdog",
+                None,
+                attached["server_token"],
+            )
+            return full, attached["server_token"]
+
+        def stop_and_complete(context, server_token, label):
+            stopped = self.manager.request_stop(
+                *context, label + "-stop-request"
+            )
+            command = self.manager.server_poll(
+                *context, label + "-server", server_token
+            )
+            self.assertEqual("stop", command["command"])
+            self.assertEqual(
+                stopped["stop_command_id"], command["stop_command_id"]
+            )
+            self.manager.server_ack(
+                *context,
+                label + "-server",
+                "stop_received",
+                label + "-stop-ack",
+                stopped["stop_command_id"],
+                server_token,
+            )
+            return self.manager.complete(
+                *context,
+                label + "-completion",
+                "stopped_edit_confirmed",
+                stopped["stop_command_id"],
+                True,
+                2,
+                True,
+            )
+
+        experiments, experiments_server_token = make_ready(
+            experiments_context, "experiments"
+        )
+        olympus, olympus_server_token = make_ready(
+            olympus_context, "olympus"
+        )
+
+        for studio_id in (self.studio_id, olympus_studio):
+            observed = self.manager.public_summary(studio_id)
+            self.assertEqual("attached", observed["state"])
+            self.assertTrue(observed["attached"])
+            self.assertTrue(observed["watchdog_armed"])
+            self.assertFalse(observed["stop_requested"])
+
+        experiments_stopped = stop_and_complete(
+            experiments,
+            experiments_server_token,
+            "experiments",
+        )
+        self.assertEqual("completed", experiments_stopped["state"])
+        self.assertEqual(
+            "stopped_edit_confirmed",
+            experiments_stopped["completion_outcome"],
+        )
+        olympus_still_playing = self.manager.public_summary(
+            olympus_studio
+        )
+        self.assertEqual("attached", olympus_still_playing["state"])
+        self.assertTrue(olympus_still_playing["watchdog_armed"])
+        self.assertFalse(olympus_still_playing["stop_requested"])
+
+        olympus_stopped = stop_and_complete(
+            olympus,
+            olympus_server_token,
+            "olympus",
+        )
+        self.assertEqual("completed", olympus_stopped["state"])
+        self.assertEqual(
+            "stopped_edit_confirmed",
+            olympus_stopped["completion_outcome"],
         )
 
     def test_completion_requires_closed_positive_proof(self):

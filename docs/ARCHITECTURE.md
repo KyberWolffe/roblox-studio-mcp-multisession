@@ -130,9 +130,10 @@ clears it.
 
 Roblox documents `StudioTestService:ExecutePlayModeAsync()` as a yielding
 Plugin Security API and `StudioTestService:EndTest()` as the corresponding test
-completion API. The v2 plugin uses this supported lifecycle because a
-server-context Script can receive the exact test args and return a structured
-result to the original Edit-context runner.
+completion API. The v2 plugin uses this supported lifecycle because its
+PlayServer plugin runtime can receive the exact test args and return a
+structured result to the original Edit-context runner. Plugin-context
+loopback access is independent of the place's saved HTTP setting.
 
 The transition is keyed by:
 
@@ -145,14 +146,19 @@ The flow is:
 
 1. The broker prepares a transition only for the currently pending,
    explicitly targeted `rnd_play_start`.
-2. The plugin creates one nonce-named, attributed temporary server Script with
-   fixed audited source and starts `ExecutePlayModeAsync(bootstrap)`.
-3. The Play server validates context, attaches once with the bootstrap token,
+2. The plugin creates one nonce-named, attributed, disabled temporary server
+   Script as an inert ownership marker and starts
+   `ExecutePlayModeAsync(bootstrap)`.
+3. The plugin returns a correlated `starting` receipt and monitors that exact
+   nonce asynchronously, allowing read-only state calls while Studio loads.
+4. The installed plugin loads in the PlayServer DataModel, validates the exact
+   bootstrap and inert marker, attaches once with the bootstrap token,
    receives a derived server token, and acknowledges `watchdog_armed`.
-4. Only after that acknowledgement does the plugin report Play ready.
-5. A same-session Stop creates an exact `stop_command_id`. The server polls it,
-   acknowledges `stop_received`, and calls `EndTest()` with that correlation.
-6. The original runner validates the result, removes the exact temporary
+5. Only after that acknowledgement does observation report Play ready.
+6. A same-session Stop creates an exact `stop_command_id` and returns a
+   correlated `stopping` receipt. The server polls it, acknowledges
+   `stop_received`, and calls `EndTest()` with that correlation.
+7. The original runner validates the result, removes the exact temporary
    Script, observes multiple stable Edit samples, and submits the completion
    proof.
 
@@ -166,6 +172,13 @@ transition toward Stop. They do not manufacture success: the transition is
 not complete until the runner returns and Edit mode is observed. If the plugin
 disconnects or reconnects mid-transition, the original transition context is
 retained as recovery-only and normal work remains fenced until it terminates.
+The broker can still return a non-secret recovery view containing the exact
+transition state, so a disconnected controller does not make observation
+depend on guessing. A disconnected record is lifecycle-safe only when Edit,
+zero pending/uncertain work, and terminal-or-absent Play are all positively
+proven. It remains available for a bounded reconnect grace period, then is
+compacted into a bounded non-secret audit tombstone. Any uncertainty or active
+transition prevents retirement.
 
 `RunService` supplies documented Plugin Security controls and mode predicates,
 but `RunService:Stop()` is not used as proof of lifecycle completion. It lacks

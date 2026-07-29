@@ -17,20 +17,52 @@ instance path, Play duration, transition identity, or cleanup target.
 ]]
 
 local InitialRunService = game:GetService("RunService")
+local initialStudioOk, initialIsStudio = pcall(function()
+	return InitialRunService:IsStudio()
+end)
 local initialEditOk, initialIsEdit = pcall(function()
 	return InitialRunService:IsEdit()
 end)
 local initialRunningOk, initialIsRunning = pcall(function()
 	return InitialRunService:IsRunning()
 end)
-if not InitialRunService:IsStudio()
+
+if initialStudioOk
+	and initialIsStudio == true
+	and initialRunningOk
+	and initialIsRunning == true
+then
+	local initialServerOk, initialIsServer = pcall(function()
+		return InitialRunService:IsServer()
+	end)
+	if initialServerOk and initialIsServer == true then
+		-- Execute the fixed bridge as plugin code in the PlayServer DataModel.
+		-- Plugin HTTP permission is independent of the place's saved
+		-- HttpService.HttpEnabled setting, while every request remains fenced
+		-- by the one-shot transition token and explicit Studio identity.
+		local function runPlayServerPluginBridge()
+__PLAY_SERVER_PLUGIN_BRIDGE_BODY__
+		end
+		local bridgeOk, bridgeError = pcall(runPlayServerPluginBridge)
+		if not bridgeOk then
+			warn(
+				"Studio MCP v2 PlayServer bridge failed closed: "
+					.. string.sub(tostring(bridgeError), 1, 200)
+			)
+		end
+	end
+	return
+end
+
+if not initialStudioOk
+	or initialIsStudio ~= true
 	or not initialEditOk
 	or initialIsEdit ~= true
 	or not initialRunningOk
 	or initialIsRunning ~= false
 then
-	-- A local plugin copy must never register from a Play server/client
-	-- DataModel. Returning here also avoids touching the document.
+	-- A local plugin copy must never register a controller from an unknown or
+	-- non-Edit DataModel. Returning here also avoids touching the document.
 	return
 end
 
@@ -61,8 +93,10 @@ local MAX_REQUEST_ATTEMPTS = 4
 local MAX_DELAY_MS = 2_000
 local RESPONSE_CACHE_LIMIT = 64
 local RECONNECT_LEASE_SECONDS = 32
-local START_READY_SECONDS = 12
-local RUNNER_RETURN_SECONDS = 36
+local PLAY_PRE_ATTACH_TTL_SECONDS = 180
+local PLAY_ACTIVATION_SECONDS = 150
+local RUNNER_RETURN_SECONDS = 70
+local RUNNER_STATUS_INTERVAL_SECONDS = 1
 local EDIT_SAMPLE_COUNT = 3
 local EDIT_SAMPLE_INTERVAL_SECONDS = 0.1
 
@@ -153,6 +187,7 @@ local END_TEST_RESULT_KEYS = table.freeze({
 	play_request_id = true,
 	transition_nonce = true,
 	reason = true,
+	failure_code = true,
 	end_test_correlation = true,
 	server_instance_id = true,
 })
@@ -172,6 +207,18 @@ local END_TEST_REASONS = table.freeze({
 	server_stop = true,
 })
 
+local END_TEST_FAILURE_CODES = table.freeze({
+	request_blocked = true,
+	request_encode_invalid = true,
+	request_exception = true,
+	request_exception_http_disabled = true,
+	response_invalid = true,
+	response_non_success = true,
+	response_oversize = true,
+	envelope_invalid = true,
+	bridge_already_ended = true,
+})
+
 local RECOVERY_STOP_SOURCES = table.freeze({
 	attach_ttl_watchdog = true,
 	play_ttl_watchdog = true,
@@ -181,6 +228,7 @@ local RECOVERY_STOP_SOURCES = table.freeze({
 })
 
 local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
 local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local StudioTestService = game:GetService("StudioTestService")
@@ -341,10 +389,34 @@ local peer = {
 	response_cache = {},
 	response_order = {},
 	active_play = nil,
+	last_play = nil,
 	last_hub_success_at = os.clock(),
 	last_error = nil,
 }
 shared[SINGLETON_KEY] = peer
+
+local function resolveDocumentName()
+	local fallback = game.Name
+	if EXPECTED_PLACE_ID <= 0 then
+		return fallback
+	end
+	local infoOk, productInfo = pcall(function()
+		return MarketplaceService:GetProductInfoAsync(
+			EXPECTED_PLACE_ID,
+			Enum.InfoType.Asset
+		)
+	end)
+	if not infoOk or type(productInfo) ~= "table" then
+		return fallback
+	end
+	local assetName = productInfo.Name
+	if type(assetName) ~= "string" or assetName == "" then
+		return fallback
+	end
+	return assetName
+end
+
+local DOCUMENT_NAME = resolveDocumentName()
 
 local function sanitizeMessage(value)
 	local message
@@ -490,7 +562,7 @@ end
 
 local function connectionMetadata()
 	return {
-		name = game.Name,
+		name = DOCUMENT_NAME,
 		place_id = EXPECTED_PLACE_ID,
 		game_id = EXPECTED_GAME_ID,
 		mode = modeSnapshot().mode,
@@ -767,7 +839,10 @@ local function createTemporaryScript(transition)
 	end
 	local bridge = Instance.new("Script")
 	bridge.Name = transition.script_name
-	bridge.Enabled = true
+	-- This is an inert, unsaved ownership marker copied into the PlayServer
+	-- DataModel. The plugin runtime executes the fixed bridge so loopback
+	-- control does not depend on the place's saved HTTP setting.
+	bridge.Enabled = false
 	bridge.RunContext = Enum.RunContext.Server
 	bridge.Source = PLAY_SERVER_BRIDGE_SOURCE
 	bridge:SetAttribute(TEMP_KIND_ATTRIBUTE, "play_server_bridge_v2")
@@ -879,7 +954,25 @@ end
 
 local function waitForRunner(transition, seconds)
 	local deadline = os.clock() + seconds
+	local nextStatusAt = 0
 	while not transition.runner_finished and os.clock() < deadline do
+		if peer.connected and os.clock() >= nextStatusAt then
+			local statusOk, statusResult = requestWithRetry(
+				"/v2/studios/play-bridge/status",
+				transitionBody(transition)
+			)
+			if statusOk then
+				local status = validateBridgeSnapshot(
+					statusResult,
+					transition.play_request_id,
+					transition
+				)
+				if status.watchdog_armed == true then
+					transition.server_ready = true
+				end
+			end
+			nextStatusAt = os.clock() + RUNNER_STATUS_INTERVAL_SECONDS
+		end
 		task.wait(0.05)
 	end
 	return transition.runner_finished == true
@@ -924,6 +1017,8 @@ local function validateEndTestResult(transition)
 		or not isRequestId(result.end_test_correlation)
 		or not isCanonicalUuid(result.server_instance_id)
 		or END_TEST_REASONS[result.reason] ~= true
+		or (result.failure_code ~= nil
+			and END_TEST_FAILURE_CODES[result.failure_code] ~= true)
 	then
 		adapterError(
 			"uncorrelated_play_return",
@@ -995,6 +1090,13 @@ local function completeTransition(transition, outcome, correlation)
 			true
 		)
 	end
+	peer.last_play = {
+		state = transition.completion_outcome,
+		outcome = transition.completion_outcome,
+		transition_nonce = transition.transition_nonce,
+		play_request_id = transition.play_request_id,
+		failure_code = transition.failure_code,
+	}
 	peer.active_play = nil
 end
 
@@ -1040,6 +1142,7 @@ local function finishReturnedTransition(transition)
 		return transition.completion_outcome
 	end
 	if correlation == transition.play_request_id then
+		transition.failure_code = returned.failure_code
 		if returned.reason ~= "attach_failed"
 			and returned.reason ~= "attach_rejected"
 			and returned.reason ~= "watchdog_ack_failed"
@@ -1145,6 +1248,131 @@ local function finishReturnedTransition(transition)
 	)
 end
 
+local function transitionState(transition)
+	if transition == nil then
+		return "edit"
+	end
+	if transition.runner_finished == true then
+		return "settling"
+	end
+	if transition.stop_command_id ~= nil then
+		return "stopping"
+	end
+	if transition.server_ready == true then
+		return "play"
+	end
+	if transition.monitor_error ~= nil then
+		return "recovery_required"
+	end
+	return "starting"
+end
+
+local function playStateSnapshot()
+	local transition = peer.active_play
+	if transition == nil then
+		local result = {
+			active = false,
+			state = "edit",
+		}
+		if peer.last_play ~= nil then
+			result.last_state = peer.last_play.state
+			result.last_outcome = peer.last_play.outcome
+			result.last_transition_nonce =
+				peer.last_play.transition_nonce
+			if peer.last_play.failure_code ~= nil then
+				result.last_failure_code = peer.last_play.failure_code
+			end
+		end
+		return result
+	end
+	local state = transitionState(transition)
+	local result = {
+		active = state == "play" or state == "stopping",
+		state = state,
+		accepted = true,
+		server_ready = transition.server_ready,
+		runner_finished = transition.runner_finished,
+		transition_nonce = transition.transition_nonce,
+	}
+	if transition.stop_command_id ~= nil then
+		result.stop_command_id = transition.stop_command_id
+	end
+	if transition.monitor_error ~= nil then
+		result.error = transition.monitor_error
+	end
+	return result
+end
+
+local function observedMode(play)
+	if play.state == "starting" then
+		return "starting"
+	elseif play.state == "play" then
+		return "play"
+	elseif play.state == "stopping" then
+		return "stopping"
+	elseif play.state == "settling" then
+		return "settling"
+	elseif play.state == "recovery_required" then
+		return "unknown"
+	end
+	return modeSnapshot().mode
+end
+
+local function monitorPlayTransition(transition)
+	if transition.monitor_running == true then
+		return
+	end
+	transition.monitor_running = true
+	task.spawn(function()
+		local monitorOk, monitorError = pcall(function()
+			while peer.alive
+				and not peer.shutdown_requested
+				and peer.active_play == transition
+				and transition.runner_finished ~= true
+				and transition.server_ready ~= true
+			do
+				local statusOk, statusResult = requestWithRetry(
+					"/v2/studios/play-bridge/status",
+					transitionBody(transition)
+				)
+				if statusOk then
+					local status = validateBridgeSnapshot(
+						statusResult,
+						transition.play_request_id,
+						transition
+					)
+					if status.attached == true
+						and status.watchdog_armed == true
+					then
+						transition.server_ready = true
+						transition.monitor_error = nil
+						break
+					end
+				end
+				if os.clock() >= transition.pre_attach_deadline_at
+					and transition.monitor_error == nil
+				then
+					transition.monitor_error =
+						"Play server did not attach before the bounded deadline"
+				end
+				task.wait(RUNNER_STATUS_INTERVAL_SECONDS)
+			end
+		end)
+		transition.monitor_running = false
+		if not monitorOk and peer.active_play == transition then
+			local normalized, fatal = normalizedError(
+				monitorError,
+				"play_monitor_failed"
+			)
+			transition.monitor_error = normalized.message
+			peer.last_error = normalized.message
+			if fatal then
+				peer.alive = false
+			end
+		end
+	end)
+end
+
 local function startPlay(requestId)
 	requireEditMode()
 	if peer.active_play ~= nil then
@@ -1156,6 +1384,7 @@ local function startPlay(requestId)
 		generation = peer.generation,
 		resume_token = peer.resume_token,
 		play_request_id = requestId,
+		ttl_seconds = PLAY_PRE_ATTACH_TTL_SECONDS,
 	}
 	local preparedOk, preparedResult = requestWithRetry(
 		"/v2/studios/play-bridge/prepare",
@@ -1190,6 +1419,11 @@ local function startPlay(requestId)
 		abort_id = nil,
 		abort_requested = false,
 		runner_started = false,
+		monitor_running = false,
+		monitor_error = nil,
+		failure_code = nil,
+		pre_attach_deadline_at =
+			os.clock() + PLAY_PRE_ATTACH_TTL_SECONDS,
 	}
 	transition.script_name = TEMP_SCRIPT_PREFIX
 		.. string.gsub(transition.transition_nonce, "-", "")
@@ -1221,7 +1455,7 @@ local function startPlay(requestId)
 		expected_game_id = EXPECTED_GAME_ID,
 		transition_nonce = transition.transition_nonce,
 		bridge_token = transition.bridge_token,
-		activation_deadline_unix = os.time() + 10,
+		activation_deadline_unix = os.time() + PLAY_ACTIVATION_SECONDS,
 		temporary_script_name = transition.script_name,
 	}
 	local spawnedOk, spawnedError = pcall(function()
@@ -1246,53 +1480,16 @@ local function startPlay(requestId)
 		error(spawnedError, 0)
 	end
 	transition.bridge_token = nil
-
-	local readyDeadline = os.clock() + START_READY_SECONDS
-	while os.clock() < readyDeadline do
-		if transition.runner_finished then
-			local outcome = finishReturnedTransition(transition)
-			adapterError(
-				"play_ended_before_ready",
-				"Play ended before server-ready acknowledgement: " .. outcome,
-				false
-			)
-		end
-		local statusBody = transitionBody(transition)
-		local statusOk, statusResult = requestWithRetry(
-			"/v2/studios/play-bridge/status",
-			statusBody
-		)
-		if statusOk then
-				local status = validateBridgeSnapshot(
-					statusResult,
-					transition.play_request_id,
-					transition
-				)
-			if status.attached == true and status.watchdog_armed == true then
-				transition.server_ready = true
-				return {
-					started = true,
-					server_ready = true,
-					transition_nonce = transition.transition_nonce,
-					mode = modeSnapshot(),
-				}
-			end
-		end
-		task.wait(0.1)
-	end
-	if waitForRunner(transition, RUNNER_RETURN_SECONDS) then
-		local outcome = finishReturnedTransition(transition)
-		adapterError(
-			"play_start_timeout",
-			"Server-ready timed out and Play ended safely: " .. outcome,
-			false
-		)
-	end
-	adapterError(
-		"play_runner_uncertain",
-		"Play runner did not return after its hard server watchdog",
-		true
-	)
+	peer.last_play = nil
+	monitorPlayTransition(transition)
+	return {
+		accepted = true,
+		started = false,
+		state = "starting",
+		server_ready = false,
+		transition_nonce = transition.transition_nonce,
+		mode = "starting",
+	}
 end
 
 local function stopPlay(requestId)
@@ -1300,20 +1497,25 @@ local function stopPlay(requestId)
 	if transition == nil then
 		local mode = modeSnapshot()
 		if mode.mode == "edit" then
-			return { stopped = false, already_stopped = true, mode = mode }
+			return {
+				accepted = false,
+				stopped = false,
+				already_stopped = true,
+				state = "edit",
+				mode = "edit",
+			}
 		end
 		adapterError("play_not_owned", "No owned Play transition exists", false)
-	end
-	if transition.server_ready ~= true then
-		adapterError("play_not_ready", "Play server is not ready for Stop", false)
 	end
 	if transition.runner_finished then
 		local outcome = finishReturnedTransition(transition)
 		return {
+			accepted = false,
 			stopped = outcome == "stopped_edit_confirmed",
 			already_stopped = outcome ~= "stopped_edit_confirmed",
+			state = "edit",
 			outcome = outcome,
-			mode = modeSnapshot(),
+			mode = "edit",
 		}
 	end
 	local body = transitionBody(transition)
@@ -1337,36 +1539,20 @@ local function stopPlay(requestId)
 		adapterError("play_stop_rejected", "Hub did not bind an exact Stop", true)
 	end
 	transition.stop_command_id = requested.stop_command_id
-	if not waitForRunner(transition, RUNNER_RETURN_SECONDS) then
-		adapterError(
-			"play_stop_timeout",
-			"Correlated server EndTest did not return to the plugin runner",
-			true
-		)
-	end
-	local returned = validateEndTestResult(transition)
-	if returned.end_test_correlation ~= transition.stop_command_id then
-		adapterError(
-			"play_stop_uncorrelated",
-			"ExecutePlayModeAsync returned without the Stop correlation",
-			true
-		)
-	end
-	completeTransition(
-		transition,
-		"stopped_edit_confirmed",
-		transition.stop_command_id
-	)
 	return {
-		stopped = true,
+		accepted = true,
+		stopped = false,
 		already_stopped = false,
+		state = "stopping",
 		stop_command_id = transition.stop_command_id,
-		mode = modeSnapshot(),
+		transition_nonce = transition.transition_nonce,
+		mode = "stopping",
 	}
 end
 
 local function getState()
-	local transition = peer.active_play
+	local play = playStateSnapshot()
+	local mode = observedMode(play)
 	return {
 		adapter = "studio-mcp-v2-standalone-plugin",
 		studio_id = peer.studio_id,
@@ -1377,17 +1563,10 @@ local function getState()
 		session_tag = DOCUMENT_POLICY.session_tag,
 		place_id = EXPECTED_PLACE_ID,
 		game_id = EXPECTED_GAME_ID,
-		mode = modeSnapshot().mode,
-		is_edit = modeSnapshot().mode == "edit",
-		play = transition == nil and {
-			active = false,
-		} or {
-			active = true,
-			server_ready = transition.server_ready,
-			runner_finished = transition.runner_finished,
-			transition_nonce = transition.transition_nonce,
-		},
-		marker = modeSnapshot().mode == "edit" and inspectOwnMarker() or {
+		mode = mode,
+		is_edit = mode == "edit",
+		play = play,
+		marker = mode == "edit" and inspectOwnMarker() or {
 			present = false,
 			available = false,
 		},

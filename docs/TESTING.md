@@ -37,10 +37,10 @@ Individual stages:
 python3 -B scripts/audit_release.py --repo .
 python3 -B scripts/build_durable_release.py --output-dir dist
 python3 -B scripts/audit_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz
+  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.4-macos-arm64.tar.gz
 python3 -B scripts/prove_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz \
-  --checksum-file dist/roblox-studio-mcp-v2-0.3.0-rc.2-macos-arm64.tar.gz.sha256
+  --archive dist/roblox-studio-mcp-v2-0.3.0-rc.4-macos-arm64.tar.gz \
+  --checksum-file dist/roblox-studio-mcp-v2-0.3.0-rc.4-macos-arm64.tar.gz.sha256
 ```
 
 ## Test matrix
@@ -104,15 +104,24 @@ tampered installer module or lifecycle subprocess may execute.
 Play bridge tests cover:
 
 - exact binding to the pending targeted start request;
+- two-phase `starting` and `stopping` acceptance without mutation replay;
 - full Studio/plugin/document/generation/request/place/game/nonce context;
 - one-time server attach and derived server credentials;
-- same-session lifecycle serialization and cross-session independence;
+- delayed attachment receiving a fresh bounded active lifetime;
+- same-session lifecycle serialization and cross-session independence,
+  including both sessions ready, first-session Edit completion while the
+  second remains in Play, and ordered second-session completion;
 - `watchdog_armed` before ready;
 - exact `stop_received` acknowledgement before `EndTest`;
 - replayed or mismatched transition data rejection;
 - disconnect/reconnect recovery fencing;
+- disconnected read-only broker recovery state;
 - bounded watchdog state without false completion;
 - runner return, exact temporary Script cleanup, and stable Edit observations.
+- plugin-context PlayServer attachment with an inert disabled marker, without
+  writing the place's saved HTTP setting;
+- conservative terminal disconnected-session retention and audited
+  compaction, with uncertain or active records never retired.
 
 ## Plugin validation
 
@@ -127,6 +136,44 @@ identity, exact capability/handler agreement, no global Studio selector, no
 arbitrary execution primitives, and the lifecycle acknowledgement ordering.
 Credential-bound `.rbxmx` output is generated only during local installation
 and is never committed or shipped in the portable archive.
+
+## Held two-place rc.4 acceptance
+
+This live gate is intentionally separate from package validation. Restart
+Codex and reload or restart Roblox Studio before beginning so both use the
+installed rc.4 broker and plugin.
+
+Use only Roblox Studio MCP v2. Start with `list_roblox_studios_v2`, resolve
+exactly `Experiments` and
+`Workshop`, and record each returned
+`studio_id`, `place_id`, `game_id`, and `document_epoch`. Every later call must
+carry the corresponding explicit `studio_id`; never use an active or default
+Studio target.
+
+The ordered gate is:
+
+1. Positively observe both exact sessions in Edit.
+2. Send Start once to Experiments. Record its correlated `starting` receipt;
+   do not retry Start. Observe that exact session until it reports Play.
+3. Send Start once to Workshop. Record its correlated `starting` receipt;
+   do not retry Start. Observe that exact session until it reports Play.
+4. Read both exact session states and positively confirm both are
+   simultaneously in Play.
+5. Send Stop once to Experiments. Record its correlated `stopping` receipt,
+   then observe Experiments in Edit while a fresh read still reports Workshop
+   in Play.
+6. Send Stop once to Workshop, then positively observe Workshop in
+   Edit.
+
+Do not modify content, save, or publish. A timeout or disconnect is not
+permission to replay a mutation. Inspect both explicit v2 session states and
+use only a correlated safe Stop path when the observed state authorizes it.
+Otherwise stop the gate and retain the failure evidence.
+
+The acceptance report must include exact place identities, the two
+`studio_id` values, transition nonces or request correlations from acceptance
+receipts, each positive state observation, stop order, final states, and any
+timeout, disconnect, or recovery action.
 
 ## Live-validation boundary
 

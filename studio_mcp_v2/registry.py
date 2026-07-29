@@ -4,9 +4,11 @@ import copy
 import hashlib
 import hmac
 import secrets
+import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
 
 from .errors import (
     AuthenticationError,
@@ -34,6 +36,7 @@ def _token_hash(token: str) -> bytes:
 
 
 MAX_LIFECYCLE_STATUS_DETAILS = 256
+MAX_RETIRED_SESSION_AUDIT = 256
 
 
 @dataclass(frozen=True)
@@ -61,11 +64,21 @@ class SessionRegistry:
         lease_timeout_seconds: float = 30.0,
         *,
         play_bridges: Optional[PlayBridgeManager] = None,
+        terminal_retirement_grace_seconds: float = 60.0,
     ) -> None:
+        if terminal_retirement_grace_seconds < 0:
+            raise ValueError("terminal retirement grace must be nonnegative")
         self._sessions: Dict[str, StudioSession] = {}
         self._client_instances: Dict[str, str] = {}
         self.lease_timeout_seconds = lease_timeout_seconds
+        self.terminal_retirement_grace_seconds = (
+            terminal_retirement_grace_seconds
+        )
         self.play_bridges = play_bridges or PlayBridgeManager()
+        self._retired_session_count = 0
+        self._retired_session_audit: Deque[Dict[str, Any]] = deque(
+            maxlen=MAX_RETIRED_SESSION_AUDIT
+        )
 
     async def register(
         self,
@@ -291,6 +304,91 @@ class SessionRegistry:
                 reason="Studio connection lease expired",
             )
         return expired
+
+    def _terminal_disconnected_is_safe(
+        self, session: StudioSession
+    ) -> bool:
+        if (
+            session.connected
+            or not session.terminal_disconnect_candidate
+            or session.last_confirmed_mode != "edit"
+            or session.operation_lock.locked()
+            or session.pending
+            or session.uncertain_requests
+            or session.uncertainty_state is not None
+            or session.play_bridge_uncertain is not None
+            or any(
+                job.status not in session.TERMINAL_JOB_STATES
+                for job in session.jobs.values()
+            )
+        ):
+            return False
+        transition = self.play_bridges.public_summary(session.studio_id)
+        if transition is None:
+            return True
+        outcome = transition.get("completion_outcome")
+        return (
+            transition.get("state") == "completed"
+            and isinstance(outcome, str)
+            and (
+                outcome.endswith("_edit_confirmed")
+                or outcome == "pre_attach_aborted"
+            )
+        )
+
+    def _retire_terminal_disconnected_sessions(self) -> int:
+        """Compact only positively terminal, non-live Studio records.
+
+        The bounded audit tombstone contains identity and the positive safety
+        basis, never credentials, request arguments, results, console data, or
+        Play nonces.
+        """
+
+        now = time.monotonic()
+        retired = 0
+        for studio_id, session in list(self._sessions.items()):
+            disconnected_at = session.disconnected_at_monotonic
+            if (
+                disconnected_at is None
+                or now - disconnected_at
+                < self.terminal_retirement_grace_seconds
+                or not self._terminal_disconnected_is_safe(session)
+            ):
+                continue
+            transition = self.play_bridges.public_summary(studio_id)
+            completion_outcome = (
+                transition.get("completion_outcome")
+                if transition is not None
+                else None
+            )
+            if self._client_instances.get(session.client_instance_id) == studio_id:
+                self._client_instances.pop(session.client_instance_id, None)
+            self._sessions.pop(studio_id, None)
+            self.play_bridges.retire_completed(
+                studio_id,
+                session.client_instance_id,
+                session.document_epoch,
+            )
+            self._retired_session_count += 1
+            retired += 1
+            self._retired_session_audit.append(
+                {
+                    "studio_id": studio_id,
+                    "client_instance_id": session.client_instance_id,
+                    "document_epoch": session.document_epoch,
+                    "generation": session.generation,
+                    "last_confirmed_mode": "edit",
+                    "completion_outcome": completion_outcome,
+                    "basis": [
+                        "disconnected",
+                        "edit_confirmed",
+                        "no_operations_or_uncertainty",
+                        "play_terminal_or_absent",
+                        "retirement_grace_elapsed",
+                    ],
+                }
+            )
+        return retired
 
     def authenticate_studio(
         self,
@@ -698,9 +796,85 @@ class SessionRegistry:
         )
 
     def snapshots(self) -> List[Dict[str, Any]]:
-        for session in self._sessions.values():
+        for session in list(self._sessions.values()):
             self._expire_stale_lease(session)
-        return [session.snapshot() for session in self._sessions.values()]
+        self._retire_terminal_disconnected_sessions()
+        snapshots: List[Dict[str, Any]] = []
+        for session in self._sessions.values():
+            snapshot = session.snapshot()
+            transition = self.play_bridges.public_summary(
+                session.studio_id
+            )
+            if transition is None:
+                snapshot["play"] = {
+                    "state": "edit" if session.mode == "edit" else "unknown",
+                    "active": False,
+                }
+            else:
+                broker_state = self.broker_state_snapshot(
+                    session.studio_id
+                )
+                snapshot["mode"] = broker_state["mode"]
+                snapshot["play"] = broker_state["play"]
+            snapshots.append(snapshot)
+        return snapshots
+
+    def broker_state_snapshot(self, studio_id: Any) -> Dict[str, Any]:
+        """Return exact broker-owned Play state when Studio cannot answer."""
+
+        session = self.require(studio_id, connected=False)
+        transition = self.play_bridges.public_summary(session.studio_id)
+        if transition is None:
+            mode = session.mode if session.connected else "unknown"
+            play: Dict[str, Any] = {
+                "active": False,
+                "state": "edit" if mode == "edit" else "unknown",
+            }
+        else:
+            host_state = transition["state"]
+            completion = transition.get("completion_outcome")
+            if host_state == "completed":
+                edit_confirmed = isinstance(completion, str) and (
+                    completion.endswith("_edit_confirmed")
+                    or completion == "pre_attach_aborted"
+                )
+                mode = "edit" if edit_confirmed else "unknown"
+                state = completion or "completed"
+                active = False
+            elif transition["stop_requested"]:
+                mode = "stopping"
+                state = "stopping"
+                active = bool(transition["watchdog_armed"])
+            elif (
+                transition["attached"]
+                and transition["watchdog_armed"]
+            ):
+                mode = "play"
+                state = "play"
+                active = True
+            else:
+                mode = "starting"
+                state = "starting"
+                active = False
+            play = copy.deepcopy(transition)
+            play["active"] = active
+            play["state"] = state
+        metadata = session.metadata
+        return {
+            "adapter": "studio-mcp-v2-broker-recovery-view",
+            "source": "broker",
+            "connected": session.connected,
+            "studio_id": session.studio_id,
+            "client_instance_id": session.client_instance_id,
+            "document_epoch": session.document_epoch,
+            "generation": session.generation,
+            "name": metadata.get("name"),
+            "place_id": metadata.get("place_id"),
+            "game_id": metadata.get("game_id"),
+            "mode": mode,
+            "is_edit": mode == "edit",
+            "play": play,
+        }
 
     def lifecycle_summary(self) -> Dict[str, Any]:
         """Summarize whether dropping this broker is positively safe.
@@ -709,8 +883,9 @@ class SessionRegistry:
         data, credentials, and Play nonces.
         """
 
-        for session in self._sessions.values():
+        for session in list(self._sessions.values()):
             self._expire_stale_lease(session)
+        self._retire_terminal_disconnected_sessions()
         transitions = self.play_bridges.lifecycle_summaries()
         session_summaries: List[Dict[str, Any]] = []
         stop_blockers: List[Dict[str, Any]] = []
@@ -727,13 +902,17 @@ class SessionRegistry:
             if session.connected:
                 connected_count += 1
             reasons: List[str] = []
+            retained_terminal = self._terminal_disconnected_is_safe(session)
+            observed_mode = (
+                "edit" if retained_terminal else session.mode.lower()
+            )
             normalized_mode = (
-                session.mode.lower()
-                if session.mode.lower()
+                observed_mode
+                if observed_mode
                 in {"edit", "play", "run", "paused", "unknown"}
                 else "unknown"
             )
-            if not session.connected:
+            if not session.connected and not retained_terminal:
                 reasons.append("not_connected")
             if normalized_mode != "edit":
                 reasons.append("mode_not_edit")
@@ -774,6 +953,7 @@ class SessionRegistry:
                 "uncertain_request_count": len(session.uncertain_requests),
                 "nonterminal_job_counts": nonterminal_jobs,
                 "dispatched_nonterminal_job_count": dispatched_jobs,
+                "retained_terminal_disconnected": retained_terminal,
                 "blockers": reasons,
             }
             if len(session_summaries) < MAX_LIFECYCLE_STATUS_DETAILS:
@@ -813,6 +993,12 @@ class SessionRegistry:
             "stop_blockers": stop_blockers,
             "stop_blockers_truncated": (
                 stop_blocker_count > len(stop_blockers)
+            ),
+            "retired_session_count": self._retired_session_count,
+            "retired_session_audit": list(self._retired_session_audit),
+            "retired_session_audit_truncated": (
+                self._retired_session_count
+                > len(self._retired_session_audit)
             ),
         }
 

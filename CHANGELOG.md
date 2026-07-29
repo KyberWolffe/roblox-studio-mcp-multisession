@@ -4,6 +4,44 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.3.0-rc.4 — 2026-07-28
+
+PlayServer HTTP-independence and terminal-session lifecycle correction.
+
+### Fixed
+
+- The guarded Play bridge now runs in the installed Studio plugin's
+  PlayServer context. The temporary server Script is an inert,
+  transition-owned marker, so a place with `Allow HTTP Requests` disabled can
+  still attach to the fixed loopback broker without changing or saving the
+  place setting.
+- Bridge failures carry a bounded structured code through the correlated
+  `EndTest` receipt instead of collapsing every pre-broker failure into
+  `attach_failed`.
+- Disconnected records are nonblocking only when Edit, zero in-flight work,
+  zero uncertainty, and terminal-or-absent Play are all positively proven.
+  Those records retain a reconnect grace period, then compact into bounded
+  non-secret audit tombstones. Uncertain and active records are never retired.
+
+## 0.3.0-rc.3 — 2026-07-26
+
+Two-phase Play lifecycle and multi-window identity correction.
+
+### Fixed
+
+- Start and Stop now return correlated acceptance receipts without holding the
+  mutation call open while Roblox Studio changes modes. Callers positively
+  observe the exact session through `starting`, `play`, `stopping`, and Edit.
+- Slow Play startup has separate bounded pre-attach, activation, active, and
+  server-watchdog lifetimes. A successful server acknowledgement refreshes the
+  active lifetime instead of consuming it during Studio startup.
+- Broker-owned transition state remains available for read-only recovery
+  observation when the targeted Studio controller disconnects.
+- Studio discovery and state reads expose the same normalized Play transition
+  states.
+- Place identity uses the published asset name when available, avoiding
+  misleading runtime DataModel names in multi-window discovery.
+
 ## 0.3.0-rc.2 — 2026-07-26
 
 Security and CI correction to the unpublished `0.3.0-rc.1` candidate.

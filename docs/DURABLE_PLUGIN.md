@@ -47,7 +47,11 @@ Play/Stop uses the documented Studio plugin-security test APIs plus the
 authenticated server-context `EndTest` bridge. Start and Stop share
 `studio_start_stop_play`, but the host binds the pending request to the exact
 phase arguments (`{"is_start": true}` or `{"is_start": false}`), transition
-generation, nonce, and explicit `studio_id`.
+generation, nonce, and explicit `studio_id`. Start returns a correlated
+`starting` acceptance receipt after scheduling the runner; Stop returns a
+correlated `stopping` receipt after binding the stop command. Callers observe
+the exact transition with `studio_get_state` until it reaches Play or
+positively confirmed Edit.
 
 ## Rendering
 

@@ -371,8 +371,13 @@ class ReconnectAndCorrelationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         request = await self.a.next_request()
-        self.assertTrue(self.a.respond(request, "started"))
-        self.assertEqual("play", self.a.session.mode)
+        self.assertTrue(
+            self.a.respond(
+                request,
+                {"accepted": True, "state": "starting", "mode": "starting"},
+            )
+        )
+        self.assertEqual("starting", self.a.session.mode)
         self.assertTrue(self.a.event("mode", {"mode": "edit"}))
         await operation
         self.assertEqual("edit", self.a.session.mode)

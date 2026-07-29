@@ -456,8 +456,8 @@ local function validateRequest(request)
 end
 
 local function durableGetState()
-	local mode = modeSnapshot()
-	local transition = peer.active_play
+	local play = playStateSnapshot()
+	local mode = observedMode(play)
 	return {
 		adapter = "studio-mcp-v2-durable-plugin",
 		studio_id = peer.studio_id,
@@ -467,19 +467,12 @@ local function durableGetState()
 		broker_instance_id = peer.broker_instance_id,
 		run_id = CONFIG.run_id,
 		session_tag = DOCUMENT_POLICY.session_tag,
-		name = game.Name,
+		name = DOCUMENT_NAME,
 		place_id = EXPECTED_PLACE_ID,
 		game_id = EXPECTED_GAME_ID,
-		mode = mode.mode,
-		is_edit = mode.mode == "edit",
-		play = transition == nil and {
-			active = false,
-		} or {
-			active = true,
-			server_ready = transition.server_ready,
-			runner_finished = transition.runner_finished,
-			transition_nonce = transition.transition_nonce,
-		},
+		mode = mode,
+		is_edit = mode == "edit",
+		play = play,
 	}
 end
 

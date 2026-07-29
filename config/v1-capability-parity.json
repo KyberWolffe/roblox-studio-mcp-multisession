@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_version": "0.3.0-rc.2",
+  "release_version": "0.3.0-rc.4",
   "baseline": {
     "catalog_path": "config/tool-catalog.json",
     "modern_tool_count": 25,

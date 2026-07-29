@@ -136,8 +136,12 @@ class StudioSession:
         self.metadata = copy.deepcopy(metadata)
         self.capabilities: Set[str] = set(capabilities)
         self.mode = str(metadata.get("mode", "unknown"))
+        self.last_confirmed_mode = self.mode.lower()
         self.uncertainty_state: Optional[str] = None
         self.play_bridge_uncertain: Optional[str] = None
+        self.disconnected_at_monotonic: Optional[float] = None
+        self.terminal_disconnect_candidate = False
+        self.terminal_disconnect_reason: Optional[str] = None
         self.console: Deque[Dict[str, Any]] = deque(maxlen=1000)
         self.console_sequence = 0
         self.jobs: Dict[str, JobRecord] = {}
@@ -162,6 +166,7 @@ class StudioSession:
             "metadata": copy.deepcopy(self.metadata),
             "capabilities": sorted(self.capabilities),
             "mode": self.mode,
+            "last_confirmed_mode": self.last_confirmed_mode,
             "uncertainty_state": self.uncertainty_state,
             "play_bridge_uncertain": self.play_bridge_uncertain,
             "uncertain_request_count": len(self.uncertain_requests),
@@ -205,6 +210,10 @@ class StudioSession:
         self.metadata = copy.deepcopy(metadata)
         self.capabilities = set(capabilities)
         self.mode = str(metadata.get("mode", "unknown"))
+        self.last_confirmed_mode = self.mode.lower()
+        self.disconnected_at_monotonic = None
+        self.terminal_disconnect_candidate = False
+        self.terminal_disconnect_reason = None
         self._refresh_uncertainty()
         self.console.clear()
         self.console_sequence = 0
@@ -234,11 +243,28 @@ class StudioSession:
         return True
 
     def _disconnect_current(self, reason: str) -> None:
+        disconnect_mode = self.mode.lower()
+        terminal_candidate = (
+            disconnect_mode == "edit"
+            and self.uncertainty_state is None
+            and self.play_bridge_uncertain is None
+            and not self.operation_lock.locked()
+            and not self.pending
+            and not self.uncertain_requests
+            and all(
+                job.status in self.TERMINAL_JOB_STATES
+                for job in self.jobs.values()
+            )
+        )
         if self.transport is not None:
             self.transport.close()
         self.transport = None
         self.connected = False
+        self.last_confirmed_mode = disconnect_mode
         self.mode = "unknown"
+        self.disconnected_at_monotonic = time.monotonic()
+        self.terminal_disconnect_candidate = terminal_candidate
+        self.terminal_disconnect_reason = str(reason)[:160]
         error = SessionDisconnectedError(reason)
         for pending in list(self.pending.values()):
             self.uncertain_requests[pending.request_id] = {
@@ -249,7 +275,9 @@ class StudioSession:
             if not pending.future.done():
                 pending.future.set_exception(error)
         self.pending.clear()
-        self._refresh_uncertainty(fallback=reason)
+        self._refresh_uncertainty(
+            fallback=None if terminal_candidate else reason
+        )
         for job in self.jobs.values():
             if job.status not in self.TERMINAL_JOB_STATES:
                 job.status = "disconnected"
@@ -449,6 +477,7 @@ class StudioSession:
             mode = payload.get("mode")
             if isinstance(mode, str):
                 self.mode = mode
+                self.last_confirmed_mode = mode.lower()
                 self._refresh_uncertainty()
                 return True
             return False
@@ -479,11 +508,21 @@ class StudioSession:
             action = arguments.get("mode")
             if action is None:
                 action = "start_play" if arguments.get("is_start") else "stop"
-            self.mode = {
-                "start_play": "play",
-                "run_server": "run_server",
-                "stop": "edit",
-            }.get(str(action), self.mode)
+            result_mode = (
+                result.get("mode")
+                if isinstance(result, dict)
+                else None
+            )
+            if isinstance(result_mode, str):
+                self.mode = result_mode
+                self.last_confirmed_mode = result_mode.lower()
+            else:
+                self.mode = {
+                    "start_play": "starting",
+                    "run_server": "starting",
+                    "stop": "stopping",
+                }.get(str(action), self.mode)
+                self.last_confirmed_mode = self.mode.lower()
             self.uncertainty_state = None
         elif normalized in {
             "get_studio_state",
@@ -492,9 +531,11 @@ class StudioSession:
         }:
             if isinstance(result, dict) and isinstance(result.get("mode"), str):
                 self.mode = result["mode"]
+                self.last_confirmed_mode = self.mode.lower()
                 self.uncertainty_state = None
             elif isinstance(result, str):
                 self.mode = result
+                self.last_confirmed_mode = self.mode.lower()
                 self.uncertainty_state = None
 
     def start_job(

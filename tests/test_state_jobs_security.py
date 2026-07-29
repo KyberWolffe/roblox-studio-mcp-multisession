@@ -45,6 +45,63 @@ class StateJobsSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("edit", self.a.session.mode)
         self.assertNotEqual(old_token, self.a.resume_token)
 
+    async def test_disconnected_state_read_uses_exact_broker_transition(self):
+        prepared = self.registry.play_bridges.prepare(
+            self.a.studio_id,
+            self.a.client_instance_id,
+            self.a.registration.document_epoch,
+            self.a.generation,
+            "accepted-start",
+            0,
+            0,
+            ttl_seconds=180,
+        )
+        self.a.session.play_bridge_uncertain = prepared["transition_nonce"]
+        self.a.disconnect()
+
+        state = await self.service.call_tool(
+            ALLOW_ALL,
+            "get_studio_state_v2",
+            {"studio_id": self.a.studio_id},
+        )
+        self.assertEqual("studio-mcp-v2-broker-recovery-view", state["adapter"])
+        self.assertFalse(state["connected"])
+        self.assertEqual("stopping", state["mode"])
+        self.assertFalse(state["is_edit"])
+        self.assertEqual("stopping", state["play"]["state"])
+        self.assertFalse(state["play"]["active"])
+        self.assertTrue(state["play"]["recovery_only"])
+        self.assertEqual(
+            prepared["transition_nonce"],
+            state["play"]["transition_nonce"],
+        )
+        self.assertTrue(self.a.transport._queue.empty())
+
+    async def test_discovery_uses_normalized_broker_transition_state(self):
+        prepared = self.registry.play_bridges.prepare(
+            self.a.studio_id,
+            self.a.client_instance_id,
+            self.a.registration.document_epoch,
+            self.a.generation,
+            "accepted-start",
+            0,
+            0,
+            ttl_seconds=180,
+        )
+
+        snapshots = {
+            item["studio_id"]: item
+            for item in self.registry.snapshots()
+        }
+        observed = snapshots[self.a.studio_id]
+        self.assertEqual("starting", observed["mode"])
+        self.assertEqual("starting", observed["play"]["state"])
+        self.assertFalse(observed["play"]["active"])
+        self.assertEqual(
+            prepared["transition_nonce"],
+            observed["play"]["transition_nonce"],
+        )
+
     async def test_jobs_are_scoped_and_dispatched_under_session_lock(self):
         job_a = self.service.start_job(
             ALLOW_ALL,

@@ -173,9 +173,9 @@ completion is accepted only for an attached, watchdog-acknowledged transition
 with no stop command. A start-failure outcome is valid only before server
 attachment.
 
-### Play-server routes
+### PlayServer routes
 
-The fixed server Script uses only:
+The fixed PlayServer plugin bridge uses only:
 
 - `POST /v2/play-bridge/attach`
 - `POST /v2/play-bridge/server-poll`
@@ -185,10 +185,25 @@ The one-time bridge token authenticates `attach`. The broker binds a fresh
 `server_instance_id`, derives a transition-specific `server_token`, and burns
 the bootstrap credential when that server credential is first used.
 
-The server acknowledges `watchdog_armed` before polling for Stop. When
+The PlayServer plugin acknowledges `watchdog_armed` before polling for Stop. When
 `server-poll` returns the exact stop command, the server acknowledges
 `stop_received` with the same command ID before invoking
 `StudioTestService:EndTest()`.
+
+Play operations use a longer broker deadline than ordinary Studio calls. While
+the Edit-context plugin starts a slow runner, it first prepares one exact
+transition, schedules `ExecutePlayModeAsync`, and returns a correlated
+`starting` receipt. Stop similarly binds one exact stop command and returns a
+correlated `stopping` receipt. Read-only state observations then report
+`starting`, `play`, `stopping`, `settling`, terminal Edit proof, or
+`recovery_required`; they never replay Start or Stop.
+
+The plugin monitors the transition at a bounded interval while server startup
+is pending. Its authenticated status reads renew only that session's lease.
+The one-time bridge token has a bounded pre-attach TTL, and the exact server's
+watchdog acknowledgement grants a fresh bounded active TTL so slow startup
+does not consume usable Play time. If the Studio controller disconnects, the
+broker can still return its non-secret transition state for safe recovery.
 
 Stale tokens, reused attach identities, wrong server identities, replayed
 acknowledgements, mismatched stop IDs, or fields from another Studio fail
@@ -203,8 +218,10 @@ current generation must authenticate controller recovery calls. This prevents
 a reconnect from relabeling or replaying the old lifecycle action.
 
 Host watchdog expiry can request Stop and record an expiry reason. The
-Play-server Script independently arms a hard bounded `EndTest` watchdog before
-its first HTTP request. Neither watchdog may report completion on its own.
+PlayServer plugin bridge independently arms a hard bounded `EndTest` watchdog
+before its first HTTP request. The disabled temporary Script is only a
+transition-owned marker and never performs HTTP. Neither watchdog may report
+completion on its own.
 Only the Edit-context runner can complete the transition after validating the
 returned result, cleaning the Script, and observing stable Edit mode.
 

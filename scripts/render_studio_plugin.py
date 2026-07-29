@@ -137,20 +137,22 @@ def _durable_server_template(source: str, base_url: str) -> str:
     source = _replace_exact(
         source,
         """--[[
-Fixed Studio MCP v2 Play-server bridge.
+Fixed Studio MCP v2 PlayServer plugin bridge.
 
-This source is embedded verbatim in the rendered Studio plugin, apart from the
-audited run-id placeholder. It accepts only the closed ExecutePlayModeAsync
-bootstrap schema below. The loopback origin, endpoint paths, retry limits,
-watchdog duration, and EndTest payload are not caller controlled.
+This source is embedded twice in the rendered Studio plugin: as executable
+PlayServer plugin code and as the inert temporary Script marker's auditable
+source. It accepts only the closed ExecutePlayModeAsync bootstrap schema below.
+The loopback origin, endpoint paths, retry limits, watchdog duration, and
+EndTest payload are not caller controlled.
 ]]""",
         """--[[
-Durable Studio MCP v2 Play-server bridge.
+Durable Studio MCP v2 PlayServer plugin bridge.
 
-This fixed source is embedded in the side-by-side plugin at install time. It
-accepts one exact authenticated Play bootstrap for the current DataModel. The
-loopback origin, endpoint paths, retry limits, watchdog duration, and EndTest
-payload are not caller controlled.
+This fixed source is embedded as executable plugin code and as the inert
+temporary Script marker's auditable source at install time. It accepts one
+exact authenticated Play bootstrap for the current DataModel. The loopback
+origin, endpoint paths, retry limits, watchdog duration, and EndTest payload
+are not caller controlled.
 ]]""",
         "server header",
     )
@@ -456,6 +458,11 @@ def render(
     )
     plugin_source = _replace_once(
         plugin_source, "__RUN_ID__", target_run_id
+    )
+    plugin_source = _replace_once(
+        plugin_source,
+        "__PLAY_SERVER_PLUGIN_BRIDGE_BODY__",
+        "\n".join("\t" + line for line in server_source.splitlines()),
     )
     plugin_source = _replace_once(
         plugin_source,

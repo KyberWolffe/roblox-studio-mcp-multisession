@@ -14,6 +14,15 @@ from .validation import (
     validate_timeout_ms,
 )
 
+PLAY_OPERATION_TIMEOUT_MS = 120_000
+PLAY_OPERATION_NAMES = frozenset(
+    {
+        "start_stop_play",
+        "startstopplay",
+        "studio_start_stop_play",
+    }
+)
+
 
 class ProxyService:
     """The only operational router; target is mandatory in its public API."""
@@ -52,16 +61,31 @@ class ProxyService:
         # Authorization is a separate decision and is repeated after queue wait
         # by keeping it outside the routing identity itself.
         self.policy.authorize(principal, studio_id, public_tool)
-        session = self.registry.require(studio_id, connected=True)
+        state_read = definition.remote_name.lower() in {
+            "get_studio_state",
+            "getstudiomode",
+            "studio_get_state",
+        }
+        session = self.registry.require(
+            studio_id, connected=not state_read
+        )
         if definition.remote_name not in session.capabilities:
             from .errors import CapabilityError
 
             raise CapabilityError(
                 "The targeted Studio does not advertise " + definition.remote_name
             )
+        if state_read and not session.connected:
+            return self.registry.broker_state_snapshot(studio_id)
         remote_arguments = copy.deepcopy(args)
         remote_arguments.pop("studio_id", None)
-        timeout_ms = validate_timeout_ms(remote_arguments.pop("_timeout_ms", None))
+        timeout_value = remote_arguments.pop("_timeout_ms", None)
+        timeout_ms = (
+            PLAY_OPERATION_TIMEOUT_MS
+            if timeout_value is None
+            and definition.remote_name.lower() in PLAY_OPERATION_NAMES
+            else validate_timeout_ms(timeout_value)
+        )
         operation_request_id = (
             validate_request_id(client_request_id)
             if client_request_id is not None

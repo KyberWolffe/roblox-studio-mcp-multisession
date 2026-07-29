@@ -1,17 +1,18 @@
 --[[
-Fixed Studio MCP v2 Play-server bridge.
+Fixed Studio MCP v2 PlayServer plugin bridge.
 
-This source is embedded verbatim in the rendered Studio plugin, apart from the
-audited run-id placeholder. It accepts only the closed ExecutePlayModeAsync
-bootstrap schema below. The loopback origin, endpoint paths, retry limits,
-watchdog duration, and EndTest payload are not caller controlled.
+This source is embedded twice in the rendered Studio plugin: as executable
+PlayServer plugin code and as the inert temporary Script marker's auditable
+source. It accepts only the closed ExecutePlayModeAsync bootstrap schema below.
+The loopback origin, endpoint paths, retry limits, watchdog duration, and
+EndTest payload are not caller controlled.
 ]]
 
 local EXPECTED_RUN_ID = "__RUN_ID__"
 local BASE_URL = "http://127.0.0.1:44756"
 local TEMP_SCRIPT_PREFIX = "_StudioMCPv2_PlayServerBridge_v2_"
-local HARD_WATCHDOG_SECONDS = 20
-local MAX_ACTIVATION_WINDOW_SECONDS = 15
+local HARD_WATCHDOG_SECONDS = 180
+local MAX_ACTIVATION_WINDOW_SECONDS = 165
 local END_TEST_ATTEMPTS = 3
 local HTTP_TIMEOUT_SECONDS = 5
 local MAX_HTTP_BODY_BYTES = 32_768
@@ -255,7 +256,19 @@ local attached = false
 local serverReady = false
 local activeStopCommandId = nil
 
-local function endTest(reason, correlation)
+local FAILURE_CODES = table.freeze({
+	request_blocked = true,
+	request_encode_invalid = true,
+	request_exception = true,
+	request_exception_http_disabled = true,
+	response_invalid = true,
+	response_non_success = true,
+	response_oversize = true,
+	envelope_invalid = true,
+	bridge_already_ended = true,
+})
+
+local function endTest(reason, correlation, failureCode)
 	if finished or ending then
 		return finished
 	end
@@ -274,6 +287,12 @@ local function endTest(reason, correlation)
 		end_test_correlation = correlation,
 		server_instance_id = serverInstanceId,
 	}
+	if failureCode ~= nil then
+		if FAILURE_CODES[failureCode] ~= true then
+			failureCode = "request_exception"
+		end
+		payload.failure_code = failureCode
+	end
 	if invokeEndTest(payload) then
 		finished = true
 		ending = false
@@ -300,22 +319,27 @@ watchdogHandler = function()
 	end
 end
 
-if script.Name ~= bootstrap.temporary_script_name
-	or script.Parent ~= ServerScriptService
-	or not script:IsA("Script")
-	or script:GetAttribute("StudioMCPv2TemporaryKind")
+local bridgeMarker = ServerScriptService:FindFirstChild(
+	bootstrap.temporary_script_name
+)
+if bridgeMarker == nil
+	or bridgeMarker.Name ~= bootstrap.temporary_script_name
+	or bridgeMarker.Parent ~= ServerScriptService
+	or not bridgeMarker:IsA("Script")
+	or bridgeMarker.Enabled ~= false
+	or bridgeMarker:GetAttribute("StudioMCPv2TemporaryKind")
 		~= "play_server_bridge_v2"
-	or script:GetAttribute("StudioMCPv2RunId") ~= EXPECTED_RUN_ID
-	or script:GetAttribute("StudioMCPv2ClientInstanceId")
+	or bridgeMarker:GetAttribute("StudioMCPv2RunId") ~= EXPECTED_RUN_ID
+	or bridgeMarker:GetAttribute("StudioMCPv2ClientInstanceId")
 		~= bootstrap.client_instance_id
-	or script:GetAttribute("StudioMCPv2DocumentEpoch")
+	or bridgeMarker:GetAttribute("StudioMCPv2DocumentEpoch")
 		~= bootstrap.document_epoch
-	or script:GetAttribute("StudioMCPv2TransitionNonce")
+	or bridgeMarker:GetAttribute("StudioMCPv2TransitionNonce")
 		~= bootstrap.transition_nonce
-	or script:GetAttribute("StudioMCPv2SessionTag")
+	or bridgeMarker:GetAttribute("StudioMCPv2SessionTag")
 		~= documentPolicy.session_tag
 then
-	error("Play bridge Script ownership is invalid", 0)
+	error("Play bridge marker ownership is invalid", 0)
 end
 
 local function commonBody()
@@ -334,7 +358,7 @@ end
 
 local function requestOnce(path, bearerToken, body)
 	if ALLOWED_PATHS[path] ~= true or not isSecret(bearerToken) then
-		return false, "blocked bridge request"
+		return false, "request_blocked"
 	end
 	local encodedOk, encoded = pcall(function()
 		return HttpService:JSONEncode(body)
@@ -343,7 +367,7 @@ local function requestOnce(path, bearerToken, body)
 		or type(encoded) ~= "string"
 		or #encoded > MAX_HTTP_BODY_BYTES
 	then
-		return false, "invalid bounded bridge request"
+		return false, "request_encode_invalid"
 	end
 	local callOk, response = pcall(function()
 		return HttpService:RequestAsync({
@@ -358,13 +382,23 @@ local function requestOnce(path, bearerToken, body)
 			Timeout = HTTP_TIMEOUT_SECONDS,
 		})
 	end)
-	if not callOk
-		or type(response) ~= "table"
-		or response.Success ~= true
-		or type(response.Body) ~= "string"
-		or #response.Body > MAX_HTTP_RESPONSE_BYTES
-	then
-		return false, "bridge HTTP request failed"
+	if not callOk then
+		local lowered = string.lower(tostring(response))
+		if string.find(lowered, "http requests are not enabled", 1, true)
+			or string.find(lowered, "allow http requests", 1, true)
+		then
+			return false, "request_exception_http_disabled"
+		end
+		return false, "request_exception"
+	end
+	if type(response) ~= "table" or type(response.Body) ~= "string" then
+		return false, "response_invalid"
+	end
+	if response.Success ~= true then
+		return false, "response_non_success"
+	end
+	if #response.Body > MAX_HTTP_RESPONSE_BYTES then
+		return false, "response_oversize"
 	end
 	local decodeOk, payload = pcall(function()
 		return HttpService:JSONDecode(response.Body)
@@ -374,16 +408,16 @@ local function requestOnce(path, bearerToken, body)
 		or payload.ok ~= true
 		or type(payload.result) ~= "table"
 	then
-		return false, "bridge returned an invalid envelope"
+		return false, "envelope_invalid"
 	end
 	return true, payload.result
 end
 
 local function requestWithRetry(path, bearerToken, body)
-	local lastError = "bridge request exhausted retries"
+	local lastError = "request_exception"
 	for attempt = 1, MAX_REQUEST_ATTEMPTS do
 		if finished then
-			return false, "Play bridge already ended"
+			return false, "bridge_already_ended"
 		end
 		local ok, result = requestOnce(path, bearerToken, body)
 		if ok then
@@ -430,7 +464,7 @@ local attachedOk, attachedResult = requestWithRetry(
 	attachBody
 )
 if not attachedOk then
-	endTest("attach_failed", bootstrap.play_request_id)
+	endTest("attach_failed", bootstrap.play_request_id, attachedResult)
 	return
 end
 local attachSnapshotOk, attachSnapshot = pcall(function()
@@ -459,7 +493,7 @@ local readyOk, readyResult = requestWithRetry(
 	readyAckBody
 )
 if not readyOk then
-	endTest("watchdog_ack_failed", bootstrap.play_request_id)
+	endTest("watchdog_ack_failed", bootstrap.play_request_id, readyResult)
 	return
 end
 local readySnapshotOk, readySnapshot = pcall(function()

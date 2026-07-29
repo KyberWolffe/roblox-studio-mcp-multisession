@@ -141,7 +141,7 @@ class DurableRendererTests(unittest.TestCase):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),
-            "456138e48409b40e36dbe33a2590a3d648419e0e07438d84f1009994f8ba61f1",
+            "63348063618dae8226ee3eeda167d85ac9f0d16daa08010c262429740d67bc63",
         )
 
     def test_render_has_no_two_place_or_session_count_limit(self):
@@ -176,11 +176,97 @@ class DurableRendererTests(unittest.TestCase):
         self.assertNotIn("plugin:GetSetting", source)
         self.assertNotIn("plugin:SetSetting", source)
 
+    def test_render_resolves_published_place_name_with_safe_fallback(self):
+        source = self.render()
+        self.assertIn(
+            'local MarketplaceService = game:GetService("MarketplaceService")',
+            source,
+        )
+        self.assertIn("local function resolveDocumentName()", source)
+        self.assertIn("if EXPECTED_PLACE_ID <= 0 then", source)
+        self.assertIn(
+            "MarketplaceService:GetProductInfoAsync(",
+            source,
+        )
+        self.assertIn("Enum.InfoType.Asset", source)
+        self.assertIn('type(assetName) ~= "string" or assetName == ""', source)
+        self.assertIn("local DOCUMENT_NAME = resolveDocumentName()", source)
+        self.assertEqual(source.count("name = DOCUMENT_NAME"), 2)
+        self.assertIn(
+            "name = instance == game and game.Name or instance.Name",
+            source,
+        )
+
+    def test_render_keeps_slow_play_alive_with_aligned_bounds(self):
+        source = self.render()
+        self.assertIn("local PLAY_PRE_ATTACH_TTL_SECONDS = 180", source)
+        self.assertIn("local PLAY_ACTIVATION_SECONDS = 150", source)
+        self.assertIn("local RUNNER_RETURN_SECONDS = 70", source)
+        self.assertIn("local RUNNER_STATUS_INTERVAL_SECONDS = 1", source)
+        self.assertIn(
+            "activation_deadline_unix = os.time() + PLAY_ACTIVATION_SECONDS",
+            source,
+        )
+        self.assertIn("ttl_seconds = PLAY_PRE_ATTACH_TTL_SECONDS", source)
+        self.assertIn("local HARD_WATCHDOG_SECONDS = 180", source)
+        self.assertIn("local MAX_ACTIVATION_WINDOW_SECONDS = 165", source)
+        runner_wait = source[
+            source.index("local function waitForRunner("):
+            source.index("local function waitForStableEdit()")
+        ]
+        self.assertIn('"/v2/studios/play-bridge/status"', runner_wait)
+        self.assertIn("transitionBody(transition)", runner_wait)
+        self.assertIn("status.watchdog_armed == true", runner_wait)
+
+    def test_render_uses_two_phase_play_acceptance_and_observation(self):
+        source = self.render()
+        start = source[
+            source.index("local function startPlay("):
+            source.index("local function stopPlay(")
+        ]
+        self.assertIn("monitorPlayTransition(transition)", start)
+        self.assertIn("accepted = true", start)
+        self.assertIn('state = "starting"', start)
+        self.assertIn('mode = "starting"', start)
+        self.assertNotIn("readyDeadline", start)
+        self.assertNotIn("waitForRunner(", start)
+
+        stop = source[
+            source.index("local function stopPlay("):
+            source.index("local function getState(")
+        ]
+        self.assertIn('state = "stopping"', stop)
+        self.assertIn('mode = "stopping"', stop)
+        self.assertNotIn("waitForRunner(", stop)
+        self.assertIn("local function playStateSnapshot()", source)
+        self.assertIn('return "recovery_required"', source)
+
+    def test_render_uses_plugin_context_bridge_with_inert_marker(self):
+        source = self.render()
+        play_branch = source.index(
+            "local function runPlayServerPluginBridge()"
+        )
+        edit_controller = source.index(
+            "assert(plugin ~= nil",
+            play_branch,
+        )
+        self.assertLess(play_branch, edit_controller)
+        self.assertIn("initialIsRunning == true", source[:edit_controller])
+        self.assertIn("initialIsServer == true", source[:edit_controller])
+        self.assertIn("bridge.Enabled = false", source)
+        self.assertIn(
+            "local bridgeMarker = ServerScriptService:FindFirstChild(",
+            source,
+        )
+        self.assertIn("bridgeMarker.Enabled ~= false", source)
+        self.assertIn("request_exception_http_disabled", source)
+        self.assertNotIn("HttpService.HttpEnabled =", source)
+
     def test_render_has_fixed_loopback_origin_and_no_host_execution(self):
         source = self.render("http://127.0.0.1:45123")
         self.assertEqual(
             source.count('local BASE_URL = "http://127.0.0.1:45123"'),
-            2,
+            3,
         )
         self.assertNotIn("loadstring", source.lower())
         self.assertNotIn("os.execute", source.lower())
