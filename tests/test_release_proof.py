@@ -29,6 +29,10 @@ class ReleaseProofTests(unittest.TestCase):
         )
         self.assertTrue(report["ok"])
         self.assertTrue(all(report["phases"].values()))
+        self.assertTrue(
+            report["phases"]["legacy_update_lock_marker"]
+        )
+        self.assertTrue(report["phases"]["no_op_repair"])
         self.assertTrue(report["isolation"]["temporary_home_removed"])
         self.assertFalse(report["isolation"]["network_or_broker_started"])
         self.assertGreaterEqual(

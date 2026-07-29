@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import fcntl
 import shutil
 import stat
 import subprocess
@@ -32,6 +33,7 @@ class DurableInstallerTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         built = builder.build_release(ROOT, self.root / "dist")
         self.archive = built.archive
+        self.archive_checksum = built.checksum_file
         self.archive_sha256 = built.sha256
         with tarfile.open(self.archive, "r:gz") as package:
             for member in package.getmembers():
@@ -85,6 +87,166 @@ class DurableInstallerTests(unittest.TestCase):
             },
             "doctor_catalog_sha256": "a" * 64,
         }
+
+    def _make_prior_version_package(
+        self, version: str = "0.4.0-dev.2"
+    ) -> Path:
+        """Create a second, internally verified portable version for updates."""
+
+        package = self.root / ("prior-package-" + version)
+        shutil.copytree(self.package, package)
+
+        install_path = package / "install.py"
+        install_text = install_path.read_text(encoding="utf-8")
+        current_literal = 'VERSION = "' + durable.VERSION + '"'
+        prior_literal = 'VERSION = "' + version + '"'
+        self.assertEqual(1, install_text.count(current_literal))
+        install_path.write_text(
+            install_text.replace(current_literal, prior_literal, 1),
+            encoding="utf-8",
+        )
+
+        init_path = package / "payload" / "studio_mcp_v2" / "__init__.py"
+        init_text = init_path.read_text(encoding="utf-8")
+        self.assertIn(durable.VERSION, init_text)
+        init_path.write_text(
+            init_text.replace(durable.VERSION, version),
+            encoding="utf-8",
+        )
+
+        for relative, key in (
+            (
+                "payload/config/durable-tool-catalog.json",
+                "catalog_version",
+            ),
+            (
+                "payload/config/upstream-compatibility-map.json",
+                "durable_catalog_version",
+            ),
+            (
+                "payload/config/v1-capability-parity.json",
+                "release_version",
+            ),
+        ):
+            path = package / relative
+            value = json.loads(path.read_text(encoding="utf-8"))
+            value[key] = version
+            path.write_bytes(durable._json_bytes(value))
+
+        manifest_path = package / durable.PACKAGE_MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["version"] = version
+        for item in manifest["files"]:
+            path = package / item["path"]
+            item["sha256"] = _sha256(path)
+            item["size"] = path.stat().st_size
+        manifest_path.write_bytes(durable._json_bytes(manifest))
+        updater._preverify_candidate_package(package, version)
+        return package
+
+    def _install_prior_with_reviewed_catalog(self):
+        version = "0.4.0-dev.2"
+        package = self._make_prior_version_package(version)
+        module = updater._module_from_package(package)
+        module._load_release_updater_module = lambda: updater
+        layout = module.InstallLayout.for_user(home=self.home)
+        manager = module.Installer(
+            package,
+            layout,
+            python_executable=sys.executable,
+        )
+        installed = manager.install()
+        self.assertTrue(installed["ok"])
+        self.assertEqual(version, installed["version"])
+
+        candidate = json.loads(layout.upstream_catalog.read_text())
+        durable_catalog = json.loads(layout.effective_catalog.read_text())
+        script_schema = next(
+            tool["inputSchema"]
+            for tool in durable_catalog["tools"]
+            if tool["name"] == "studio_read_script"
+        )
+        candidate["catalog_version"] = "reviewed-prior-version-snapshot"
+        candidate["tools"].append(
+            {
+                "name": "studio_structured_script_read",
+                "inputSchema": script_schema,
+            }
+        )
+        candidate_path = self.root / "reviewed-prior-upstream.json"
+        candidate_path.write_text(
+            json.dumps(candidate, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            manager,
+            "_safe_stop_lifecycle",
+            return_value=self._stopped(),
+        ), mock.patch.object(
+            manager,
+            "_start_and_verify_catalog",
+            return_value=self._verified_runtime(),
+        ):
+            imported = manager.catalog_import(
+                candidate_path, _sha256(candidate_path)
+            )
+        self.assertTrue(imported["ok"])
+        receipts = tuple(
+            sorted(layout.config.glob("catalog-import-receipt-*.json"))
+        )
+        self.assertEqual(1, len(receipts))
+        return version, package, module, layout, manager, receipts[0]
+
+    @staticmethod
+    def _lifecycle_process_result(argv, *, healthy: bool = True):
+        if "stop" in argv:
+            payload = {"ok": True, "running": False, "stopped": False}
+            returncode = 0
+        elif "doctor" in argv:
+            payload = {
+                "ok": healthy,
+                "lifecycle": {
+                    "condition": "stopped" if healthy else "unsafe"
+                },
+                "catalog": {"installed_v1_cache": None},
+            }
+            returncode = 0 if healthy else 2
+        else:
+            raise AssertionError(
+                "unexpected versioned-package subprocess: " + repr(argv)
+            )
+        return subprocess.CompletedProcess(
+            args=argv,
+            returncode=returncode,
+            stdout=(json.dumps(payload) + "\n").encode("utf-8"),
+            stderr=b"",
+        )
+
+    @staticmethod
+    def _snapshot_owned_scope(layout) -> dict:
+        snapshot = {}
+        for directory_name in updater._OwnedSnapshot.DIRECTORY_NAMES:
+            root = layout.support_root / directory_name
+            for path in sorted(root.rglob("*")):
+                if path.is_file() and not path.is_symlink():
+                    snapshot[
+                        "support/"
+                        + directory_name
+                        + "/"
+                        + str(path.relative_to(root))
+                    ] = (
+                        path.read_bytes(),
+                        stat.S_IMODE(path.stat().st_mode),
+                    )
+        for name, path in (
+            ("external/codex-config", layout.codex_config),
+            ("external/studio-plugin", layout.plugin_target),
+        ):
+            snapshot[name] = (
+                path.read_bytes(),
+                stat.S_IMODE(path.stat().st_mode),
+            )
+        return snapshot
 
     def _simulate_crashed_release_switch(
         self,
@@ -309,6 +471,16 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         self._install()
         state_before = self.layout.install_state.read_bytes()
         plugin_before = _sha256(self.layout.plugin_target)
+        legacy_lock = self.layout.run / "release-update.lock"
+        self.assertTrue(legacy_lock.is_file())
+        self.assertFalse(legacy_lock.is_symlink())
+        self.assertEqual(
+            0o600, stat.S_IMODE(legacy_lock.stat().st_mode)
+        )
+        legacy_lock_before = (
+            legacy_lock.read_bytes(),
+            stat.S_IMODE(legacy_lock.stat().st_mode),
+        )
         with mock.patch.object(
             self.manager,
             "_safe_stop_lifecycle",
@@ -319,6 +491,13 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         self.assertIsNone(result["lifecycle_stop"])
         self.assertEqual(state_before, self.layout.install_state.read_bytes())
         self.assertEqual(plugin_before, _sha256(self.layout.plugin_target))
+        self.assertEqual(
+            legacy_lock_before,
+            (
+                legacy_lock.read_bytes(),
+                stat.S_IMODE(legacy_lock.stat().st_mode),
+            ),
+        )
 
     def test_direct_cross_version_install_requires_exact_live_update_fence(
         self,
@@ -383,18 +562,347 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
             with mock.patch.object(
                 self.manager,
                 "_safe_stop_lifecycle",
-                return_value={
-                    "ok": True,
-                    "running": False,
-                    "stopped": False,
-                },
+                side_effect=AssertionError(
+                    "unproved prior release must be rejected before stop"
+                ),
             ):
-                installed = self.manager.install()
-            self.assertTrue(installed["ok"])
-            self.assertEqual(durable.VERSION, installed["version"])
+                with self.assertRaisesRegex(
+                    durable.InstallError, "prior release ownership"
+                ):
+                    self.manager.install()
         finally:
             release_updater._clear_pending_validation(candidate_nonce)
             updater._ACTIVE_VALIDATION_NONCES.discard(candidate_nonce)
+
+    def test_real_versioned_catalog_update_resets_defaults_and_rolls_back_exactly(
+        self,
+    ) -> None:
+        (
+            previous_version,
+            _previous_package,
+            _previous_module,
+            layout,
+            previous_manager,
+            import_receipt,
+        ) = self._install_prior_with_reviewed_catalog()
+        contract_paths = (
+            layout.effective_catalog,
+            layout.catalog_artifact,
+            layout.upstream_catalog,
+            layout.artifacts / "upstream-known-tool-catalog.json",
+            layout.compatibility_manifest,
+        )
+        previous_contract = {
+            path: path.read_bytes() for path in contract_paths
+        }
+        previous_state = layout.install_state.read_bytes()
+        previous_codex = layout.codex_config.read_bytes()
+        previous_plugin = layout.plugin_target.read_bytes()
+        previous_receipt = import_receipt.read_bytes()
+
+        candidate_durable = (
+            self.package
+            / "payload"
+            / "config"
+            / "durable-tool-catalog.json"
+        ).read_bytes()
+        candidate_upstream = (
+            self.package / "payload" / "config" / "tool-catalog.json"
+        ).read_bytes()
+        candidate_compatibility = (
+            self.package
+            / "payload"
+            / "config"
+            / "upstream-compatibility-map.json"
+        ).read_bytes()
+        self.assertNotEqual(
+            previous_contract[layout.effective_catalog],
+            candidate_durable,
+        )
+        self.assertNotEqual(
+            previous_contract[layout.upstream_catalog],
+            candidate_upstream,
+        )
+
+        release_updater = updater.ReleaseUpdater(
+            previous_manager,
+            platform_check=lambda: None,
+            runtime_check=lambda: None,
+        )
+        with mock.patch(
+            "subprocess.run",
+            side_effect=lambda argv, **_kwargs: (
+                self._lifecycle_process_result(argv)
+            ),
+        ):
+            updated = release_updater.update(
+                tag="v" + durable.VERSION,
+                archive=self.archive,
+                checksum_file=self.archive_checksum,
+                expected_sha256=self.archive_sha256,
+            )
+        self.assertTrue(updated["ok"])
+        self.assertEqual(previous_version, updated["previous_version"])
+        self.assertEqual(durable.VERSION, updated["version"])
+        self.assertTrue(updated["doctor"]["ok"])
+
+        self.assertEqual(
+            candidate_durable, layout.effective_catalog.read_bytes()
+        )
+        self.assertEqual(
+            candidate_durable, layout.catalog_artifact.read_bytes()
+        )
+        self.assertEqual(
+            candidate_upstream, layout.upstream_catalog.read_bytes()
+        )
+        self.assertEqual(
+            candidate_upstream,
+            (
+                layout.artifacts / "upstream-known-tool-catalog.json"
+            ).read_bytes(),
+        )
+        self.assertEqual(
+            candidate_compatibility,
+            layout.compatibility_manifest.read_bytes(),
+        )
+        self.assertEqual(previous_receipt, import_receipt.read_bytes())
+
+        state = json.loads(layout.install_state.read_text())
+        self.assertEqual(durable.VERSION, state["version"])
+        self.assertEqual(
+            _sha256(layout.effective_catalog),
+            state["catalog"]["sha256"],
+        )
+        self.assertEqual(
+            state["catalog"]["sha256"],
+            state["catalog"]["artifact_sha256"],
+        )
+        self.assertEqual(
+            _sha256(layout.upstream_catalog),
+            state["catalog"]["upstream_snapshot_sha256"],
+        )
+        self.assertEqual(
+            _sha256(layout.compatibility_manifest),
+            state["catalog"]["compatibility_manifest_sha256"],
+        )
+        check_status = {
+            item["name"]: item["ok"]
+            for item in updated["doctor"]["checks"]
+        }
+        for name in (
+            "catalog",
+            "catalog_artifact",
+            "upstream_catalog",
+            "upstream_catalog_artifact",
+            "compatibility_manifest",
+        ):
+            self.assertTrue(check_status[name], name)
+
+        candidate_manager = updater._candidate_installer(
+            previous_manager,
+            layout.packages / durable.VERSION,
+            durable.VERSION,
+        )
+        candidate_contract = {
+            path: path.read_bytes() for path in contract_paths
+        }
+        with mock.patch.object(
+            candidate_manager,
+            "_safe_stop_lifecycle",
+            return_value=self._stopped(),
+        ), mock.patch.object(
+            candidate_manager,
+            "_start_and_verify_catalog",
+            return_value=self._verified_runtime(),
+        ):
+            with self.assertRaisesRegex(
+                Exception, "receipt|catalog|hash"
+            ):
+                candidate_manager.catalog_rollback(
+                    _sha256(layout.effective_catalog),
+                    receipt=import_receipt,
+                )
+        for path, expected in candidate_contract.items():
+            self.assertEqual(expected, path.read_bytes(), str(path))
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=lambda argv, **_kwargs: (
+                self._lifecycle_process_result(argv)
+            ),
+        ):
+            repaired = candidate_manager.install(repair=True)
+        self.assertFalse(repaired["changed"])
+        for path, expected in candidate_contract.items():
+            self.assertEqual(expected, path.read_bytes(), str(path))
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=lambda argv, **_kwargs: (
+                self._lifecycle_process_result(argv)
+            ),
+        ):
+            rolled_back = release_updater.rollback(
+                to_version=previous_version,
+                accept_current_version=durable.VERSION,
+            )
+        self.assertTrue(rolled_back["ok"])
+        self.assertEqual(previous_version, rolled_back["version"])
+        for path, expected in previous_contract.items():
+            self.assertEqual(expected, path.read_bytes(), str(path))
+        self.assertEqual(previous_state, layout.install_state.read_bytes())
+        self.assertEqual(previous_codex, layout.codex_config.read_bytes())
+        self.assertEqual(previous_plugin, layout.plugin_target.read_bytes())
+        self.assertEqual(previous_receipt, import_receipt.read_bytes())
+        self.assertEqual(self.v1_plugin_hash, _sha256(self.v1_plugin))
+        self.assertTrue(layout.codex_config.read_bytes().startswith(self.v1_config))
+
+    def test_failed_real_versioned_update_restores_exact_owned_snapshot(
+        self,
+    ) -> None:
+        (
+            _previous_version,
+            _previous_package,
+            _previous_module,
+            layout,
+            previous_manager,
+            _import_receipt,
+        ) = self._install_prior_with_reviewed_catalog()
+        before = self._snapshot_owned_scope(layout)
+        doctor_calls = 0
+
+        def lifecycle(argv, **_kwargs):
+            nonlocal doctor_calls
+            if "doctor" in argv:
+                doctor_calls += 1
+                return self._lifecycle_process_result(
+                    argv, healthy=doctor_calls != 1
+                )
+            return self._lifecycle_process_result(argv)
+
+        release_updater = updater.ReleaseUpdater(
+            previous_manager,
+            platform_check=lambda: None,
+            runtime_check=lambda: None,
+        )
+        with mock.patch("subprocess.run", side_effect=lifecycle):
+            with self.assertRaisesRegex(
+                updater.UpdateError, "prior v2-owned bytes were restored"
+            ):
+                release_updater.update(
+                    tag="v" + durable.VERSION,
+                    archive=self.archive,
+                    checksum_file=self.archive_checksum,
+                    expected_sha256=self.archive_sha256,
+                )
+        self.assertGreaterEqual(doctor_calls, 2)
+        self.assertEqual(before, self._snapshot_owned_scope(layout))
+        self.assertFalse(release_updater._receipt_path().exists())
+        self.assertFalse(release_updater._pending_path().exists())
+        self.assertEqual(self.v1_plugin_hash, _sha256(self.v1_plugin))
+
+    def test_cross_version_preflight_rejects_unhealthy_prior_catalog_before_stop(
+        self,
+    ) -> None:
+        cases = (
+            "state_hash",
+            "one_copy_drift",
+            "symlink",
+            "snapshot_drift_repaired_live",
+        )
+        for index, case in enumerate(cases):
+            with self.subTest(case=case):
+                if index:
+                    self.tearDown()
+                    self.setUp()
+                (
+                    previous_version,
+                    _previous_package,
+                    _previous_module,
+                    layout,
+                    previous_manager,
+                    _import_receipt,
+                ) = self._install_prior_with_reviewed_catalog()
+                candidate = updater._candidate_installer(
+                    previous_manager, self.package, durable.VERSION
+                )
+                release_updater = updater.ReleaseUpdater(
+                    previous_manager,
+                    platform_check=lambda: None,
+                    runtime_check=lambda: None,
+                )
+                if case == "snapshot_drift_repaired_live":
+                    intact = layout.effective_catalog.read_bytes()
+                    layout.catalog_artifact.write_bytes(
+                        b"drift captured in updater snapshot"
+                    )
+                snapshot = updater._OwnedSnapshot.capture(layout)
+                pending = release_updater._begin_pending_validation(
+                    action="update",
+                    previous_version=previous_version,
+                    current_version=durable.VERSION,
+                    snapshot=snapshot,
+                )
+                nonce = pending["nonce"]
+                if case == "snapshot_drift_repaired_live":
+                    layout.catalog_artifact.write_bytes(intact)
+                elif case == "state_hash":
+                    state = json.loads(layout.install_state.read_text())
+                    state["catalog"]["sha256"] = "f" * 64
+                    state["catalog"]["artifact_sha256"] = "f" * 64
+                    durable._atomic_write(
+                        layout.install_state,
+                        durable._json_bytes(state),
+                        0o600,
+                    )
+                elif case == "one_copy_drift":
+                    layout.catalog_artifact.write_bytes(b"attacker drift")
+                else:
+                    layout.catalog_artifact.unlink()
+                    layout.catalog_artifact.symlink_to(
+                        self.root / "reviewed-prior-upstream.json"
+                    )
+                self.assertFalse((layout.packages / durable.VERSION).exists())
+                self.assertFalse((layout.releases / durable.VERSION).exists())
+                try:
+                    with mock.patch.object(
+                        candidate,
+                        "_safe_stop_lifecycle",
+                        side_effect=AssertionError(
+                            "prior catalog failure must precede stop"
+                        ),
+                    ):
+                        with self.assertRaisesRegex(
+                            Exception,
+                            "prior (durable catalog|catalog ownership|install state)",
+                        ):
+                            candidate.install()
+                finally:
+                    release_updater._clear_pending_validation(nonce)
+                    updater._ACTIVE_VALIDATION_NONCES.discard(nonce)
+                self.assertFalse((layout.packages / durable.VERSION).exists())
+                self.assertFalse((layout.releases / durable.VERSION).exists())
+
+    def test_malformed_installed_version_refuses_before_any_mutation(
+        self,
+    ) -> None:
+        self._install()
+        state = json.loads(self.layout.install_state.read_text())
+        state["version"] = "../not-a-version"
+        durable._atomic_write(
+            self.layout.install_state, durable._json_bytes(state), 0o600
+        )
+        before = self._snapshot_owned_scope(self.layout)
+        with mock.patch.object(
+            self.manager,
+            "_safe_stop_lifecycle",
+            side_effect=AssertionError("malformed version must precede stop"),
+        ):
+            with self.assertRaisesRegex(
+                durable.InstallError, "install state version is invalid"
+            ):
+                self.manager.install()
+        self.assertEqual(before, self._snapshot_owned_scope(self.layout))
 
     def test_repair_restores_corrupt_plugin_after_safe_stop(self) -> None:
         self._install()
@@ -959,6 +1467,37 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         self.assertEqual(plugin_before, self.layout.plugin_target.read_bytes())
         self.assertTrue(self.layout.support_root.is_dir())
 
+    def test_uninstall_holds_stable_lock_across_support_root_move(self) -> None:
+        self._install()
+        original_replace = os.replace
+        contender_refused = []
+
+        def replace_with_contender(source, target):
+            result = original_replace(source, target)
+            if Path(source) == self.layout.support_root:
+                self.assertFalse(self.layout.support_root.exists())
+                with self.assertRaisesRegex(
+                    durable.InstallError, "transaction lock was refused"
+                ):
+                    self.manager.install()
+                contender_refused.append(True)
+            return result
+
+        with mock.patch.object(
+            self.manager,
+            "_safe_stop_lifecycle",
+            return_value=self._stopped(),
+        ), mock.patch(
+            "release_tools.installer.os.replace",
+            side_effect=replace_with_contender,
+        ):
+            result = self.manager.uninstall()
+        self.assertTrue(result["ok"])
+        self.assertEqual([True], contender_refused)
+        self.assertFalse(self.layout.support_root.exists())
+        self.assertTrue(Path(result["support_recovery"]).is_dir())
+        self.assertTrue(updater._stable_update_lock_path(self.layout).is_file())
+
     def test_broad_prefixes_are_rejected(self) -> None:
         for target in (
             Path("/"),
@@ -988,10 +1527,51 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
             ):
                 self.manager.install()
         self.assertFalse(self.layout.support_root.exists())
+        self.assertFalse(
+            updater._stable_update_lock_path(self.layout).exists()
+        )
         self.assertEqual(
             self.v1_config, (self.codex_dir / "config.toml").read_bytes()
         )
         self.assertEqual(self.v1_plugin_hash, _sha256(self.v1_plugin))
+
+    def test_unsupported_uninstall_refuses_before_lock_or_owned_mutation(
+        self,
+    ) -> None:
+        self._install()
+        before = self._snapshot_owned_scope(self.layout)
+        stable = updater._stable_update_lock_path(self.layout)
+        stable_before = (
+            stable.read_bytes(),
+            stat.S_IMODE(stable.stat().st_mode),
+            stable.stat().st_mtime_ns,
+        )
+        with mock.patch(
+            "release_tools.installer.require_supported_platform",
+            side_effect=durable.UnsupportedPlatformError(
+                "native Apple Silicon macOS only. No files were changed."
+            ),
+        ), mock.patch(
+            "release_tools.updater._exclusive_update_lock",
+            side_effect=AssertionError("platform refusal must precede lock"),
+        ), mock.patch.object(
+            self.manager,
+            "_safe_stop_lifecycle",
+            side_effect=AssertionError("platform refusal must precede stop"),
+        ):
+            with self.assertRaisesRegex(
+                durable.InstallError, "No files were changed"
+            ):
+                self.manager.uninstall()
+        self.assertEqual(before, self._snapshot_owned_scope(self.layout))
+        self.assertEqual(
+            stable_before,
+            (
+                stable.read_bytes(),
+                stat.S_IMODE(stable.stat().st_mode),
+                stable.stat().st_mtime_ns,
+            ),
+        )
 
     def test_incompatible_catalog_never_stops_or_mutates(self) -> None:
         self._install()
@@ -1064,6 +1644,345 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         self.assertEqual(
             "portable-test-compatible", installed["upstream"]["version"]
         )
+
+    def test_install_catalog_import_and_rollback_serialize_with_release_updates(
+        self,
+    ) -> None:
+        self._install()
+        before = self._snapshot_owned_scope(self.layout)
+        with updater._exclusive_update_lock(self.layout):
+            with mock.patch.object(
+                self.manager,
+                "_safe_stop_lifecycle",
+                side_effect=AssertionError(
+                    "lock refusal must precede lifecycle stop"
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    durable.InstallError, "transaction lock was refused"
+                ):
+                    self.manager.install(repair=True)
+                with self.assertRaisesRegex(
+                    durable.InstallError, "transaction lock was refused"
+                ):
+                    self.manager.catalog_import(None, "0" * 64)
+                with self.assertRaisesRegex(
+                    durable.InstallError, "transaction lock was refused"
+                ):
+                    self.manager.catalog_rollback("0" * 64)
+                with self.assertRaisesRegex(
+                    durable.InstallError, "transaction lock was refused"
+                ):
+                    self.manager.uninstall()
+        self.assertEqual(before, self._snapshot_owned_scope(self.layout))
+
+    def test_fresh_management_commands_do_not_poison_first_install(self) -> None:
+        stable_lock = updater._stable_update_lock_path(self.layout)
+        self.assertFalse(self.layout.support_root.exists())
+        self.assertFalse(stable_lock.exists())
+        calls = (
+            lambda: self.manager.catalog_import(None, "0" * 64),
+            lambda: self.manager.catalog_rollback("0" * 64),
+            lambda: self.manager.uninstall(),
+        )
+        for call in calls:
+            with self.assertRaisesRegex(
+                durable.InstallError, "install state does not exist"
+            ):
+                call()
+            self.assertFalse(self.layout.support_root.exists())
+            self.assertFalse(stable_lock.exists())
+            self.assertEqual(
+                self.v1_config, self.layout.codex_config.read_bytes()
+            )
+            self.assertEqual(self.v1_plugin_hash, _sha256(self.v1_plugin))
+
+        installed = self.manager.install()
+        self.assertTrue(installed["ok"])
+        self.assertTrue(self.layout.support_root.is_dir())
+        self.assertTrue(stable_lock.is_file())
+
+    def test_concurrent_first_install_is_stable_lock_serialized(self) -> None:
+        stable_lock = updater._stable_update_lock_path(self.layout)
+        with updater._exclusive_update_lock(self.layout):
+            self.assertTrue(stable_lock.is_file())
+            self.assertFalse(self.layout.support_root.exists())
+            with self.assertRaisesRegex(
+                durable.InstallError, "transaction lock was refused"
+            ):
+                self.manager.install()
+            self.assertFalse(self.layout.support_root.exists())
+            self.assertFalse(self.layout.plugin_target.exists())
+            self.assertEqual(
+                self.v1_config, self.layout.codex_config.read_bytes()
+            )
+
+        installed = self.manager.install()
+        self.assertTrue(installed["ok"])
+        self.assertTrue(self.layout.support_root.is_dir())
+        self.assertEqual(self.v1_plugin_hash, _sha256(self.v1_plugin))
+
+    def test_legacy_lock_is_required_with_malformed_or_missing_state(
+        self,
+    ) -> None:
+        for index, malformed_state in enumerate((True, False)):
+            with self.subTest(malformed_state=malformed_state):
+                if index:
+                    self.tearDown()
+                    self.setUp()
+                self.layout.run.mkdir(parents=True, mode=0o700)
+                legacy_lock = self.layout.run / "release-update.lock"
+                legacy_lock.write_bytes(b"")
+                os.chmod(legacy_lock, 0o600)
+                if malformed_state:
+                    self.layout.state.mkdir(mode=0o700)
+                    self.layout.install_state.write_bytes(b"{malformed")
+                descriptor = os.open(
+                    str(legacy_lock), os.O_RDWR | os.O_CLOEXEC
+                )
+                fcntl.flock(
+                    descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB
+                )
+                try:
+                    with self.assertRaisesRegex(
+                        updater.UpdateError,
+                        "another release update/rollback is already running",
+                    ):
+                        with updater._exclusive_update_lock(self.layout):
+                            self.fail("held legacy lock was not enforced")
+                finally:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    os.close(descriptor)
+                self.assertTrue(legacy_lock.is_file())
+                self.assertTrue(
+                    updater._stable_update_lock_path(
+                        self.layout
+                    ).is_file()
+                )
+
+    def test_same_version_repair_preserves_one_owned_copy_and_resets_two_drifted(
+        self,
+    ) -> None:
+        (
+            _previous_version,
+            previous_package,
+            _previous_module,
+            layout,
+            manager,
+            _import_receipt,
+        ) = self._install_prior_with_reviewed_catalog()
+        reviewed_durable = layout.effective_catalog.read_bytes()
+        reviewed_upstream = layout.upstream_catalog.read_bytes()
+        packaged_durable = (
+            previous_package
+            / "payload"
+            / "config"
+            / "durable-tool-catalog.json"
+        ).read_bytes()
+        packaged_upstream = (
+            previous_package
+            / "payload"
+            / "config"
+            / "tool-catalog.json"
+        ).read_bytes()
+        self.assertNotEqual(reviewed_durable, packaged_durable)
+        self.assertNotEqual(reviewed_upstream, packaged_upstream)
+
+        layout.catalog_artifact.write_bytes(b"one durable mirror drift")
+        (
+            layout.artifacts / "upstream-known-tool-catalog.json"
+        ).write_bytes(b"one upstream mirror drift")
+        with mock.patch.object(
+            manager,
+            "_safe_stop_lifecycle",
+            return_value=self._stopped(),
+        ):
+            repaired_one = manager.install(repair=True)
+        self.assertTrue(repaired_one["changed"])
+        self.assertEqual(reviewed_durable, layout.effective_catalog.read_bytes())
+        self.assertEqual(reviewed_durable, layout.catalog_artifact.read_bytes())
+        self.assertEqual(reviewed_upstream, layout.upstream_catalog.read_bytes())
+        self.assertEqual(
+            reviewed_upstream,
+            (
+                layout.artifacts / "upstream-known-tool-catalog.json"
+            ).read_bytes(),
+        )
+
+        layout.effective_catalog.write_bytes(b"first durable drift")
+        layout.catalog_artifact.write_bytes(b"second durable drift")
+        layout.upstream_catalog.write_bytes(b"first upstream drift")
+        (
+            layout.artifacts / "upstream-known-tool-catalog.json"
+        ).write_bytes(b"second upstream drift")
+        with mock.patch.object(
+            manager,
+            "_safe_stop_lifecycle",
+            return_value=self._stopped(),
+        ):
+            repaired_two = manager.install(repair=True)
+        self.assertTrue(repaired_two["changed"])
+        self.assertEqual(packaged_durable, layout.effective_catalog.read_bytes())
+        self.assertEqual(packaged_durable, layout.catalog_artifact.read_bytes())
+        self.assertEqual(packaged_upstream, layout.upstream_catalog.read_bytes())
+        self.assertEqual(
+            packaged_upstream,
+            (
+                layout.artifacts / "upstream-known-tool-catalog.json"
+            ).read_bytes(),
+        )
+        state = json.loads(layout.install_state.read_text())
+        self.assertEqual(
+            _sha256(layout.effective_catalog),
+            state["catalog"]["sha256"],
+        )
+        self.assertEqual(
+            state["catalog"]["sha256"],
+            state["catalog"]["artifact_sha256"],
+        )
+        self.assertEqual(
+            _sha256(layout.upstream_catalog),
+            state["catalog"]["upstream_snapshot_sha256"],
+        )
+        self.assertEqual(self.v1_plugin_hash, _sha256(self.v1_plugin))
+
+    def test_doctor_requires_all_five_catalog_contract_files(self) -> None:
+        self._install()
+        upstream_artifact = (
+            self.layout.artifacts / "upstream-known-tool-catalog.json"
+        )
+        cases = (
+            (self.layout.effective_catalog, "catalog"),
+            (self.layout.catalog_artifact, "catalog_artifact"),
+            (self.layout.upstream_catalog, "upstream_catalog"),
+            (upstream_artifact, "upstream_catalog_artifact"),
+            (
+                self.layout.compatibility_manifest,
+                "compatibility_manifest",
+            ),
+        )
+        for path, failed_check in cases:
+            with self.subTest(path=path.name, check=failed_check):
+                original = path.read_bytes()
+                path.write_bytes(b"drifted catalog contract byte")
+                with mock.patch.object(
+                    self.manager,
+                    "_invoke_lifecycle",
+                    return_value={
+                        "ok": True,
+                        "lifecycle": {"condition": "stopped"},
+                        "catalog": {"installed_v1_cache": None},
+                    },
+                ):
+                    report = self.manager.doctor()
+                checks = {
+                    item["name"]: item["ok"]
+                    for item in report["checks"]
+                }
+                self.assertFalse(report["ok"])
+                self.assertFalse(checks[failed_check])
+                path.write_bytes(original)
+
+        self.layout.catalog_artifact.unlink()
+        self.layout.catalog_artifact.symlink_to(
+            self.layout.effective_catalog
+        )
+        with mock.patch.object(
+            self.manager,
+            "_invoke_lifecycle",
+            return_value={
+                "ok": True,
+                "lifecycle": {"condition": "stopped"},
+                "catalog": {"installed_v1_cache": None},
+            },
+        ):
+            report = self.manager.doctor()
+        checks = {
+            item["name"]: item["ok"] for item in report["checks"]
+        }
+        self.assertFalse(report["ok"])
+        self.assertFalse(checks["catalog_artifact"])
+
+    def test_doctor_rejects_catalog_provenance_metadata_drift(self) -> None:
+        self._install()
+        state_raw = self.layout.install_state.read_bytes()
+        cases = {
+            "path": str(self.root / "wrong-effective-catalog.json"),
+            "catalog_version": "tampered-catalog-version",
+            "upstream_version": "tampered-upstream-version",
+            "upstream_source_sha256": "f" * 64,
+            "upstream_compatibility": "tampered-policy",
+        }
+        for field, mutation in cases.items():
+            with self.subTest(field=field):
+                mutated = json.loads(state_raw)
+                self.assertNotEqual(
+                    mutation, mutated["catalog"].get(field)
+                )
+                mutated["catalog"][field] = mutation
+                durable._atomic_write(
+                    self.layout.install_state,
+                    durable._json_bytes(mutated),
+                    0o600,
+                )
+                with mock.patch.object(
+                    self.manager,
+                    "_invoke_lifecycle",
+                    return_value={
+                        "ok": True,
+                        "lifecycle": {"condition": "stopped"},
+                        "catalog": {"installed_v1_cache": None},
+                    },
+                ):
+                    report = self.manager.doctor()
+                checks = {
+                    item["name"]: item["ok"]
+                    for item in report["checks"]
+                }
+                self.assertFalse(report["ok"])
+                self.assertTrue(checks["install_state"])
+                self.assertFalse(checks["catalog"])
+                durable._atomic_write(
+                    self.layout.install_state, state_raw, 0o600
+                )
+
+    def test_doctor_rejects_install_state_provenance_drift(self) -> None:
+        self._install()
+        state_raw = self.layout.install_state.read_bytes()
+        cases = {
+            "version": "9.9.9",
+            "release_manifest_sha256": "0" * 64,
+        }
+        for field, mutation in cases.items():
+            with self.subTest(field=field):
+                mutated = json.loads(state_raw)
+                self.assertNotEqual(mutation, mutated.get(field))
+                mutated[field] = mutation
+                durable._atomic_write(
+                    self.layout.install_state,
+                    durable._json_bytes(mutated),
+                    0o600,
+                )
+                with mock.patch.object(
+                    self.manager,
+                    "_invoke_lifecycle",
+                    return_value={
+                        "ok": True,
+                        "lifecycle": {"condition": "stopped"},
+                        "catalog": {"installed_v1_cache": None},
+                    },
+                ):
+                    report = self.manager.doctor()
+                checks = {
+                    item["name"]: item["ok"]
+                    for item in report["checks"]
+                }
+                self.assertFalse(report["ok"])
+                self.assertFalse(checks["install_state"])
+                self.assertTrue(checks["catalog"])
+                durable._atomic_write(
+                    self.layout.install_state, state_raw, 0o600
+                )
 
     def test_import_does_not_rewrite_catalog_if_started_broker_refuses_restoration_stop(
         self,
@@ -1181,7 +2100,7 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         ):
             self.assertNotIn(forbidden, contents)
 
-    def test_real_doctor_accepts_only_live_fenced_sequential_update_chain(
+    def test_status_accepts_only_live_fenced_sequential_update_chain(
         self,
     ) -> None:
         self._install()
@@ -1193,7 +2112,7 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         durable._atomic_write(
             self.layout.install_state, durable._json_bytes(state), 0o600
         )
-        real_doctor_reports = []
+        pending_status_reports = []
 
         class Candidate:
             def __init__(candidate_self, version: str):
@@ -1212,45 +2131,41 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
                 return {"ok": True, "version": candidate_self.version}
 
             def doctor(candidate_self) -> dict:
-                del candidate_self
-                report = self.manager.doctor()
-                real_doctor_reports.append(report)
-                return report
+                # This fixture exercises only the updater's live pending
+                # nonce/version chain. Real version-matched installed doctor
+                # coverage lives in the two-package update/rollback tests.
+                status = updater.ReleaseUpdater(
+                    self.manager,
+                    platform_check=lambda: None,
+                    runtime_check=lambda: None,
+                ).status()
+                pending_status_reports.append(status)
+                return {"ok": status["ok"], "release_updates": status}
 
         release_updater = updater.ReleaseUpdater(
             self.manager,
             platform_check=lambda: None,
             runtime_check=lambda: None,
         )
-        lifecycle_doctor = {
-            "ok": True,
-            "lifecycle": {"condition": "stopped"},
-            "catalog": {"installed_v1_cache": None},
-        }
-        with mock.patch.object(
-            self.manager,
-            "_invoke_lifecycle",
-            return_value=lifecycle_doctor,
-        ):
-            first = release_updater._transactional_switch(
-                candidate=Candidate(version_b),
-                previous_version=version_a,
-                current_version=version_b,
-                action="update",
-                archive_sha256="a" * 64,
-            )
-            second = release_updater._transactional_switch(
-                candidate=Candidate(version_c),
-                previous_version=version_b,
-                current_version=version_c,
-                action="update",
-                archive_sha256="b" * 64,
-            )
+        first = release_updater._transactional_switch(
+            candidate=Candidate(version_b),
+            previous_version=version_a,
+            current_version=version_b,
+            action="update",
+            archive_sha256="a" * 64,
+        )
+        second = release_updater._transactional_switch(
+            candidate=Candidate(version_c),
+            previous_version=version_b,
+            current_version=version_c,
+            action="update",
+            archive_sha256="b" * 64,
+        )
         self.assertTrue(first["ok"])
         self.assertTrue(second["ok"])
-        self.assertEqual(2, len(real_doctor_reports))
-        self.assertTrue(all(report["ok"] for report in real_doctor_reports))
-        second_pending = real_doctor_reports[1]["release_updates"][
+        self.assertEqual(2, len(pending_status_reports))
+        self.assertTrue(all(report["ok"] for report in pending_status_reports))
+        second_pending = pending_status_reports[1][
             "pending_validation"
         ]
         self.assertEqual(version_b, second_pending["previous_version"])
@@ -1292,10 +2207,6 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
             self.manager,
             "_safe_stop_lifecycle",
             return_value={"ok": True, "running": False, "stopped": False},
-        ), mock.patch.object(
-            self.manager,
-            "_invoke_lifecycle",
-            return_value=lifecycle_doctor,
         ):
             rolled_back = rollback_updater.rollback(
                 to_version=version_b,
@@ -1303,9 +2214,9 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
             )
         self.assertTrue(rolled_back["ok"])
         self.assertEqual(version_b, rolled_back["version"])
-        self.assertEqual(3, len(real_doctor_reports))
-        self.assertTrue(real_doctor_reports[-1]["ok"])
-        rollback_pending = real_doctor_reports[-1]["release_updates"][
+        self.assertEqual(3, len(pending_status_reports))
+        self.assertTrue(pending_status_reports[-1]["ok"])
+        rollback_pending = pending_status_reports[-1][
             "pending_validation"
         ]
         self.assertEqual("rollback", rollback_pending["action"])

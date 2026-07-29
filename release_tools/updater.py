@@ -492,33 +492,158 @@ class _OwnedSnapshot:
             )
 
 
-@contextlib.contextmanager
-def _exclusive_update_lock(layout: Any) -> Iterator[None]:
-    run = layout.run
-    _private_directory(run)
-    lock_path = run / "release-update.lock"
+def _stable_update_lock_path(layout: Any) -> Path:
+    support_root = Path(layout.support_root)
+    digest = hashlib.sha256(
+        str(support_root).encode("utf-8")
+    ).hexdigest()[:24]
+    return support_root.parent / (
+        ".roblox-studio-mcp-v2-release-update-" + digest + ".lock"
+    )
+
+
+def _legacy_update_lock_required(layout: Any) -> bool:
+    """Conservatively interoperate with a retained pre-stable-lock release."""
+
+    install_state = layout.install_state
+    legacy_lock = layout.run / "release-update.lock"
+    return bool(
+        install_state.exists()
+        or install_state.is_symlink()
+        or legacy_lock.exists()
+        or legacy_lock.is_symlink()
+    )
+
+
+def _owned_install_state_exists(layout: Any) -> bool:
+    try:
+        value = _load_json(
+            layout.install_state, "installed ownership state"
+        )
+    except UpdateError:
+        return False
+    version = value.get("version")
+    return bool(
+        value.get("format") == _INSTALL_STATE_FORMAT
+        and value.get("schema_version") == 1
+        and value.get("product") == bootstrap.PRODUCT
+        and Path(str(value.get("support_root", "")))
+        == layout.support_root
+        and isinstance(version, str)
+        and _SAFE_VERSION.fullmatch(version) is not None
+    )
+
+
+def _acquire_update_lock(path: Path, label: str) -> int:
+    _ensure_parent_directory(path.parent)
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(str(lock_path), flags, 0o600)
+        descriptor = os.open(str(path), flags, 0o600)
     except OSError as exc:
-        raise UpdateError("unable to open the release update lock: " + str(exc))
+        raise UpdateError(
+            "unable to open the " + label + " update lock: " + str(exc)
+        )
     try:
+        details = os.fstat(descriptor)
+        try:
+            path_details = path.lstat()
+        except OSError as exc:
+            raise UpdateError(
+                label + " update lock path changed while opening"
+            ) from exc
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+            or details.st_uid != os.getuid()
+            or stat.S_ISLNK(path_details.st_mode)
+            or not stat.S_ISREG(path_details.st_mode)
+            or path_details.st_dev != details.st_dev
+            or path_details.st_ino != details.st_ino
+        ):
+            raise UpdateError(
+                label + " update lock is not a private regular file"
+            )
         os.fchmod(descriptor, 0o600)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise UpdateError("another release update/rollback is already running") from exc
-        yield
-    finally:
+            raise UpdateError(
+                "another release update/rollback is already running"
+            ) from exc
+        try:
+            locked_path_details = path.lstat()
+        except OSError as exc:
+            raise UpdateError(
+                label + " update lock path changed while locking"
+            ) from exc
+        if (
+            stat.S_ISLNK(locked_path_details.st_mode)
+            or not stat.S_ISREG(locked_path_details.st_mode)
+            or locked_path_details.st_dev != details.st_dev
+            or locked_path_details.st_ino != details.st_ino
+        ):
+            raise UpdateError(
+                label + " update lock path changed while locking"
+            )
+        _fsync_directory(path.parent)
+        return descriptor
+    except Exception:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         except OSError:
             pass
         os.close(descriptor)
+        raise
+
+
+def _release_update_lock(descriptor: Optional[int]) -> None:
+    if descriptor is None:
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(descriptor)
+
+
+def _establish_legacy_update_lock_marker(layout: Any) -> Path:
+    """Create and prove the legacy marker while the stable lock is held."""
+
+    if not _owned_install_state_exists(layout):
+        raise UpdateError(
+            "legacy update lock marker requires valid installed ownership"
+        )
+    run = layout.run
+    _private_directory(run)
+    path = run / "release-update.lock"
+    descriptor = _acquire_update_lock(path, "legacy release")
+    _release_update_lock(descriptor)
+    return path
+
+
+@contextlib.contextmanager
+def _exclusive_update_lock(layout: Any) -> Iterator[None]:
+    """Serialize across first install, legacy updates, and support-root moves."""
+
+    stable_descriptor = _acquire_update_lock(
+        _stable_update_lock_path(layout), "stable release"
+    )
+    legacy_descriptor: Optional[int] = None
+    try:
+        if _legacy_update_lock_required(layout):
+            run = layout.run
+            _private_directory(run)
+            legacy_descriptor = _acquire_update_lock(
+                run / "release-update.lock", "legacy release"
+            )
+        yield
+    finally:
+        _release_update_lock(legacy_descriptor)
+        _release_update_lock(stable_descriptor)
 
 
 def _module_from_package(package_root: Path) -> Any:

@@ -253,9 +253,8 @@ def _prove_offline_update_rollback(
     if not current_version or current_version == previous_version:
         raise ProofError("portable installer version is unavailable for update proof")
 
-    baseline_state = json.loads(
-        layout.install_state.read_text(encoding="utf-8")
-    )
+    baseline_state_bytes = layout.install_state.read_bytes()
+    baseline_state = json.loads(baseline_state_bytes.decode("utf-8"))
     baseline_config = layout.codex_config.read_bytes()
     baseline_plugin = layout.plugin_target.read_bytes()
     prior_state = dict(baseline_state)
@@ -391,12 +390,23 @@ def _prove_offline_update_rollback(
         raise ProofError("rollback did not restore shared external bytes")
     if requested_versions != [current_version, previous_version]:
         raise ProofError("update proof did not select the exact verified versions")
+    # The synthetic candidate deliberately proves a rollback *to* a fabricated
+    # prior version. Normalize only that disposable fixture back to the exact
+    # current-version baseline so the current manager can subsequently prove
+    # its version-fenced uninstall path.
+    layout.install_state.write_bytes(baseline_state_bytes)
+    os.chmod(layout.install_state, 0o600)
+    if layout.install_state.read_bytes() != baseline_state_bytes:
+        raise ProofError(
+            "update proof did not restore its current-version fixture"
+        )
     return {
         "tested": True,
         "offline_archive_verified": True,
         "update_receipted": True,
         "rollback_receipted": True,
         "shared_bytes_restored": True,
+        "current_fixture_restored": True,
     }
 
 
@@ -490,7 +500,23 @@ def prove_release(
             or secrets_value["studio_token"].encode() in config_path.read_bytes()
         ):
             raise ProofError("Codex configuration contains a generated credential")
+        legacy_update_lock = layout.run / "release-update.lock"
+        try:
+            legacy_lock_details = legacy_update_lock.lstat()
+        except OSError as exc:
+            raise ProofError(
+                "first install did not establish the legacy update lock marker"
+            ) from exc
+        if (
+            legacy_update_lock.is_symlink()
+            or not stat.S_ISREG(legacy_lock_details.st_mode)
+            or stat.S_IMODE(legacy_lock_details.st_mode) != 0o600
+        ):
+            raise ProofError(
+                "legacy update lock marker is not a private regular file"
+            )
         phases["install"] = True
+        phases["legacy_update_lock_marker"] = True
 
         doctor = manager.doctor()
         _assert_doctor_healthy(doctor, "post-install")

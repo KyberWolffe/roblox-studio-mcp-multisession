@@ -39,7 +39,7 @@ from platform_support import (
 )
 
 PRODUCT = "RobloxStudioMCPv2"
-VERSION = "0.4.0-dev.2"
+VERSION = "0.4.0-dev.3"
 PACKAGE_FORMAT = "roblox-studio-mcp-v2-portable-release"
 PACKAGE_MANIFEST_VERSION = 1
 INSTALL_STATE_FORMAT = "roblox-studio-mcp-v2-install-state"
@@ -1188,6 +1188,19 @@ class Installer:
             raise InstallError("install state belongs to a different support root")
         return value
 
+    def _preflight_owned_management_state(self) -> Dict[str, Any]:
+        state = self._load_state(optional=False)
+        version = state.get("version")
+        if (
+            not isinstance(version, str)
+            or _SAFE_VERSION.fullmatch(version) is None
+            or version != VERSION
+        ):
+            raise InstallError(
+                "installed ownership state does not match this manager version"
+            )
+        return state
+
     def _preflight_first_install(self, state: Optional[Mapping[str, Any]]) -> None:
         if state is not None:
             return
@@ -1260,19 +1273,39 @@ class Installer:
         catalog_state = state.get("catalog")
         if not isinstance(catalog_state, Mapping):
             return True
+        catalog_hash = catalog_state.get("sha256")
+        catalog_artifact_hash = catalog_state.get("artifact_sha256")
+        upstream_hash = catalog_state.get("upstream_snapshot_sha256")
+        compatibility_hash = catalog_state.get(
+            "compatibility_manifest_sha256"
+        )
+        if (
+            not isinstance(catalog_hash, str)
+            or _SAFE_SHA256.fullmatch(catalog_hash) is None
+            or not isinstance(catalog_artifact_hash, str)
+            or _SAFE_SHA256.fullmatch(catalog_artifact_hash) is None
+            or not secrets.compare_digest(
+                catalog_hash, catalog_artifact_hash
+            )
+            or not isinstance(upstream_hash, str)
+            or _SAFE_SHA256.fullmatch(upstream_hash) is None
+            or not isinstance(compatibility_hash, str)
+            or _SAFE_SHA256.fullmatch(compatibility_hash) is None
+        ):
+            return True
         catalog_checks = (
-            (self.layout.effective_catalog, catalog_state.get("sha256")),
+            (self.layout.effective_catalog, catalog_hash),
             (
                 self.layout.catalog_artifact,
-                catalog_state.get("artifact_sha256"),
+                catalog_artifact_hash,
             ),
             (
                 self.layout.upstream_catalog,
-                catalog_state.get("upstream_snapshot_sha256"),
+                upstream_hash,
             ),
             (
                 self.layout.artifacts / "upstream-known-tool-catalog.json",
-                catalog_state.get("upstream_snapshot_sha256"),
+                upstream_hash,
             ),
         )
         for path, digest in catalog_checks:
@@ -1293,6 +1326,10 @@ class Installer:
             or not secrets.compare_digest(
                 _sha256_file(self.layout.compatibility_manifest),
                 _sha256_file(compatibility_source),
+            )
+            or not secrets.compare_digest(
+                _sha256_file(self.layout.compatibility_manifest),
+                compatibility_hash,
             )
         ):
             return True
@@ -1380,8 +1417,200 @@ class Installer:
             ),
         }
 
+    def _validate_prior_catalog_contract_for_update(
+        self,
+        state: Mapping[str, Any],
+        installed_version: str,
+        *,
+        snapshot_root: Optional[Path] = None,
+    ) -> None:
+        """Prove exact old ownership before a candidate changes any byte."""
+
+        state_catalog = state.get("catalog")
+        if not isinstance(state_catalog, Mapping):
+            raise InstallError(
+                "prior catalog ownership state is missing or invalid"
+            )
+        catalog_hash = state_catalog.get("sha256")
+        artifact_hash = state_catalog.get("artifact_sha256")
+        upstream_hash = state_catalog.get("upstream_snapshot_sha256")
+        compatibility_hash = state_catalog.get(
+            "compatibility_manifest_sha256"
+        )
+        if (
+            state_catalog.get("path") != str(self.layout.effective_catalog)
+            or not isinstance(catalog_hash, str)
+            or _SAFE_SHA256.fullmatch(catalog_hash) is None
+            or not isinstance(artifact_hash, str)
+            or _SAFE_SHA256.fullmatch(artifact_hash) is None
+            or not secrets.compare_digest(catalog_hash, artifact_hash)
+            or not isinstance(upstream_hash, str)
+            or _SAFE_SHA256.fullmatch(upstream_hash) is None
+            or not isinstance(compatibility_hash, str)
+            or _SAFE_SHA256.fullmatch(compatibility_hash) is None
+        ):
+            raise InstallError("prior catalog ownership hashes are invalid")
+
+        if snapshot_root is None:
+            effective_catalog = self.layout.effective_catalog
+            catalog_artifact = self.layout.catalog_artifact
+            upstream_catalog = self.layout.upstream_catalog
+            upstream_artifact = (
+                self.layout.artifacts / "upstream-known-tool-catalog.json"
+            )
+            compatibility_manifest = self.layout.compatibility_manifest
+        else:
+            support = Path(snapshot_root) / "support"
+            effective_catalog = support / "config" / CATALOG_FILENAME
+            catalog_artifact = support / "artifacts" / CATALOG_FILENAME
+            upstream_catalog = (
+                support / "config" / "upstream-known-tool-catalog.json"
+            )
+            upstream_artifact = (
+                support / "artifacts" / "upstream-known-tool-catalog.json"
+            )
+            compatibility_manifest = (
+                support / "config" / "upstream-compatibility-map.json"
+            )
+        owned_files = (
+            (effective_catalog, catalog_hash, "durable catalog"),
+            (
+                catalog_artifact,
+                artifact_hash,
+                "durable catalog artifact",
+            ),
+            (
+                upstream_catalog,
+                upstream_hash,
+                "upstream snapshot",
+            ),
+            (
+                upstream_artifact,
+                upstream_hash,
+                "upstream snapshot artifact",
+            ),
+            (
+                compatibility_manifest,
+                compatibility_hash,
+                "compatibility manifest",
+            ),
+        )
+        for path, expected_hash, label in owned_files:
+            if (
+                not _regular_file(path)
+                or not secrets.compare_digest(
+                    _sha256_file(path), expected_hash
+                )
+            ):
+                raise InstallError(
+                    "prior " + label + " is missing, unsafe, or drifted"
+                )
+
+        prior_release = self.layout.releases / installed_version
+        prior_compatibility = (
+            prior_release / "config" / "upstream-compatibility-map.json"
+        )
+        if (
+            prior_release.is_symlink()
+            or not prior_release.is_dir()
+            or not _regular_file(prior_compatibility)
+            or not secrets.compare_digest(
+                _sha256_file(prior_compatibility), compatibility_hash
+            )
+        ):
+            raise InstallError(
+                "prior compatibility manifest does not match its release"
+            )
+
+        _, details, _ = _validate_durable_contract(
+            prior_release,
+            effective_catalog,
+            compatibility_manifest,
+        )
+        if (
+            details.get("catalog_version")
+            != state_catalog.get("catalog_version")
+            or details.get("upstream_version")
+            != state_catalog.get("upstream_version")
+            or details.get("upstream_source_sha256")
+            != state_catalog.get("upstream_source_sha256")
+            or details.get("upstream_compatibility")
+            != state_catalog.get("upstream_compatibility")
+        ):
+            raise InstallError(
+                "prior catalog metadata does not match ownership state"
+            )
+        review = _load_release_submodule(prior_release, "catalog_review")
+        try:
+            review.load_catalog(upstream_catalog)
+        except Exception as exc:
+            raise InstallError(
+                "prior upstream snapshot validation failed: " + str(exc)
+            )
+
+    def _require_live_catalog_contract_matches_snapshot(
+        self, snapshot: Any
+    ) -> None:
+        """Fence live catalog ownership to the exact updater snapshot."""
+
+        snapshot_support = Path(snapshot.root) / "support"
+        pairs = (
+            (
+                self.layout.install_state,
+                snapshot_support / "state" / INSTALL_STATE_FILENAME,
+                "install state",
+            ),
+            (
+                self.layout.effective_catalog,
+                snapshot_support / "config" / CATALOG_FILENAME,
+                "durable catalog",
+            ),
+            (
+                self.layout.catalog_artifact,
+                snapshot_support / "artifacts" / CATALOG_FILENAME,
+                "durable catalog artifact",
+            ),
+            (
+                self.layout.upstream_catalog,
+                snapshot_support
+                / "config"
+                / "upstream-known-tool-catalog.json",
+                "upstream snapshot",
+            ),
+            (
+                self.layout.artifacts / "upstream-known-tool-catalog.json",
+                snapshot_support
+                / "artifacts"
+                / "upstream-known-tool-catalog.json",
+                "upstream snapshot artifact",
+            ),
+            (
+                self.layout.compatibility_manifest,
+                snapshot_support
+                / "config"
+                / "upstream-compatibility-map.json",
+                "compatibility manifest",
+            ),
+        )
+        for live, captured, label in pairs:
+            if (
+                not _regular_file(live)
+                or not _regular_file(captured)
+                or not secrets.compare_digest(
+                    live.read_bytes(), captured.read_bytes()
+                )
+            ):
+                raise InstallError(
+                    "live prior "
+                    + label
+                    + " no longer matches the validated update snapshot"
+                )
+
     def _seed_or_repair_catalog(
-        self, state: Optional[Mapping[str, Any]]
+        self,
+        state: Optional[Mapping[str, Any]],
+        *,
+        reset_for_cross_version_update: bool = False,
     ) -> Tuple[str, Dict[str, Any], Dict[str, str], bool]:
         durable_source = (
             self.layout.release / "config" / "durable-tool-catalog.json"
@@ -1395,6 +1624,15 @@ class Installer:
             durable_source,
             compatibility_source,
         )
+        review = _load_release_submodule(
+            self.layout.release, "catalog_review"
+        )
+        try:
+            review.load_catalog(upstream_source)
+        except Exception as exc:
+            raise InstallError(
+                "packaged upstream snapshot validation failed: " + str(exc)
+            )
         state_catalog = state.get("catalog") if isinstance(state, Mapping) else None
         owned_hash = (
             state_catalog.get("sha256")
@@ -1408,6 +1646,87 @@ class Installer:
         )
 
         changed = False
+
+        def reset_catalog_contract_to_packaged_defaults() -> Tuple[str, str]:
+            """Replace all active contract bytes during a fenced version switch."""
+
+            nonlocal changed
+            if (
+                not isinstance(state, Mapping)
+                or not isinstance(state_catalog, Mapping)
+                or not isinstance(state.get("version"), str)
+                or state.get("version") == VERSION
+            ):
+                raise InstallError(
+                    "cross-version catalog reset lacks prior ownership/version"
+                )
+
+            upstream_artifact = (
+                self.layout.artifacts / "upstream-known-tool-catalog.json"
+            )
+            replacements = (
+                (
+                    durable_source,
+                    self.layout.effective_catalog,
+                    "effective-durable-catalog",
+                ),
+                (
+                    durable_source,
+                    self.layout.catalog_artifact,
+                    "durable-catalog-artifact",
+                ),
+                (
+                    upstream_source,
+                    self.layout.upstream_catalog,
+                    "effective-upstream-snapshot",
+                ),
+                (
+                    upstream_source,
+                    upstream_artifact,
+                    "upstream-snapshot-artifact",
+                ),
+                (
+                    compatibility_source,
+                    self.layout.compatibility_manifest,
+                    "compatibility-manifest",
+                ),
+            )
+            desired: List[Tuple[Path, bytes, str, str]] = []
+            for source, destination, label in replacements:
+                if not _regular_file(source):
+                    raise InstallError(
+                        "packaged " + label + " is not a regular file"
+                    )
+                raw = source.read_bytes()
+                digest = _sha256_bytes(raw)
+                if destination.exists() or destination.is_symlink():
+                    if not _regular_file(destination):
+                        raise InstallError(label + " is not a regular file")
+                    if secrets.compare_digest(
+                        _sha256_file(destination), digest
+                    ):
+                        continue
+                desired.append((destination, raw, digest, label))
+
+            # Validate every destination and retain every displaced byte before
+            # the first active contract file is atomically replaced. The
+            # enclosing updater snapshot remains the transaction-wide rollback
+            # authority if any later install or doctor step fails.
+            for destination, _raw, _digest, label in desired:
+                if destination.exists() or destination.is_symlink():
+                    _backup_file(
+                        destination,
+                        self.layout.backups / "catalog",
+                        label,
+                    )
+            for destination, raw, _digest, _label in desired:
+                _atomic_write(destination, raw, 0o600)
+                changed = True
+
+            return (
+                _sha256_file(self.layout.effective_catalog),
+                _sha256_file(self.layout.upstream_catalog),
+            )
 
         def restore_owned_pair(
             source: Path,
@@ -1473,53 +1792,65 @@ class Installer:
 
         compatibility_raw = compatibility_source.read_bytes()
         compatibility_hash = _sha256_bytes(compatibility_raw)
-        compatibility_target = self.layout.compatibility_manifest
-        if compatibility_target.exists() or compatibility_target.is_symlink():
-            if not _regular_file(compatibility_target):
-                raise InstallError("compatibility manifest is not a regular file")
-            if not secrets.compare_digest(
-                _sha256_file(compatibility_target), compatibility_hash
-            ):
-                if state is None:
-                    raise InstallError(
-                        "unowned compatibility manifest already exists"
-                    )
-                _backup_file(
-                    compatibility_target,
-                    self.layout.backups / "catalog",
-                    compatibility_target.name,
-                )
-                _atomic_write(compatibility_target, compatibility_raw, 0o600)
-                changed = True
-        else:
-            _atomic_write(compatibility_target, compatibility_raw, 0o600)
-            changed = True
-
         upstream_artifact = (
             self.layout.artifacts / "upstream-known-tool-catalog.json"
         )
-        upstream_hash = restore_owned_pair(
-            upstream_source,
-            self.layout.upstream_catalog,
-            upstream_artifact,
-            upstream_owned_hash,
-            "upstream snapshot",
-        )
-        review = _load_release_submodule(
-            self.layout.release, "catalog_review"
-        )
+        if reset_for_cross_version_update:
+            catalog_hash, upstream_hash = (
+                reset_catalog_contract_to_packaged_defaults()
+            )
+        else:
+            compatibility_target = self.layout.compatibility_manifest
+            if (
+                compatibility_target.exists()
+                or compatibility_target.is_symlink()
+            ):
+                if not _regular_file(compatibility_target):
+                    raise InstallError(
+                        "compatibility manifest is not a regular file"
+                    )
+                if not secrets.compare_digest(
+                    _sha256_file(compatibility_target), compatibility_hash
+                ):
+                    if state is None:
+                        raise InstallError(
+                            "unowned compatibility manifest already exists"
+                        )
+                    _backup_file(
+                        compatibility_target,
+                        self.layout.backups / "catalog",
+                        compatibility_target.name,
+                    )
+                    _atomic_write(
+                        compatibility_target, compatibility_raw, 0o600
+                    )
+                    changed = True
+            else:
+                _atomic_write(
+                    compatibility_target, compatibility_raw, 0o600
+                )
+                changed = True
+
+            upstream_hash = restore_owned_pair(
+                upstream_source,
+                self.layout.upstream_catalog,
+                upstream_artifact,
+                upstream_owned_hash,
+                "upstream snapshot",
+            )
+            catalog_hash = restore_owned_pair(
+                durable_source,
+                self.layout.effective_catalog,
+                self.layout.catalog_artifact,
+                owned_hash,
+                "durable catalog",
+            )
+
         try:
             review.load_catalog(self.layout.upstream_catalog)
         except Exception as exc:
             raise InstallError("upstream snapshot validation failed: " + str(exc))
 
-        catalog_hash = restore_owned_pair(
-            durable_source,
-            self.layout.effective_catalog,
-            self.layout.catalog_artifact,
-            owned_hash,
-            "durable catalog",
-        )
         _, details, _ = _validate_durable_contract(
             self.layout.release,
             self.layout.effective_catalog,
@@ -1658,7 +1989,7 @@ class Installer:
             raise InstallError(str(exc)) from exc
         updater = _load_release_updater_module()
         release_updater = updater.ReleaseUpdater(self)
-        recovery_status = release_updater.interrupted_update_status()
+        recovery_checked = False
         if repair:
             try:
                 recovery = release_updater.recover_interrupted_update()
@@ -1674,6 +2005,94 @@ class Installer:
                     "codex_server": SERVER_NAME,
                     "v1_fallback": "untouched",
                 }
+            recovery_checked = True
+        state_load_failed = False
+        try:
+            state = self._load_state(optional=True)
+        except InstallError:
+            state = None
+            state_load_failed = True
+        first_install = state is None and not state_load_failed
+        authorized_candidate = bool(
+            isinstance(state, Mapping)
+            and isinstance(state.get("version"), str)
+            and state.get("version") != VERSION
+            and release_updater.authorizes_cross_version_install(VERSION)
+        )
+        if authorized_candidate:
+            # The exact live updater transaction already owns this lock. Its
+            # nonce/version/snapshot fence is revalidated inside the install.
+            return self._install_locked(
+                repair=repair,
+                replace_owned_config=replace_owned_config,
+                rotate_secrets=rotate_secrets,
+                recovery_checked=recovery_checked,
+            )
+        if first_install:
+            # Read-only collision checks precede creation of the stable
+            # first-install coordination lock. The locked implementation
+            # repeats them after acquiring it.
+            self._preflight_first_install(state)
+        try:
+            with updater._exclusive_update_lock(self.layout):
+                result = self._install_locked(
+                    repair=repair,
+                    replace_owned_config=replace_owned_config,
+                    rotate_secrets=rotate_secrets,
+                    recovery_checked=recovery_checked,
+                )
+                if first_install and result.get("ok") is True:
+                    # A first install enters through the stable parent lock
+                    # before a support-root-local legacy lock can exist. Seed
+                    # that compatibility marker before releasing the stable
+                    # lock so every later no-op/update observes both locks.
+                    updater._establish_legacy_update_lock_marker(self.layout)
+                return result
+        except updater.UpdateError as exc:
+            raise InstallError(
+                "install transaction lock was refused: " + str(exc)
+            ) from exc
+
+    def _install_locked(
+        self,
+        *,
+        repair: bool = False,
+        replace_owned_config: bool = False,
+        rotate_secrets: bool = False,
+        recovery_checked: bool = False,
+    ) -> Dict[str, Any]:
+        try:
+            require_supported_platform()
+            require_supported_runtime()
+        except UnsupportedPlatformError as exc:
+            raise InstallError(str(exc)) from exc
+        updater = _load_release_updater_module()
+        release_updater = updater.ReleaseUpdater(self)
+        recovery_status = release_updater.interrupted_update_status()
+        if repair and not recovery_checked:
+            try:
+                recovery = release_updater.recover_interrupted_update()
+            except updater.UpdateError as exc:
+                raise InstallError(
+                    "interrupted release recovery was refused: " + str(exc)
+                ) from exc
+            if recovery.get("recovered") is True:
+                return {
+                    **recovery,
+                    "support_root": str(self.layout.support_root),
+                    "plugin": str(self.layout.plugin_target),
+                    "codex_server": SERVER_NAME,
+                    "v1_fallback": "untouched",
+                }
+        elif (
+            repair
+            and recovery_checked
+            and recovery_status.get("present") is True
+        ):
+            raise InstallError(
+                "an interrupted release transaction appeared after recovery "
+                "preflight; run repair again"
+            )
         elif (
             recovery_status.get("present") is True
             and recovery_status.get("active") is not True
@@ -1683,6 +2102,8 @@ class Installer:
                 "instead of continuing the half-installed candidate"
             )
         state = self._load_state(optional=True)
+        reset_catalog_contract = False
+        update_snapshot = None
         if isinstance(state, Mapping):
             installed_version = state.get("version")
             if (
@@ -1690,17 +2111,36 @@ class Installer:
                 or _SAFE_VERSION.fullmatch(installed_version) is None
             ):
                 raise InstallError("install state version is invalid")
-            if (
-                installed_version != VERSION
-                and not release_updater.authorizes_cross_version_install(
+            if installed_version != VERSION:
+                if not release_updater.authorizes_cross_version_install(
                     VERSION
+                ):
+                    raise InstallError(
+                        "direct cross-version installation is refused; use "
+                        "roblox-studio-mcp-v2-manage update with an exact "
+                        "verified release instead"
+                    )
+                try:
+                    _pending, update_snapshot, snapshot_state = (
+                        release_updater._validate_interrupted_transaction()
+                    )
+                    release_updater._verify_pre_switch_release(
+                        installed_version, snapshot_state
+                    )
+                except updater.UpdateError as exc:
+                    raise InstallError(
+                        "prior release ownership validation failed: "
+                        + str(exc)
+                    ) from exc
+                self._validate_prior_catalog_contract_for_update(
+                    snapshot_state,
+                    installed_version,
+                    snapshot_root=update_snapshot.root,
                 )
-            ):
-                raise InstallError(
-                    "direct cross-version installation is refused; use "
-                    "roblox-studio-mcp-v2-manage update with an exact verified "
-                    "release instead"
+                self._require_live_catalog_contract_matches_snapshot(
+                    update_snapshot
                 )
+                reset_catalog_contract = True
         self._preflight_first_install(state)
         expected_block = _expected_codex_block(self.layout)
         _preflight_codex(
@@ -1716,6 +2156,12 @@ class Installer:
             # Authenticate with the existing secrets/config before changing
             # any installed runtime, credential, catalog, or launcher byte.
             lifecycle_stop = self._safe_stop_lifecycle()
+        if update_snapshot is not None:
+            # Recheck after the bounded lifecycle stop and immediately before
+            # the first candidate-owned directory or file mutation.
+            self._require_live_catalog_contract_matches_snapshot(
+                update_snapshot
+            )
         self._prepare_directories()
         tree_changes = self._install_package_and_release()
         credentials, credentials_changed = _read_or_create_secrets(
@@ -1739,7 +2185,10 @@ class Installer:
             ),
         )
         catalog_hash, catalog_details, catalog_ownership, catalog_changed = (
-            self._seed_or_repair_catalog(state)
+            self._seed_or_repair_catalog(
+                state,
+                reset_for_cross_version_update=reset_catalog_contract,
+            )
         )
 
         install_run_id = (
@@ -1876,14 +2325,40 @@ class Installer:
     def doctor(self) -> Dict[str, Any]:
         checks: List[Dict[str, Any]] = []
         lifecycle_status: Optional[Dict[str, Any]] = None
+        installed_package_manifest = (
+            self.layout.package / PACKAGE_MANIFEST_FILENAME
+        )
 
         def record(name: str, ok: bool, detail: str) -> None:
             checks.append({"name": name, "ok": bool(ok), "detail": detail})
 
         try:
             state = self._load_state(optional=False)
-            record("install_state", True, "owned state is valid")
-        except InstallError as exc:
+            state_manifest_hash = state.get("release_manifest_sha256")
+            install_state_ok = (
+                state.get("version") == VERSION
+                and isinstance(state_manifest_hash, str)
+                and _SAFE_SHA256.fullmatch(state_manifest_hash) is not None
+                and _regular_file(installed_package_manifest)
+                and secrets.compare_digest(
+                    _sha256_file(installed_package_manifest),
+                    state_manifest_hash,
+                )
+            )
+            record(
+                "install_state",
+                install_state_ok,
+                (
+                    "exact version and installed release manifest ownership "
+                    "are valid"
+                    if install_state_ok
+                    else (
+                        "version or installed release manifest ownership "
+                        "drifted"
+                    )
+                ),
+            )
+        except (InstallError, OSError) as exc:
             state = None
             record("install_state", False, str(exc))
 
@@ -1949,6 +2424,12 @@ class Installer:
             record("secrets", False, str(exc))
 
         catalog_details: Dict[str, Any] = {}
+        state_catalog = (
+            state.get("catalog")
+            if isinstance(state, Mapping)
+            and isinstance(state.get("catalog"), Mapping)
+            else {}
+        )
         try:
             _, catalog_details, catalog_raw = _validate_durable_contract(
                 self.layout.release,
@@ -1956,15 +2437,21 @@ class Installer:
                 self.layout.compatibility_manifest,
             )
             catalog_hash = _sha256_bytes(catalog_raw)
-            state_hash = (
-                state.get("catalog", {}).get("sha256")
-                if isinstance(state, Mapping)
-                and isinstance(state.get("catalog"), Mapping)
-                else None
-            )
+            state_hash = state_catalog.get("sha256")
             catalog_ok = bool(catalog_details["compatible"]) and (
                 isinstance(state_hash, str)
+                and _SAFE_SHA256.fullmatch(state_hash) is not None
                 and secrets.compare_digest(catalog_hash, state_hash)
+                and state_catalog.get("path")
+                == str(self.layout.effective_catalog)
+                and state_catalog.get("catalog_version")
+                == catalog_details.get("catalog_version")
+                and state_catalog.get("upstream_version")
+                == catalog_details.get("upstream_version")
+                and state_catalog.get("upstream_source_sha256")
+                == catalog_details.get("upstream_source_sha256")
+                and state_catalog.get("upstream_compatibility")
+                == catalog_details.get("upstream_compatibility")
             )
             record(
                 "catalog",
@@ -1973,6 +2460,98 @@ class Installer:
             )
         except InstallError as exc:
             record("catalog", False, str(exc))
+
+        state_catalog_hash = state_catalog.get("sha256")
+        state_artifact_hash = state_catalog.get("artifact_sha256")
+        artifact_ok = (
+            _regular_file(self.layout.catalog_artifact)
+            and isinstance(state_catalog_hash, str)
+            and _SAFE_SHA256.fullmatch(state_catalog_hash) is not None
+            and isinstance(state_artifact_hash, str)
+            and _SAFE_SHA256.fullmatch(state_artifact_hash) is not None
+            and secrets.compare_digest(
+                state_catalog_hash, state_artifact_hash
+            )
+            and secrets.compare_digest(
+                _sha256_file(self.layout.catalog_artifact),
+                state_artifact_hash,
+            )
+        )
+        record(
+            "catalog_artifact",
+            artifact_ok,
+            str(self.layout.catalog_artifact),
+        )
+
+        state_upstream_hash = state_catalog.get(
+            "upstream_snapshot_sha256"
+        )
+        upstream_artifact = (
+            self.layout.artifacts / "upstream-known-tool-catalog.json"
+        )
+        upstream_ok = (
+            _regular_file(self.layout.upstream_catalog)
+            and isinstance(state_upstream_hash, str)
+            and _SAFE_SHA256.fullmatch(state_upstream_hash) is not None
+            and secrets.compare_digest(
+                _sha256_file(self.layout.upstream_catalog),
+                state_upstream_hash,
+            )
+        )
+        if upstream_ok:
+            try:
+                review = _load_release_submodule(
+                    self.layout.release, "catalog_review"
+                )
+                review.load_catalog(self.layout.upstream_catalog)
+            except Exception:
+                upstream_ok = False
+        record(
+            "upstream_catalog",
+            upstream_ok,
+            str(self.layout.upstream_catalog),
+        )
+        upstream_artifact_ok = (
+            _regular_file(upstream_artifact)
+            and upstream_ok
+            and secrets.compare_digest(
+                _sha256_file(upstream_artifact),
+                str(state_upstream_hash),
+            )
+        )
+        record(
+            "upstream_catalog_artifact",
+            upstream_artifact_ok,
+            str(upstream_artifact),
+        )
+
+        state_compatibility_hash = state_catalog.get(
+            "compatibility_manifest_sha256"
+        )
+        release_compatibility = (
+            self.layout.release
+            / "config"
+            / "upstream-compatibility-map.json"
+        )
+        compatibility_ok = (
+            _regular_file(self.layout.compatibility_manifest)
+            and _regular_file(release_compatibility)
+            and isinstance(state_compatibility_hash, str)
+            and _SAFE_SHA256.fullmatch(state_compatibility_hash) is not None
+            and secrets.compare_digest(
+                _sha256_file(self.layout.compatibility_manifest),
+                state_compatibility_hash,
+            )
+            and secrets.compare_digest(
+                _sha256_file(self.layout.compatibility_manifest),
+                _sha256_file(release_compatibility),
+            )
+        )
+        record(
+            "compatibility_manifest",
+            compatibility_ok,
+            str(self.layout.compatibility_manifest),
+        )
 
         expected_block = _expected_codex_block(self.layout)
         try:
@@ -2317,6 +2896,22 @@ class Installer:
     def catalog_import(
         self, candidate: Optional[Path], accept_sha256: str
     ) -> Dict[str, Any]:
+        self._preflight_owned_management_state()
+        updater = _load_release_updater_module()
+        try:
+            with updater._exclusive_update_lock(self.layout):
+                return self._catalog_import_locked(
+                    candidate, accept_sha256
+                )
+        except updater.UpdateError as exc:
+            raise InstallError(
+                "catalog import transaction lock was refused: " + str(exc)
+            ) from exc
+
+    def _catalog_import_locked(
+        self, candidate: Optional[Path], accept_sha256: str
+    ) -> Dict[str, Any]:
+        self._preflight_owned_management_state()
         (
             review,
             candidate_path,
@@ -2409,6 +3004,26 @@ class Installer:
         *,
         receipt: Optional[Path] = None,
     ) -> Dict[str, Any]:
+        self._preflight_owned_management_state()
+        updater = _load_release_updater_module()
+        try:
+            with updater._exclusive_update_lock(self.layout):
+                return self._catalog_rollback_locked(
+                    accept_current_sha256,
+                    receipt=receipt,
+                )
+        except updater.UpdateError as exc:
+            raise InstallError(
+                "catalog rollback transaction lock was refused: " + str(exc)
+            ) from exc
+
+    def _catalog_rollback_locked(
+        self,
+        accept_current_sha256: str,
+        *,
+        receipt: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        self._preflight_owned_management_state()
         _, _details, current_raw = _validate_durable_contract(
             self.layout.release,
             self.layout.effective_catalog,
@@ -2593,7 +3208,25 @@ class Installer:
             require_supported_runtime()
         except UnsupportedPlatformError as exc:
             raise InstallError(str(exc)) from exc
-        state = self._load_state(optional=False)
+        self._preflight_owned_management_state()
+        updater = _load_release_updater_module()
+        try:
+            with updater._exclusive_update_lock(self.layout):
+                return self._uninstall_locked(skip_stop=skip_stop)
+        except updater.UpdateError as exc:
+            raise InstallError(
+                "uninstall transaction lock was refused: " + str(exc)
+            ) from exc
+
+    def _uninstall_locked(
+        self, *, skip_stop: bool = False
+    ) -> Dict[str, Any]:
+        try:
+            require_supported_platform()
+            require_supported_runtime()
+        except UnsupportedPlatformError as exc:
+            raise InstallError(str(exc)) from exc
+        state = self._preflight_owned_management_state()
         expected_block = _expected_codex_block(self.layout)
         if not _regular_file(self.layout.codex_config):
             raise InstallError("Codex config is missing; refusing partial uninstall")

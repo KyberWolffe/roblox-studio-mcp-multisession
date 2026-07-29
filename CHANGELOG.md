@@ -4,6 +4,34 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.4.0-dev.3 — unreleased
+
+Phase 2 installer/update hardening on the isolated parity line. The immutable
+`0.4.0-dev.2` commit and artifacts remain unchanged, and the installed
+`v0.3.0-rc.4` checkpoint remains the immediate guarded rollback target.
+
+### Guarded catalog-contract migration
+
+- Authorized cross-version updater transactions now replace the durable
+  catalog pair, upstream snapshot pair, and compatibility manifest with the
+  candidate package's prevalidated defaults. Active catalog bytes reviewed for
+  an older release are never implicitly carried or rebased into a new release.
+- Existing catalog-review receipts and audit records remain intact. A user may
+  explicitly review and import a compatible upstream snapshot again after the
+  candidate is accepted.
+- Same-version repair retains its existing ownership semantics: an intact
+  state-owned reviewed copy repairs its peer, while two drifted copies fall
+  back to the same-version packaged default.
+- Installed doctor checks now cover both durable mirrors, both upstream
+  mirrors, the compatibility manifest, their ownership hashes, and the
+  installed release source. Transaction snapshots and one-step rollback retain
+  exact pre-switch bytes.
+- Candidate preflight validates the exact updater snapshot first, then requires
+  all live contract/state bytes to match it before and after lifecycle stop.
+  First install and uninstall use a stable parent-level lock that survives
+  support-root moves; owned installs additionally take the legacy in-root lock.
+  Install/repair and catalog import/rollback use the same ordering.
+
 ## 0.4.0-dev.2 — unreleased
 
 Phase 2 instance-inspection development on the isolated parity line. The

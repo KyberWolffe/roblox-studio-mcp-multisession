@@ -218,7 +218,9 @@ Return every v2 Studio to Edit mode, then run:
 Uninstall stops only v2, removes only the exactly owned v2 Codex block/plugin,
 and moves the support root to a timestamped recoverable sibling rather than
 deleting it. The original Codex bytes are restored exactly and v1 remains
-untouched.
+untouched. A mode-0600 coordination lock remains in the support root's parent
+so uninstall and a concurrent reinstall cannot select different lock-file
+inodes; it contains no credentials or user data.
 
 V1 may be used only as an explicit fallback for an operation v2 does not yet
 support. Codex must never silently reroute a v2 request through v1: v1's
