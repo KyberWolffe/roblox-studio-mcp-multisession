@@ -9,8 +9,9 @@ multiple Studio sessions from concurrent Codex tasks. Every Studio-bound tool
 requires an explicit, server-assigned `studio_id`. There is no active Studio
 pointer, implicit single-session choice, or default-session fallback.
 
-Version `0.3.0-rc.4` is a local release candidate based on the live-validated
-v2 `0.2.0` broker and Studio plugin. It has not been published to GitHub.
+Version `0.4.0-dev.1` is the isolated Phase 2 parity-development line based on
+the frozen, live-validated `0.3.0-rc.4` checkpoint. It is not installed and has
+not been published to GitHub.
 
 > **Experimental prerelease:** the safe v2 surface does not yet cover all 25
 > modern v1 capabilities. Twelve P0 rows remain partial or deferred. Publication

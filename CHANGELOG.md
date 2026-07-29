@@ -4,6 +4,21 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.4.0-dev.1 — unreleased
+
+Phase 2 capability-parity development based on the immutable
+`v0.3.0-rc.4` restore checkpoint.
+
+### Development policy
+
+- All parity work remains isolated from the installed rc.4 integration.
+- Every Studio-bound operation continues to require explicit `studio_id`;
+  discovery remains the only exception.
+- New upstream schemas remain review-only until their bounded durable
+  handlers, conflict semantics, and security tests are complete.
+- A future installable candidate must retain rc.4 as its immediate guarded
+  rollback target.
+
 ## 0.3.0-rc.4 — 2026-07-28
 
 PlayServer HTTP-independence and terminal-session lifecycle correction.

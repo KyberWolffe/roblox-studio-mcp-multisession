@@ -4,9 +4,9 @@
 <!-- p0-parity: incomplete -->
 <!-- full-parity-claimed: false -->
 
-Version `0.3.0-rc.4` is an experimental prerelease. Full 25-tool parity is not
-claimed. It preserves safe multi-session routing for its closed v2 surface
-while Phase 2 addresses the 12 P0 gaps below.
+Version `0.4.0-dev.1` is an isolated experimental development line. Full
+25-tool parity is not claimed. It preserves the frozen rc.4 multi-session
+architecture while Phase 2 addresses the 12 P0 gaps below.
 
 This matrix covers exactly the first 25 modern tools in
 `config/tool-catalog.json`. The six trailing legacy reference-plugin aliases
