@@ -37,10 +37,10 @@ Individual stages:
 python3 -B scripts/audit_release.py --repo .
 python3 -B scripts/build_durable_release.py --output-dir dist
 python3 -B scripts/audit_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.3-macos-arm64.tar.gz
+  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.4-macos-arm64.tar.gz
 python3 -B scripts/prove_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.3-macos-arm64.tar.gz \
-  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-rc.3-macos-arm64.tar.gz.sha256
+  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.4-macos-arm64.tar.gz \
+  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-rc.4-macos-arm64.tar.gz.sha256
 ```
 
 The generic proof's update fixture is deliberately synthetic. The release
@@ -55,7 +55,7 @@ python3 -B scripts/prove_cross_version_rollback.py \
   --candidate-archive CANDIDATE_ARCHIVE \
   --candidate-checksum-file CANDIDATE_CHECKSUM \
   --candidate-expected-sha256 CANDIDATE_SHA256 \
-  --candidate-version 0.4.0-rc.3 \
+  --candidate-version 0.4.0-rc.4 \
   --source-commit CANDIDATE_COMMIT \
   --source-tree CANDIDATE_TREE \
   --output EXTERNAL_ARTIFACT_DIR/CROSS_VERSION_ROLLBACK_PROOF.json
@@ -91,16 +91,19 @@ python3 -B scripts/native_studio_compile_smoke.py \
   --receipt EXACT_GATE_WORK_ROOT/native-studio-compile-proof.json
 ```
 
-The gate strictly verifies the Studio app signature, Apple trust anchor,
-exact Roblox bundle/signing-team requirement, and executable hash,
-requires no running Studio process, extracts the sole exact `Main` source,
-checks its reviewed pre-registration Edit/plugin-context fence, and runs it in
-an empty command-script task. Success requires the identity-bearing sentinel
-and the exact expected plugin-context assertion, with no compiler/register
-error, unexpected user-plugin load, crash, or timeout. The receipt, exact
-plugin bytes, and Studio executable are rehashed before a later live harness
-may consume them. Missing Studio, an invalid signature, or absent/mismatched
-evidence is an unqualified candidate, never a skipped pass.
+The hard gate binds the Studio main executable's exact hash, Info.plist
+version/build and bundle executable, and narrow Apple/Roblox signing identity
+and CDHash. Full-bundle `codesign --verify --deep --strict` is optional
+diagnostic/provenance evidence, not a hard functional prerequisite. The gate
+extracts and compiles the exact rendered plugin's sole `Main` source in an
+empty command-script task. Its receipt, package/source bytes, and Studio
+identity are revalidated before later use.
+
+Compile-only evidence is not a claim that Studio loaded the candidate plugin.
+A linked future gate must load the actual candidate `.rbxmx`, observe expected
+registration and clean candidate logs, then run bounded read-only checks
+against explicitly targeted Studio sessions. Those checks retain explicit
+`studio_id` routing and never use an active/default target or v1 fallback.
 
 The isolated read-only harness makes this proof mechanical. `prepare` must
 run in a fresh private work root containing one exact extracted candidate
@@ -112,7 +115,7 @@ port, and the exact public read-only scope:
 python3 -B scripts/candidate_readonly_gate.py \
   --work-root EXACT_GATE_WORK_ROOT \
   prepare \
-  --version 0.4.0-rc.3 \
+  --version 0.4.0-rc.4 \
   --release-manifest-sha256 EXACT_RELEASE_MANIFEST_SHA256 \
   --durable-catalog-sha256 EXACT_DURABLE_CATALOG_SHA256 \
   --port CANDIDATE_PORT

@@ -61,7 +61,7 @@ DURABLE_OPERATIONS = {
 class DurableCatalogTests(unittest.TestCase):
     def test_catalog_is_versioned_closed_and_explicitly_targeted(self):
         payload = json.loads(DURABLE_CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual(payload["catalog_version"], "0.4.0-rc.3")
+        self.assertEqual(payload["catalog_version"], "0.4.0-rc.4")
         self.assertEqual(
             payload["upstream"]["compatibility"],
             "reviewed-local-subset-only",
@@ -142,7 +142,7 @@ class DurableRendererTests(unittest.TestCase):
             base_url=base_url,
         )
 
-    def test_render_matches_phase2_0_4_0_rc_3_contract(self):
+    def test_render_matches_phase2_0_4_0_rc_4_contract(self):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),

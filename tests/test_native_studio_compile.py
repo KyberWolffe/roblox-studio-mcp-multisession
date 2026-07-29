@@ -108,6 +108,7 @@ class NativeCompileTests(unittest.TestCase):
         self.executable = self.executable.resolve(strict=True)
         self.executable_sha256 = _sha256(self.executable.read_bytes())
         self.identity = {
+            "bundle_executable": "RobloxStudio",
             "bundle_id": "com.Roblox.RobloxStudio",
             "bundle_path": str(self.executable.parent.parent.parent),
             "bundle_short_version": "1.2.3",
@@ -115,7 +116,19 @@ class NativeCompileTests(unittest.TestCase):
             "executable_path": str(self.executable),
             "executable_sha256": self.executable_sha256,
             "info_plist_sha256": "f" * 64,
+            "resource_integrity_verified": False,
+            "signature_cdhash_full": "d" * 64,
             "signature_identifier": "com.Roblox.RobloxStudio",
+            "signature_leaf_authority": (
+                "Developer ID Application: Roblox Corporation "
+                "(2CFABCH843)"
+            ),
+            "signature_requirement": (
+                native_compile.EXPECTED_STUDIO_REQUIREMENT
+            ),
+            "signature_scope": (
+                native_compile.EXPECTED_STUDIO_SIGNATURE_SCOPE
+            ),
             "team_identifier": "2CFABCH843",
         }
 
@@ -310,6 +323,7 @@ class NativeCompileTests(unittest.TestCase):
         info.write_bytes(
             plistlib.dumps(
                 {
+                    "CFBundleExecutable": "RobloxStudio",
                     "CFBundleIdentifier": "com.Roblox.RobloxStudio",
                     "CFBundleShortVersionString": "1.2.3",
                     "CFBundleVersion": "123",
@@ -323,6 +337,13 @@ class NativeCompileTests(unittest.TestCase):
             0,
             b"",
             b"Identifier=com.Roblox.RobloxStudio\n"
+            b"CandidateCDHashFull sha256="
+            + b"d" * 64
+            + b"\nCMSDigest="
+            + b"d" * 64
+            + b"\n"
+            b"Authority=Developer ID Application: Roblox Corporation "
+            b"(2CFABCH843)\n"
             b"TeamIdentifier=2CFABCH843\n",
         )
         with (
@@ -339,8 +360,13 @@ class NativeCompileTests(unittest.TestCase):
             )
         self.assertEqual(result["executable_sha256"], expected)
         self.assertEqual(result["team_identifier"], "2CFABCH843")
+        self.assertEqual(result["signature_cdhash_full"], "d" * 64)
+        self.assertFalse(result["resource_integrity_verified"])
         verify_command = commands.call_args_list[0].args[0]
-        self.assertIn("--strict", verify_command)
+        self.assertIn("--ignore-resources", verify_command)
+        self.assertNotIn("--deep", verify_command)
+        self.assertNotIn("--strict", verify_command)
+        self.assertEqual(str(executable.resolve(strict=True)), verify_command[-1])
         requirement_index = verify_command.index("-R")
         self.assertEqual(
             verify_command[requirement_index + 1],
@@ -362,6 +388,7 @@ class NativeCompileTests(unittest.TestCase):
         (app / "Contents" / "Info.plist").write_bytes(
             plistlib.dumps(
                 {
+                    "CFBundleExecutable": "RobloxStudio",
                     "CFBundleIdentifier": "com.roblox.RobloxStudio",
                     "CFBundleShortVersionString": "1",
                     "CFBundleVersion": "1",
@@ -387,6 +414,102 @@ class NativeCompileTests(unittest.TestCase):
                 )
         commands.assert_not_called()
 
+    def test_identity_rejects_wrong_bundle_executable_before_codesign(
+        self,
+    ) -> None:
+        app = self.root / "identity-wrong-executable" / "RobloxStudio.app"
+        executable = app / "Contents" / "MacOS" / "RobloxStudio"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"studio-wrong-executable")
+        executable.chmod(0o755)
+        (app / "Contents" / "Info.plist").write_bytes(
+            plistlib.dumps(
+                {
+                    "CFBundleExecutable": "SubstitutedStudio",
+                    "CFBundleIdentifier": "com.Roblox.RobloxStudio",
+                    "CFBundleShortVersionString": "1",
+                    "CFBundleVersion": "1",
+                }
+            )
+        )
+        with (
+            mock.patch("platform.system", return_value="Darwin"),
+            mock.patch("platform.machine", return_value="arm64"),
+            mock.patch(
+                "release_tools.native_compile._bounded_completed_process",
+            ) as commands,
+        ):
+            with self.assertRaisesRegex(
+                NativeCompileError,
+                "unexpected Studio bundle executable",
+            ):
+                inspect_studio_identity(
+                    executable,
+                    expected_executable_sha256=_sha256(
+                        b"studio-wrong-executable"
+                    ),
+                )
+        commands.assert_not_called()
+
+    def test_identity_rejects_missing_or_mismatched_full_cdhash(self) -> None:
+        app = self.root / "identity-cdhash" / "RobloxStudio.app"
+        executable = app / "Contents" / "MacOS" / "RobloxStudio"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"studio-cdhash")
+        executable.chmod(0o755)
+        (app / "Contents" / "Info.plist").write_bytes(
+            plistlib.dumps(
+                {
+                    "CFBundleExecutable": "RobloxStudio",
+                    "CFBundleIdentifier": "com.Roblox.RobloxStudio",
+                    "CFBundleShortVersionString": "1",
+                    "CFBundleVersion": "1",
+                }
+            )
+        )
+        verified = subprocess.CompletedProcess([], 0, b"", b"valid\n")
+        details = (
+            b"Identifier=com.Roblox.RobloxStudio\n"
+            b"Authority=Developer ID Application: Roblox Corporation "
+            b"(2CFABCH843)\n"
+            b"TeamIdentifier=2CFABCH843\n"
+        )
+        cases = {
+            "missing": details,
+            "mismatch": (
+                b"CandidateCDHashFull sha256="
+                + b"d" * 64
+                + b"\nCMSDigest="
+                + b"e" * 64
+                + b"\n"
+                + details
+            ),
+        }
+        for label, output in cases.items():
+            with self.subTest(label=label):
+                identity = subprocess.CompletedProcess(
+                    [], 0, b"", output
+                )
+                with (
+                    mock.patch("platform.system", return_value="Darwin"),
+                    mock.patch("platform.machine", return_value="arm64"),
+                    mock.patch(
+                        "release_tools.native_compile."
+                        "_bounded_completed_process",
+                        side_effect=[verified, identity],
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        NativeCompileError,
+                        "signed identity is incomplete",
+                    ):
+                        inspect_studio_identity(
+                            executable,
+                            expected_executable_sha256=_sha256(
+                                b"studio-cdhash"
+                            ),
+                        )
+
     def test_identity_rejects_non_roblox_signing_team(self) -> None:
         app = self.root / "identity-wrong-team" / "RobloxStudio.app"
         executable = app / "Contents" / "MacOS" / "RobloxStudio"
@@ -396,6 +519,7 @@ class NativeCompileTests(unittest.TestCase):
         (app / "Contents" / "Info.plist").write_bytes(
             plistlib.dumps(
                 {
+                    "CFBundleExecutable": "RobloxStudio",
                     "CFBundleIdentifier": "com.Roblox.RobloxStudio",
                     "CFBundleShortVersionString": "1",
                     "CFBundleVersion": "1",
@@ -408,6 +532,13 @@ class NativeCompileTests(unittest.TestCase):
             0,
             b"",
             b"Identifier=com.Roblox.RobloxStudio\n"
+            b"CandidateCDHashFull sha256="
+            + b"d" * 64
+            + b"\nCMSDigest="
+            + b"d" * 64
+            + b"\n"
+            b"Authority=Developer ID Application: Roblox Corporation "
+            b"(2CFABCH843)\n"
             b"TeamIdentifier=ABCDEFGHIJ\n",
         )
         with (
@@ -429,7 +560,7 @@ class NativeCompileTests(unittest.TestCase):
                     ),
                 )
 
-    def test_identity_fails_closed_on_strict_codesign_failure(self) -> None:
+    def test_identity_fails_closed_on_narrow_codesign_failure(self) -> None:
         app = self.root / "identity-invalid" / "RobloxStudio.app"
         executable = app / "Contents" / "MacOS" / "RobloxStudio"
         executable.parent.mkdir(parents=True)
@@ -438,6 +569,7 @@ class NativeCompileTests(unittest.TestCase):
         (app / "Contents" / "Info.plist").write_bytes(
             plistlib.dumps(
                 {
+                    "CFBundleExecutable": "RobloxStudio",
                     "CFBundleIdentifier": "com.Roblox.RobloxStudio",
                     "CFBundleShortVersionString": "1",
                     "CFBundleVersion": "1",
@@ -454,7 +586,7 @@ class NativeCompileTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 NativeCompileError,
-                "signature verification failed",
+                "main executable code signature verification failed",
             ):
                 inspect_studio_identity(
                     executable,
@@ -533,7 +665,7 @@ class NativeCompileTests(unittest.TestCase):
     ) -> None:
         receipt = self._success_receipt("old-format.json")
         value = json.loads(receipt.read_text(encoding="utf-8"))
-        value["format"] = "roblox-studio-mcp-v2-native-compile-proof-v2"
+        value["format"] = "roblox-studio-mcp-v2-native-compile-proof-v3"
         receipt.write_text(
             json.dumps(value, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

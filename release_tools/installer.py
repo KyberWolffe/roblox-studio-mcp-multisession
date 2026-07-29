@@ -39,7 +39,7 @@ from platform_support import (
 )
 
 PRODUCT = "RobloxStudioMCPv2"
-VERSION = "0.4.0-rc.3"
+VERSION = "0.4.0-rc.4"
 PACKAGE_FORMAT = "roblox-studio-mcp-v2-portable-release"
 PACKAGE_MANIFEST_VERSION = 1
 INSTALL_STATE_FORMAT = "roblox-studio-mcp-v2-install-state"

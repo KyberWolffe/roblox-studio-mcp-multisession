@@ -29,7 +29,7 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 from xml.etree import ElementTree
 
 
-PROOF_FORMAT = "roblox-studio-mcp-v2-native-compile-proof-v3"
+PROOF_FORMAT = "roblox-studio-mcp-v2-native-compile-proof-v4"
 DEFAULT_STUDIO_EXECUTABLE = Path(
     "/Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio"
 )
@@ -38,6 +38,12 @@ EXPECTED_STUDIO_TEAM_ID = "2CFABCH843"
 EXPECTED_STUDIO_REQUIREMENT = (
     '=anchor apple generic and identifier "com.Roblox.RobloxStudio" '
     'and certificate leaf[subject.OU] = "2CFABCH843"'
+)
+EXPECTED_STUDIO_LEAF_AUTHORITY = (
+    "Developer ID Application: Roblox Corporation (2CFABCH843)"
+)
+EXPECTED_STUDIO_SIGNATURE_SCOPE = (
+    "main_executable_code_and_explicit_requirement"
 )
 EXPECTED_MAIN_ASSERTION = (
     'assert(plugin ~= nil, '
@@ -534,7 +540,13 @@ def inspect_studio_identity(
     *,
     expected_executable_sha256: str,
 ) -> Dict[str, object]:
-    """Verify an exact signed arm64 Studio bundle and return its identity."""
+    """Verify the exact signed arm64 Studio executable and return its identity.
+
+    The required check validates the main executable's code and the explicit
+    Apple/Roblox signing requirement. It deliberately does not make every
+    nested app-bundle resource a prerequisite for compiling the candidate.
+    Actual plugin-context loading and registration are proved separately.
+    """
 
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise NativeCompileError(
@@ -571,10 +583,13 @@ def inspect_studio_identity(
     except (plistlib.InvalidFileException, ValueError) as exc:
         raise NativeCompileError("Studio Info.plist is invalid") from exc
     bundle_id = info.get("CFBundleIdentifier")
+    bundle_executable = info.get("CFBundleExecutable")
     short_version = info.get("CFBundleShortVersionString")
     bundle_version = info.get("CFBundleVersion")
     if bundle_id != EXPECTED_STUDIO_BUNDLE_ID:
         raise NativeCompileError("unexpected Studio bundle identifier")
+    if bundle_executable != executable.name:
+        raise NativeCompileError("unexpected Studio bundle executable")
     if (
         not isinstance(short_version, str)
         or VERSION_ID_RE.fullmatch(short_version) is None
@@ -587,23 +602,24 @@ def inspect_studio_identity(
         [
             "/usr/bin/codesign",
             "--verify",
-            "--deep",
-            "--strict",
+            "--ignore-resources",
             "--verbose=2",
             "-R",
             EXPECTED_STUDIO_REQUIREMENT,
-            str(bundle),
+            str(executable),
         ],
-        "Studio Apple-anchored code-signature verification",
+        "Studio main-executable code-signature verification",
     )
     if verify.returncode != 0:
-        raise NativeCompileError("Studio code signature verification failed")
+        raise NativeCompileError(
+            "Studio main executable code signature verification failed"
+        )
     details_result = _bounded_completed_process(
         [
             "/usr/bin/codesign",
             "-dv",
             "--verbose=4",
-            str(bundle),
+            str(executable),
         ],
         "Studio code-signature identity inspection",
     )
@@ -614,14 +630,29 @@ def inspect_studio_identity(
     ).decode("utf-8", "replace")
     identifier_match = re.search(r"(?m)^Identifier=(.+)$", signature_text)
     team_match = re.search(r"(?m)^TeamIdentifier=(.+)$", signature_text)
+    cdhash_match = re.search(
+        r"(?m)^CandidateCDHashFull sha256=([0-9a-f]{64})$",
+        signature_text,
+    )
+    cms_digest_match = re.search(
+        r"(?m)^CMSDigest=([0-9a-f]{64})$",
+        signature_text,
+    )
+    authorities = re.findall(r"(?m)^Authority=(.+)$", signature_text)
     if (
         identifier_match is None
         or identifier_match.group(1).strip() != bundle_id
         or team_match is None
         or team_match.group(1).strip() != EXPECTED_STUDIO_TEAM_ID
+        or cdhash_match is None
+        or cms_digest_match is None
+        or cdhash_match.group(1) != cms_digest_match.group(1)
+        or not authorities
+        or authorities[0].strip() != EXPECTED_STUDIO_LEAF_AUTHORITY
     ):
         raise NativeCompileError("Studio signed identity is incomplete")
     return {
+        "bundle_executable": bundle_executable,
         "bundle_id": bundle_id,
         "bundle_path": str(bundle),
         "bundle_short_version": short_version,
@@ -629,7 +660,12 @@ def inspect_studio_identity(
         "executable_path": str(executable),
         "executable_sha256": executable_sha256,
         "info_plist_sha256": _sha256_bytes(info_bytes),
+        "resource_integrity_verified": False,
+        "signature_cdhash_full": cdhash_match.group(1),
         "signature_identifier": identifier_match.group(1).strip(),
+        "signature_leaf_authority": authorities[0].strip(),
+        "signature_requirement": EXPECTED_STUDIO_REQUIREMENT,
+        "signature_scope": EXPECTED_STUDIO_SIGNATURE_SCOPE,
         "team_identifier": EXPECTED_STUDIO_TEAM_ID,
     }
 
@@ -1656,6 +1692,7 @@ def validate_native_compile_receipt(
     _require_receipt_keys(
         studio_receipt,
         {
+            "bundle_executable",
             "bundle_id",
             "bundle_path",
             "bundle_short_version",
@@ -1663,7 +1700,12 @@ def validate_native_compile_receipt(
             "executable_path",
             "executable_sha256",
             "info_plist_sha256",
+            "resource_integrity_verified",
+            "signature_cdhash_full",
             "signature_identifier",
+            "signature_leaf_authority",
+            "signature_requirement",
+            "signature_scope",
             "team_identifier",
         },
         "native compile receipt Studio identity",

@@ -9,16 +9,16 @@ multiple Studio sessions from concurrent Codex tasks. Every Studio-bound tool
 requires an explicit, server-assigned `studio_id`. There is no active Studio
 pointer, implicit single-session choice, or default-session fallback.
 
-Version `0.4.0-rc.3` is the corrected isolated Phase 2 release candidate based
+Version `0.4.0-rc.4` is the corrected isolated Phase 2 release candidate based
 on the frozen, live-validated `0.3.0-rc.4` checkpoint. It is not installed and
 has not been published to GitHub. It retains rc.1's bounded workflow and
 revision-protected multi-edit slices, fixes the rendered plugin's Luau
-local-register overflow and the live-gate public-name boundary, and requires a
-receipt-bound native Studio compilation proof before any future live gate.
-The failed rc.1 commit and artifact remain immutable and rejected. The rc.2
-checkpoint is preserved as superseded after its native gate exposed an
-incorrectly cased Studio bundle-identity expectation; neither checkpoint is
-rewritten.
+local-register overflow and the live-gate public-name boundary, and uses a
+proportional receipt-bound native qualification sequence before any future
+live gate. The failed rc.1 commit and artifact remain immutable and rejected;
+rc.2 and rc.3 are preserved as superseded checkpoints. Rc.3 bound the wrong
+qualification policy by treating full-bundle deep/strict verification as a
+hard functional prerequisite.
 
 > **Experimental prerelease:** the safe v2 surface does not yet cover all 25
 > modern v1 capabilities. Twelve P0 rows remain partial or deferred. Publication
@@ -113,12 +113,15 @@ installed v1/v2 files.
 
 Before a rendered candidate may be used for a live Studio gate, its exact
 hashed `.rbxmx` source must also pass
-`scripts/native_studio_compile_smoke.py` against a strictly verified signed
-Roblox Studio installation. Missing or invalid native evidence is a hard
-failure, never a skipped check. The isolated read-only harness additionally
-binds the complete extracted release and runtime/config provenance and has no
-unqualified operational loader; see `docs/TESTING.md` for the mandatory
-prepare, compile, qualify, and start order.
+`scripts/native_studio_compile_smoke.py`. The hard native identity gate binds
+the exact Studio main-executable hash, Info.plist version/build and bundle
+executable, and narrow Apple/Roblox signing identity with the executable's
+CDHash. Full-bundle `codesign --verify --deep --strict` remains useful
+diagnostic/provenance evidence, but is not a hard functional prerequisite.
+Compilation evidence covers the exact sole `Main` source; a linked future gate
+must then load the actual candidate plugin, verify registration and clean
+logs, and run bounded read-only operations against explicitly targeted Studio
+sessions. See `docs/TESTING.md`.
 
 To build only the portable release:
 
@@ -274,6 +277,6 @@ hash-fenced.
 - [Testing and release proof](docs/TESTING.md)
 - [GitHub distribution](docs/GITHUB_DISTRIBUTION.md)
 - [Design provenance and source limits](docs/SOURCE_AUDIT.md)
-- [Release notes](docs/RELEASE_NOTES_0.3.0-rc.3.md)
+- [Release notes](docs/RELEASE_NOTES_0.4.0-rc.4.md)
 - [Changelog](CHANGELOG.md)
 - [License status](LICENSE_STATUS.md)

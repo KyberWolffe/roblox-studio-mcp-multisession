@@ -4,12 +4,33 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
-## 0.4.0-rc.3 — unreleased
+## 0.4.0-rc.4 — unreleased
+
+Corrected the Phase 2 native qualification policy while preserving the
+installed `0.3.0-rc.4` integration and restore bundle as the immediate
+rollback target.
+
+### Proportional native qualification
+
+- Binds the exact Roblox Studio main-executable hash, Info.plist version/build
+  and bundle executable, and the narrow Apple/Roblox signing identity and
+  CDHash.
+- Treats full-bundle `codesign --verify --deep --strict` as diagnostic and
+  provenance evidence rather than a hard functional prerequisite.
+- Compiles the exact rendered plugin's sole `Main` source and links that
+  evidence to a future actual candidate-plugin load/registration check with
+  clean logs.
+- Requires bounded read-only checks through explicit `studio_id` routing
+  before any later installation decision. No active/default routing, mutation,
+  Play, save, publish, or v1 fallback is introduced.
+
+## 0.4.0-rc.3 — superseded 2026-07-29
 
 Corrected native-qualification identity for the isolated Phase 2 candidate.
-The rc.1 rejection and rc.2 superseded checkpoint remain immutable, and the
-installed `0.3.0-rc.4` bytes and restore bundle remain the immediate rollback
-target.
+It is preserved as superseded because full-bundle deep/strict verification was
+incorrectly made a hard functional prerequisite. The rc.1 rejection and rc.2
+superseded checkpoint remain immutable, and the installed `0.3.0-rc.4` bytes
+and restore bundle remain the immediate rollback target.
 
 ### Native Studio identity
 
