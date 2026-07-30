@@ -64,7 +64,7 @@ class ReleaseVersionCoherenceTests(unittest.TestCase):
             (ROOT / "README.md").read_text(encoding="utf-8"),
         )
         self.assertIn(
-            "## " + VERSION + " — unreleased",
+            "## " + VERSION + " — 2026-07-29",
             (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
         )
 
