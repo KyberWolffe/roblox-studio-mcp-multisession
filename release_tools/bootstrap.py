@@ -52,8 +52,8 @@ def require_native_apple_silicon() -> None:
 
     if tuple(sys.version_info[:3]) < (3, 9):
         raise BootstrapError(
-            "Roblox Studio MCP v2 requires Python 3.9 or newer; no files "
-            "were changed."
+            "Roblox Studio MCP Multisession requires Python 3.9 or newer; "
+            "no files were changed."
         )
     system = platform.system()
     machine = platform.machine()
@@ -79,7 +79,8 @@ def require_native_apple_silicon() -> None:
     else:
         reason = "the machine architecture is " + (machine or "unknown")
     raise BootstrapError(
-        "Roblox Studio MCP v2 supports native Apple Silicon macOS only; "
+        "Roblox Studio MCP Multisession supports native Apple Silicon "
+        "macOS only; "
         + reason
         + ". No files were changed."
     )
@@ -466,13 +467,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Fresh-install or repair the same exact tagged Roblox Studio MCP "
-            "v2 release after verification. Upgrade an existing different "
-            "version with the installed manager's update command."
+            "Multisession release after verification. Upgrade an existing "
+            "different version with the installed manager's update command."
         ),
         epilog=(
             "Cross-version in-place install is intentionally refused. Use "
-            "'roblox-studio-mcp-v2-manage update' with an exact tag and "
-            "published archive SHA-256."
+            "'roblox-studio-mcp-multisession-manage update' with an exact "
+            "tag and published archive SHA-256. The former "
+            "'roblox-studio-mcp-v2-manage' name remains an rc.5 "
+            "compatibility alias."
         ),
     )
     parser.add_argument("--tag", required=True)
@@ -548,8 +551,8 @@ def main() -> None:
             if result.returncode != 0:
                 raise BootstrapError(
                     "the verified release installer exited unsuccessfully; "
-                    "if another v2 version is installed, upgrade through "
-                    "'roblox-studio-mcp-v2-manage update'"
+                    "if another multisession version is installed, upgrade "
+                    "through the installed manager's update command"
                 )
         print(
             json.dumps(
@@ -566,7 +569,11 @@ def main() -> None:
             )
         )
     except BootstrapError as exc:
-        sys.stderr.write("Studio MCP v2 bootstrap refused: " + str(exc) + "\n")
+        sys.stderr.write(
+            "Studio MCP Multisession bootstrap refused: "
+            + str(exc)
+            + "\n"
+        )
         raise SystemExit(2)
 
 

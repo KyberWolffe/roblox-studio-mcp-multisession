@@ -1,4 +1,9 @@
-"""Build a deterministic, explicit-allowlist portable v2 release archive."""
+"""Build a deterministic Studio MCP Multisession release archive.
+
+The rc.5 migration bridge deliberately retains the historical archive and
+bootstrap filename prefixes so the immutable rc.4 updater can authenticate
+and ingest the candidate without changing its compatibility contract.
+"""
 
 from __future__ import annotations
 

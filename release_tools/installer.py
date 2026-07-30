@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Portable, idempotent installer for Roblox Studio MCP v2.
+"""Portable, idempotent installer for Roblox Studio MCP Multisession.
 
 The release builder copies this file to the archive root as ``install.py``.
-Only the explicitly owned v2 support root, plugin filename, and Codex table
-are mutable.  The existing v1 installation is never inspected as an install
-target and is never changed.
+Only the explicitly owned multisession support root, plugin filename, and
+Codex table are mutable. The existing v1 installation is never inspected as
+an install target and is never changed.
+
+The support-root, plugin-filename, manifest, and wire-format identities retain
+their historical ``v2`` spellings for transactional compatibility with
+0.4.0-rc.4 and its byte-exact rollback snapshot. They are implementation
+identifiers, not the canonical product name.
 """
 
 from __future__ import annotations
@@ -39,18 +44,24 @@ from platform_support import (
 )
 
 PRODUCT = "RobloxStudioMCPv2"
-VERSION = "0.4.0-rc.4"
+PRODUCT_DISPLAY_NAME = "Roblox Studio MCP Multisession"
+VERSION = "0.4.0-rc.5"
 PACKAGE_FORMAT = "roblox-studio-mcp-v2-portable-release"
 PACKAGE_MANIFEST_VERSION = 1
 INSTALL_STATE_FORMAT = "roblox-studio-mcp-v2-install-state"
 INSTALL_STATE_VERSION = 1
 RUNTIME_SCHEMA_VERSION = 1
 SECRETS_SCHEMA_VERSION = 1
-SERVER_NAME = "Roblox_Studio_v2"
+SERVER_NAME = "Roblox_Studio_Multisession"
 SERVER_HEADER = "[mcp_servers." + SERVER_NAME + "]"
+LEGACY_SERVER_NAME = "Roblox_Studio_v2"
+LEGACY_SERVER_HEADER = "[mcp_servers." + LEGACY_SERVER_NAME + "]"
 PLUGIN_FILENAME = "StudioMCPv2SideBySide.rbxmx"
-STABLE_LAUNCHER_NAME = "roblox-studio-mcp-v2"
-STABLE_MANAGER_NAME = "roblox-studio-mcp-v2-manage"
+PLUGIN_DISPLAY_NAME = "Studio MCP Multisession"
+STABLE_LAUNCHER_NAME = "roblox-studio-mcp-multisession"
+STABLE_MANAGER_NAME = "roblox-studio-mcp-multisession-manage"
+LEGACY_STABLE_LAUNCHER_NAME = "roblox-studio-mcp-v2"
+LEGACY_STABLE_MANAGER_NAME = "roblox-studio-mcp-v2-manage"
 ENTRYPOINT_MODULE = "studio_mcp_v2.lifecycle"
 DEFAULT_PORT = 44756
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 10.0
@@ -62,11 +73,12 @@ SECRETS_FILENAME = "secrets.json"
 INSTALL_RUN_ID_KEY = "install_run_id"
 
 _TABLE_HEADER = re.compile(
-    rb"(?m)^[ \t]*\[[ \t]*mcp_servers\.Roblox_Studio_v2[ \t]*\]"
+    rb"(?m)^[ \t]*\[[ \t]*mcp_servers\.Roblox_Studio_Multisession[ \t]*\]"
     rb"[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)"
 )
-_ANY_TOML_HEADER = re.compile(
-    rb"(?m)^[ \t]*\[{1,2}[^\r\n\]]+\]{1,2}[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)"
+_LEGACY_TABLE_HEADER = re.compile(
+    rb"(?m)^[ \t]*\[[ \t]*mcp_servers\.Roblox_Studio_v2[ \t]*\]"
+    rb"[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)"
 )
 _SAFE_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?$")
 _SAFE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -228,6 +240,18 @@ class InstallLayout:
     @property
     def manager(self) -> Path:
         return self.bin / STABLE_MANAGER_NAME
+
+    @property
+    def legacy_launcher(self) -> Path:
+        return self.bin / LEGACY_STABLE_LAUNCHER_NAME
+
+    @property
+    def legacy_launcher_bootstrap(self) -> Path:
+        return self.bin / (LEGACY_STABLE_LAUNCHER_NAME + "-bootstrap.py")
+
+    @property
+    def legacy_manager(self) -> Path:
+        return self.bin / LEGACY_STABLE_MANAGER_NAME
 
 
 def _utc_stamp() -> str:
@@ -539,16 +563,511 @@ def _expected_codex_block(layout: InstallLayout) -> bytes:
     ).encode("utf-8")
 
 
-def _find_codex_table(data: bytes) -> Optional[Tuple[int, int, bytes]]:
-    matches = list(_TABLE_HEADER.finditer(data))
+def _expected_legacy_codex_block(layout: InstallLayout) -> bytes:
+    command = json.dumps(str(layout.legacy_launcher), ensure_ascii=False)
+    return (
+        LEGACY_SERVER_HEADER
+        + "\n"
+        + "command = "
+        + command
+        + "\n"
+        + "args = []\n"
+        + "enabled = true\n"
+        + "required = false\n"
+        + 'default_tools_approval_mode = "writes"\n'
+        + "startup_timeout_sec = 20\n"
+        + "tool_timeout_sec = 180\n"
+    ).encode("utf-8")
+
+
+def _find_table(
+    data: bytes,
+    pattern: re.Pattern[bytes],
+    label: str,
+) -> Optional[Tuple[int, int, bytes]]:
+    headers, _assignments = _scan_toml_structure(data)
+    header_starts = {item[0] for item in headers}
+    matches = [
+        match
+        for match in pattern.finditer(data)
+        if match.start() in header_starts
+    ]
     if len(matches) > 1:
-        raise InstallError("Codex config contains duplicate Roblox_Studio_v2 tables")
+        raise InstallError("Codex config contains duplicate " + label + " tables")
     if not matches:
         return None
     match = matches[0]
-    next_header = _ANY_TOML_HEADER.search(data, match.end())
-    end = len(data) if next_header is None else next_header.start()
+    later_headers = [
+        start for start, _end, _array, _segments in headers
+        if start >= match.end()
+    ]
+    end = len(data) if not later_headers else min(later_headers)
     return match.start(), end, data[match.start() : end]
+
+
+def _parse_toml_header_segments(raw_header: bytes) -> Tuple[bool, List[str]]:
+    """Parse one bounded TOML table header enough to detect owned names.
+
+    Codex configuration is otherwise preserved byte-for-byte. This parser is
+    intentionally limited to TOML dotted-key table headers and exists only so
+    quoted, whitespace-separated, escaped, array, or descendant spellings
+    cannot hide a second registration from the exact byte-slicing mutator.
+    """
+
+    try:
+        line = raw_header.decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError as exc:
+        raise InstallError("Codex config contains a non-UTF-8 table header") from exc
+    index = 0
+    while index < len(line) and line[index] in " \t":
+        index += 1
+    array = line.startswith("[[", index)
+    opener = 2 if array else 1
+    closer = "]]" if array else "]"
+    if not line.startswith("[" * opener, index):
+        raise InstallError("Codex config contains an invalid TOML table header")
+    index += opener
+    segments: List[str] = []
+
+    def skip_space(position: int) -> int:
+        while position < len(line) and line[position] in " \t":
+            position += 1
+        return position
+
+    while True:
+        index = skip_space(index)
+        if index >= len(line):
+            raise InstallError("Codex config contains an empty TOML key segment")
+        quote = line[index] if line[index] in {"'", '"'} else None
+        if quote == "'":
+            end = line.find("'", index + 1)
+            if end < 0:
+                raise InstallError("Codex config contains an invalid literal key")
+            segment = line[index + 1 : end]
+            index = end + 1
+        elif quote == '"':
+            index += 1
+            decoded: List[str] = []
+            while index < len(line):
+                character = line[index]
+                if character == '"':
+                    index += 1
+                    break
+                if character != "\\":
+                    if ord(character) < 0x20:
+                        raise InstallError(
+                            "Codex config contains a control character in a key"
+                        )
+                    decoded.append(character)
+                    index += 1
+                    continue
+                index += 1
+                if index >= len(line):
+                    raise InstallError("Codex config contains an invalid key escape")
+                escape = line[index]
+                simple = {
+                    "b": "\b",
+                    "t": "\t",
+                    "n": "\n",
+                    "f": "\f",
+                    "r": "\r",
+                    '"': '"',
+                    "\\": "\\",
+                }
+                if escape in simple:
+                    decoded.append(simple[escape])
+                    index += 1
+                    continue
+                if escape not in {"u", "U"}:
+                    raise InstallError("Codex config contains an invalid key escape")
+                width = 4 if escape == "u" else 8
+                digits = line[index + 1 : index + 1 + width]
+                if len(digits) != width or re.fullmatch(
+                    r"[0-9A-Fa-f]{" + str(width) + r"}", digits
+                ) is None:
+                    raise InstallError("Codex config contains an invalid Unicode key")
+                codepoint = int(digits, 16)
+                if (
+                    codepoint > 0x10FFFF
+                    or 0xD800 <= codepoint <= 0xDFFF
+                ):
+                    raise InstallError("Codex config contains an invalid Unicode key")
+                decoded.append(chr(codepoint))
+                index += 1 + width
+            else:
+                raise InstallError("Codex config contains an unterminated quoted key")
+            segment = "".join(decoded)
+        else:
+            start = index
+            while (
+                index < len(line)
+                and line[index] not in " \t.]"
+            ):
+                index += 1
+            segment = line[start:index]
+            if re.fullmatch(r"[A-Za-z0-9_-]+", segment) is None:
+                raise InstallError("Codex config contains an invalid bare key")
+        if not segment:
+            raise InstallError("Codex config contains an empty TOML key segment")
+        segments.append(segment)
+        index = skip_space(index)
+        if line.startswith(closer, index):
+            index += len(closer)
+            trailing = line[index:].lstrip(" \t")
+            if trailing and not trailing.startswith("#"):
+                raise InstallError(
+                    "Codex config contains an invalid TOML table header"
+                )
+            return array, segments
+        if index >= len(line) or line[index] != ".":
+            raise InstallError("Codex config contains an invalid dotted table key")
+        index += 1
+
+
+def _advance_toml_lexical_state(
+    raw_line: bytes,
+    multiline: Optional[bytes],
+    square_depth: int,
+    curly_depth: int,
+) -> Tuple[Optional[bytes], int, int]:
+    """Advance only the TOML lexical state needed for safe structure discovery."""
+
+    index = 0
+
+    def escaped(position: int) -> bool:
+        backslashes = 0
+        cursor = position - 1
+        while cursor >= 0 and raw_line[cursor] == ord("\\"):
+            backslashes += 1
+            cursor -= 1
+        return backslashes % 2 == 1
+
+    while index < len(raw_line):
+        if multiline is not None:
+            close_at = raw_line.find(multiline, index)
+            while (
+                close_at >= 0
+                and multiline == b'"""'
+                and escaped(close_at)
+            ):
+                close_at = raw_line.find(multiline, close_at + 1)
+            if close_at < 0:
+                return multiline, square_depth, curly_depth
+            index = close_at + len(multiline)
+            multiline = None
+            continue
+
+        byte = raw_line[index]
+        if byte == ord("#"):
+            break
+        if raw_line.startswith(b'"""', index):
+            multiline = b'"""'
+            index += 3
+            continue
+        if raw_line.startswith(b"'''", index):
+            multiline = b"'''"
+            index += 3
+            continue
+        if byte == ord('"'):
+            index += 1
+            while index < len(raw_line):
+                if raw_line[index] == ord("\\"):
+                    index += 2
+                    continue
+                if raw_line[index] == ord('"'):
+                    index += 1
+                    break
+                index += 1
+            continue
+        if byte == ord("'"):
+            close_at = raw_line.find(b"'", index + 1)
+            index = len(raw_line) if close_at < 0 else close_at + 1
+            continue
+        if byte == ord("["):
+            square_depth += 1
+        elif byte == ord("]"):
+            square_depth = max(0, square_depth - 1)
+        elif byte == ord("{"):
+            curly_depth += 1
+        elif byte == ord("}"):
+            curly_depth = max(0, curly_depth - 1)
+        index += 1
+    return multiline, square_depth, curly_depth
+
+
+def _scan_toml_structure(
+    data: bytes,
+) -> Tuple[
+    List[Tuple[int, int, bool, Tuple[str, ...]]],
+    List[Tuple[int, Tuple[str, ...], Tuple[str, ...]]],
+]:
+    """Discover real headers and assignments without interpreting TOML values."""
+
+    headers: List[Tuple[int, int, bool, Tuple[str, ...]]] = []
+    assignments: List[
+        Tuple[int, Tuple[str, ...], Tuple[str, ...]]
+    ] = []
+    current: Tuple[str, ...] = ()
+    multiline: Optional[bytes] = None
+    square_depth = 0
+    curly_depth = 0
+    offset = 0
+
+    for raw_line in data.splitlines(keepends=True):
+        line = raw_line.rstrip(b"\r\n")
+        at_statement_boundary = (
+            multiline is None
+            and square_depth == 0
+            and curly_depth == 0
+        )
+        header = False
+        if at_statement_boundary:
+            stripped = line.lstrip(b" \t")
+            if stripped and not stripped.startswith(b"#"):
+                if stripped.startswith(b"["):
+                    array, segments = _parse_toml_header_segments(line)
+                    current = tuple(segments)
+                    headers.append(
+                        (
+                            offset,
+                            offset + len(raw_line),
+                            array,
+                            current,
+                        )
+                    )
+                    header = True
+                else:
+                    key = _toml_assignment_key(line)
+                    if key is not None:
+                        assignments.append((offset, current, key))
+        if not header:
+            multiline, square_depth, curly_depth = (
+                _advance_toml_lexical_state(
+                    line,
+                    multiline,
+                    square_depth,
+                    curly_depth,
+                )
+            )
+        offset += len(raw_line)
+
+    if multiline is not None:
+        raise InstallError("Codex config contains an unterminated multiline string")
+    if square_depth or curly_depth:
+        raise InstallError("Codex config contains an unterminated TOML collection")
+    return headers, assignments
+
+
+def _semantic_registration_headers(
+    data: bytes,
+) -> List[Tuple[str, int, bool, Tuple[str, ...]]]:
+    registrations: List[Tuple[str, int, bool, Tuple[str, ...]]] = []
+    headers, _assignments = _scan_toml_structure(data)
+    for start, _end, array, segments in headers:
+        if (
+            len(segments) >= 2
+            and segments[0] == "mcp_servers"
+            and segments[1] in {SERVER_NAME, LEGACY_SERVER_NAME}
+        ):
+            registrations.append(
+                (segments[1], start, array, tuple(segments))
+            )
+    return registrations
+
+
+def _toml_assignment_key(raw_line: bytes) -> Optional[Tuple[str, ...]]:
+    quote: Optional[int] = None
+    escaped = False
+    equals_at: Optional[int] = None
+    for index, byte in enumerate(raw_line):
+        if quote == ord('"'):
+            if escaped:
+                escaped = False
+            elif byte == ord("\\"):
+                escaped = True
+            elif byte == quote:
+                quote = None
+            continue
+        if quote == ord("'"):
+            if byte == quote:
+                quote = None
+            continue
+        if byte in {ord("'"), ord('"')}:
+            quote = byte
+        elif byte == ord("#"):
+            break
+        elif byte == ord("="):
+            equals_at = index
+            break
+    if equals_at is None:
+        return None
+    key = raw_line[:equals_at].strip()
+    if not key:
+        return None
+    try:
+        _, segments = _parse_toml_header_segments(b"[" + key + b"]")
+    except InstallError:
+        return None
+    return tuple(segments)
+
+
+def _semantic_registration_assignments(
+    data: bytes,
+) -> List[Tuple[str, int, Tuple[str, ...]]]:
+    registrations: List[Tuple[str, int, Tuple[str, ...]]] = []
+    _headers, assignments = _scan_toml_structure(data)
+    for offset, current, key in assignments:
+        combined = current + key
+        if combined == ("mcp_servers",):
+            registrations.append(("mcp_servers", offset, combined))
+        elif (
+            len(combined) >= 2
+            and combined[0] == "mcp_servers"
+            and combined[1] in {SERVER_NAME, LEGACY_SERVER_NAME}
+            and not (
+                len(current) == 2
+                and current[0] == "mcp_servers"
+                and current[1] in {
+                    SERVER_NAME,
+                    LEGACY_SERVER_NAME,
+                }
+            )
+        ):
+            registrations.append((combined[1], offset, combined))
+    return registrations
+
+
+def _find_codex_table(data: bytes) -> Optional[Tuple[int, int, bytes]]:
+    return _find_table(data, _TABLE_HEADER, SERVER_NAME)
+
+
+def _find_legacy_codex_table(
+    data: bytes,
+) -> Optional[Tuple[int, int, bytes]]:
+    return _find_table(data, _LEGACY_TABLE_HEADER, LEGACY_SERVER_NAME)
+
+
+def _find_registration_tables(
+    data: bytes,
+) -> Tuple[
+    Optional[Tuple[int, int, bytes]],
+    Optional[Tuple[int, int, bytes]],
+]:
+    canonical = _find_codex_table(data)
+    legacy = _find_legacy_codex_table(data)
+    semantic = _semantic_registration_headers(data)
+    assignment_registrations = _semantic_registration_assignments(data)
+    exact_starts = {
+        (SERVER_NAME, canonical[0])
+        for _ in (0,)
+        if canonical is not None
+    } | {
+        (LEGACY_SERVER_NAME, legacy[0])
+        for _ in (0,)
+        if legacy is not None
+    }
+    for name, start, array, segments in semantic:
+        if (
+            array
+            or len(segments) != 2
+            or (name, start) not in exact_starts
+        ):
+            raise InstallError(
+                "Codex config contains a quoted, array, descendant, or "
+                "otherwise noncanonical " + name + " registration header"
+            )
+    semantic_exact = {(name, start) for name, start, _, _ in semantic}
+    if semantic_exact != exact_starts:
+        raise InstallError(
+            "Codex registration header discovery is ambiguous"
+        )
+    if assignment_registrations:
+        names = sorted({item[0] for item in assignment_registrations})
+        raise InstallError(
+            "Codex config contains a dotted or inline noncanonical "
+            + "/".join(names)
+            + " registration assignment"
+        )
+    if canonical is not None and legacy is not None:
+        raise InstallError(
+            "Codex config exposes both Roblox_Studio_Multisession and "
+            "legacy Roblox_Studio_v2 registrations"
+        )
+    return canonical, legacy
+
+
+def _validate_live_codex_ownership(
+    state: Optional[Mapping[str, Any]],
+    canonical: Optional[Tuple[int, int, bytes]],
+    legacy: Optional[Tuple[int, int, bytes]],
+    expected_block: bytes,
+    *,
+    replace_owned_config: bool,
+    allow_legacy_registration_migration: bool,
+) -> str:
+    """Bind live registration bytes to the exact state identity and hash."""
+
+    existing = canonical if canonical is not None else legacy
+    if existing is None:
+        if state is None:
+            return "fresh"
+        raise InstallError(
+            "owned Codex registration is missing; refusing to create a new "
+            "registration from stale install state"
+        )
+    if state is None:
+        raise InstallError(
+            "Codex config already contains an unowned "
+            + (LEGACY_SERVER_NAME if legacy is not None else SERVER_NAME)
+            + " table"
+        )
+    state_codex = state.get("codex")
+    if not isinstance(state_codex, Mapping):
+        raise InstallError("install state lacks Codex ownership metadata")
+    owned_table = state_codex.get("table")
+    owned_hash = state_codex.get("block_sha256")
+    if (
+        not isinstance(owned_hash, str)
+        or _SAFE_SHA256.fullmatch(owned_hash) is None
+    ):
+        raise InstallError("install state lacks a valid Codex ownership hash")
+    current_hash = _sha256_bytes(existing[2])
+
+    if legacy is not None:
+        if (
+            owned_table != LEGACY_SERVER_HEADER
+            or not secrets.compare_digest(current_hash, owned_hash)
+        ):
+            raise InstallError(
+                "legacy Roblox_Studio_v2 registration is not the exact "
+                "hash-owned table"
+            )
+        if not allow_legacy_registration_migration:
+            raise InstallError(
+                "legacy Roblox_Studio_v2 registration migration requires "
+                "the exact authenticated cross-version update transaction"
+            )
+        return "legacy_migration"
+
+    if owned_table != SERVER_HEADER:
+        raise InstallError(
+            "live Roblox_Studio_Multisession registration does not match "
+            "the install-state registration identity"
+        )
+    expected_hash = _sha256_bytes(expected_block)
+    if secrets.compare_digest(current_hash, expected_hash):
+        if not secrets.compare_digest(current_hash, owned_hash):
+            raise InstallError(
+                "live Roblox_Studio_Multisession registration does not "
+                "match its install-state ownership hash"
+            )
+        return "canonical_exact"
+    if not replace_owned_config:
+        raise InstallError(
+            "owned Roblox_Studio_Multisession table drifted; review it, then "
+            "rerun with --replace-owned-config to replace only that table"
+        )
+    return "canonical_replace"
 
 
 def _owned_codex_separator(
@@ -615,19 +1134,26 @@ def _write_codex_config(
     state: Optional[Mapping[str, Any]],
     *,
     replace_owned_config: bool,
-) -> Tuple[str, Optional[str], bool, str]:
+    allow_legacy_registration_migration: bool,
+) -> Tuple[str, Optional[str], bool, str, Optional[Dict[str, str]]]:
     config_path = layout.codex_config
     data = config_path.read_bytes() if _regular_file(config_path) else b""
     if config_path.exists() and not _regular_file(config_path):
         raise InstallError("Codex config is not a regular file")
-    existing = _find_codex_table(data)
-    expected_hash = _sha256_bytes(expected_block)
-    state_codex = state.get("codex") if isinstance(state, Mapping) else None
-    owned_hash = (
-        state_codex.get("block_sha256")
-        if isinstance(state_codex, Mapping)
-        else None
+    canonical, legacy = _find_registration_tables(data)
+    ownership = _validate_live_codex_ownership(
+        state,
+        canonical,
+        legacy,
+        expected_block,
+        replace_owned_config=replace_owned_config,
+        allow_legacy_registration_migration=(
+            allow_legacy_registration_migration
+        ),
     )
+    existing = canonical if canonical is not None else legacy
+    migrating_legacy = ownership == "legacy_migration"
+    expected_hash = _sha256_bytes(expected_block)
 
     separator = b""
     if existing is None:
@@ -639,20 +1165,16 @@ def _write_codex_config(
         start, end, block = existing
         current_hash = _sha256_bytes(block)
         if state is None:
-            raise InstallError(
-                "Codex config already contains an unowned Roblox_Studio_v2 table"
-            )
+            raise InstallError("validated registration unexpectedly lacks state")
         separator = _owned_codex_separator(layout, state, data, start)
-        if secrets.compare_digest(current_hash, expected_hash):
-            return expected_hash, None, False, separator.hex()
-        if not replace_owned_config:
-            raise InstallError(
-                "owned Roblox_Studio_v2 table drifted; review it, then rerun "
-                "with --replace-owned-config to replace only that table"
-            )
-        if not isinstance(owned_hash, str) or _SAFE_SHA256.fullmatch(owned_hash) is None:
-            raise InstallError("install state lacks a valid Codex ownership hash")
-        new_data = data[:start] + expected_block + data[end:]
+        if ownership == "canonical_exact":
+            return expected_hash, None, False, separator.hex(), None
+        if migrating_legacy:
+            new_data = data[:start] + expected_block + data[end:]
+        else:
+            if ownership != "canonical_replace":
+                raise InstallError("validated Codex ownership state is invalid")
+            new_data = data[:start] + expected_block + data[end:]
 
     backup = _backup_file(
         config_path,
@@ -663,11 +1185,26 @@ def _write_codex_config(
     if _regular_file(config_path):
         existing_mode = stat.S_IMODE(config_path.stat().st_mode)
     _atomic_write(config_path, new_data, existing_mode)
+    migration = None
+    if migrating_legacy:
+        if backup is None:
+            raise InstallError(
+                "legacy registration migration did not capture its config backup"
+            )
+        migration = {
+            "from": LEGACY_SERVER_NAME,
+            "to": SERVER_NAME,
+            "source_block_sha256": current_hash,
+            "source_config_sha256": _sha256_bytes(data),
+            "backup_path": str(backup),
+            "backup_sha256": _sha256_file(backup),
+        }
     return (
         expected_hash,
         None if backup is None else str(backup),
         True,
         separator.hex(),
+        migration,
     )
 
 
@@ -677,27 +1214,101 @@ def _preflight_codex(
     expected_block: bytes,
     *,
     replace_owned_config: bool,
+    allow_legacy_registration_migration: bool,
 ) -> None:
     path = layout.codex_config
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
+        _validate_live_codex_ownership(
+            state,
+            None,
+            None,
+            expected_block,
+            replace_owned_config=replace_owned_config,
+            allow_legacy_registration_migration=(
+                allow_legacy_registration_migration
+            ),
+        )
         return
     if not _regular_file(path):
         raise InstallError("Codex config is not a regular file")
-    existing = _find_codex_table(path.read_bytes())
-    if existing is None:
-        return
-    if state is None:
+    canonical, legacy = _find_registration_tables(path.read_bytes())
+    _validate_live_codex_ownership(
+        state,
+        canonical,
+        legacy,
+        expected_block,
+        replace_owned_config=replace_owned_config,
+        allow_legacy_registration_migration=(
+            allow_legacy_registration_migration
+        ),
+    )
+
+
+def _validate_registration_migration_backup(
+    layout: InstallLayout,
+    value: Mapping[str, Any],
+) -> Path:
+    expected_fields = {
+        "from",
+        "to",
+        "source_block_sha256",
+        "source_config_sha256",
+        "backup_path",
+        "backup_sha256",
+    }
+    if set(value) != expected_fields:
         raise InstallError(
-            "Codex config already contains an unowned Roblox_Studio_v2 table"
+            "Codex registration migration receipt fields are invalid"
         )
-    current_hash = _sha256_bytes(existing[2])
-    if secrets.compare_digest(current_hash, _sha256_bytes(expected_block)):
-        return
-    if not replace_owned_config:
+    source_block_hash = value.get("source_block_sha256")
+    source_config_hash = value.get("source_config_sha256")
+    backup_hash = value.get("backup_sha256")
+    backup_value = value.get("backup_path")
+    if (
+        value.get("from") != LEGACY_SERVER_NAME
+        or value.get("to") != SERVER_NAME
+        or not isinstance(source_block_hash, str)
+        or _SAFE_SHA256.fullmatch(source_block_hash) is None
+        or not isinstance(source_config_hash, str)
+        or _SAFE_SHA256.fullmatch(source_config_hash) is None
+        or not isinstance(backup_hash, str)
+        or _SAFE_SHA256.fullmatch(backup_hash) is None
+        or not isinstance(backup_value, str)
+        or not backup_value
+        or not secrets.compare_digest(source_config_hash, backup_hash)
+    ):
         raise InstallError(
-            "owned Roblox_Studio_v2 table drifted; use doctor before explicitly "
-            "allowing its replacement"
+            "Codex registration migration receipt identity is invalid"
         )
+    try:
+        backup = Path(backup_value).resolve(strict=True)
+        allowed = (layout.backups / "codex").resolve(strict=True)
+        backup.relative_to(allowed)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise InstallError(
+            "Codex registration migration backup is missing or outside "
+            "the owned backup root"
+        ) from exc
+    if (
+        not _regular_file(backup)
+        or not secrets.compare_digest(_sha256_file(backup), backup_hash)
+    ):
+        raise InstallError(
+            "Codex registration migration backup changed"
+        )
+    canonical, legacy = _find_registration_tables(backup.read_bytes())
+    if (
+        canonical is not None
+        or legacy is None
+        or not secrets.compare_digest(
+            _sha256_bytes(legacy[2]), source_block_hash
+        )
+    ):
+        raise InstallError(
+            "Codex registration migration backup does not contain the exact "
+            "former registration"
+        )
+    return backup
 
 
 def _validate_secrets(value: Mapping[str, Any]) -> Dict[str, str]:
@@ -882,7 +1493,7 @@ def _render_plugin(
     )
     if not isinstance(source, str) or not source:
         raise InstallError("durable plugin renderer returned invalid source")
-    package = package_rbxmx(source, package_name="StudioMCPv2SideBySide")
+    package = package_rbxmx(source, package_name=PLUGIN_DISPLAY_NAME)
     if not isinstance(package, str) or not package:
         raise InstallError("durable plugin packager returned invalid XML")
     return package.encode("utf-8")
@@ -1054,23 +1665,32 @@ class Installer:
             raise InstallError("unsupported lifecycle management command")
         argv: List[str]
         cleanup_path: Optional[Path] = None
-        stable_trusted = False
-        if _regular_file(self.layout.launcher):
-            try:
-                state = self._load_state(optional=False)
-                launchers = state.get("launchers")
+        trusted_launcher: Optional[Path] = None
+        try:
+            state = self._load_state(optional=False)
+            launchers = state.get("launchers")
+            for candidate in (
+                self.layout.launcher,
+                self.layout.legacy_launcher,
+            ):
                 expected = (
-                    launchers.get(self.layout.launcher.name)
+                    launchers.get(candidate.name)
                     if isinstance(launchers, Mapping)
                     else None
                 )
-                stable_trusted = isinstance(expected, str) and secrets.compare_digest(
-                    _sha256_file(self.layout.launcher), expected
-                )
-            except InstallError:
-                stable_trusted = False
-        if stable_trusted:
-            argv = [str(self.layout.launcher), command, "--json"]
+                if (
+                    _regular_file(candidate)
+                    and isinstance(expected, str)
+                    and secrets.compare_digest(
+                        _sha256_file(candidate), expected
+                    )
+                ):
+                    trusted_launcher = candidate
+                    break
+        except InstallError:
+            trusted_launcher = None
+        if trusted_launcher is not None:
+            argv = [str(trusted_launcher), command, "--json"]
         elif allow_ephemeral_repair_launcher:
             release_items = [
                 (relative[len("payload/") :], metadata)
@@ -1118,7 +1738,7 @@ class Installer:
             ]
         else:
             raise InstallError(
-                "stable v2 lifecycle launcher is missing or drifted"
+                "stable multisession lifecycle launcher is missing or drifted"
             )
         try:
             process = subprocess.run(
@@ -1131,7 +1751,10 @@ class Installer:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise InstallError(
-                "unable to run the v2 lifecycle " + command + ": " + str(exc)
+                "unable to run the multisession lifecycle "
+                + command
+                + ": "
+                + str(exc)
             )
         finally:
             if cleanup_path is not None:
@@ -1141,19 +1764,25 @@ class Installer:
                 except OSError:
                     pass
         if len(process.stdout) > 1_000_000 or len(process.stderr) > 1_000_000:
-            raise InstallError("v2 lifecycle output exceeded the safety bound")
+            raise InstallError(
+                "multisession lifecycle output exceeded the safety bound"
+            )
         try:
             payload = json.loads(process.stdout.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise InstallError(
-                "v2 lifecycle " + command + " returned invalid JSON"
+                "multisession lifecycle "
+                + command
+                + " returned invalid JSON"
             ) from exc
         if not isinstance(payload, dict):
-            raise InstallError("v2 lifecycle response must be a JSON object")
+            raise InstallError(
+                "multisession lifecycle response must be a JSON object"
+            )
         if process.returncode != 0 or (require_ok and payload.get("ok") is not True):
             message = payload.get("error")
             raise InstallError(
-                "v2 lifecycle "
+                "multisession lifecycle "
                 + command
                 + " was refused safely: "
                 + json.dumps(message, sort_keys=True)
@@ -1168,7 +1797,9 @@ class Installer:
             True,
             False,
         }:
-            raise InstallError("v2 lifecycle stop acknowledgement is invalid")
+            raise InstallError(
+                "multisession lifecycle stop acknowledgement is invalid"
+            )
         return payload
 
     def _load_state(self, *, optional: bool = True) -> Optional[Dict[str, Any]]:
@@ -1362,10 +1993,26 @@ class Installer:
                 self.layout.launcher_bootstrap: _launcher_bootstrap_source(
                     self.package_root, self.layout, self.python_executable
                 ),
+                self.layout.legacy_launcher_bootstrap: (
+                    _launcher_bootstrap_source(
+                        self.package_root,
+                        self.layout,
+                        self.python_executable,
+                    )
+                ),
                 self.layout.launcher: _shell_exec(
                     self.python_executable, self.layout.launcher_bootstrap
                 ),
+                self.layout.legacy_launcher: _shell_exec(
+                    self.python_executable,
+                    self.layout.legacy_launcher_bootstrap,
+                ),
                 self.layout.manager: _shell_exec(
+                    self.python_executable,
+                    self.layout.package / "install.py",
+                    ("--prefix", str(self.layout.support_root)),
+                ),
+                self.layout.legacy_manager: _shell_exec(
                     self.python_executable,
                     self.layout.package / "install.py",
                     ("--prefix", str(self.layout.support_root)),
@@ -1944,6 +2591,15 @@ class Installer:
             self.layout.launcher_bootstrap: (bootstrap, 0o700),
             self.layout.launcher: (launcher, 0o700),
             self.layout.manager: (manager, 0o700),
+            self.layout.legacy_launcher_bootstrap: (bootstrap, 0o700),
+            self.layout.legacy_launcher: (
+                _shell_exec(
+                    self.python_executable,
+                    self.layout.legacy_launcher_bootstrap,
+                ),
+                0o700,
+            ),
+            self.layout.legacy_manager: (manager, 0o700),
         }
         state_launchers = (
             state.get("launchers") if isinstance(state, Mapping) else None
@@ -1953,27 +2609,72 @@ class Installer:
         for path, (data, mode) in expected.items():
             digest = _sha256_bytes(data)
             hashes[path.name] = digest
+            previous = (
+                state_launchers.get(path.name)
+                if isinstance(state_launchers, Mapping)
+                else None
+            )
             if path.exists() or path.is_symlink():
                 if not _regular_file(path):
                     raise InstallError("launcher target is not a regular file")
-                if secrets.compare_digest(_sha256_file(path), digest):
+                current = _sha256_file(path)
+                if state is None or not isinstance(previous, str):
+                    raise InstallError(
+                        "launcher target exists without exact ownership: "
+                        + path.name
+                    )
+                if secrets.compare_digest(current, digest):
+                    if not secrets.compare_digest(current, previous):
+                        raise InstallError(
+                            "launcher ownership hash drifted: " + path.name
+                        )
                     os.chmod(path, mode)
                     continue
-                if state is None:
-                    raise InstallError(
-                        "launcher target exists without v2 ownership state"
-                    )
-                previous = (
-                    state_launchers.get(path.name)
-                    if isinstance(state_launchers, Mapping)
-                    else None
-                )
-                if not isinstance(previous, str):
-                    raise InstallError("install state lacks launcher ownership")
                 _backup_file(path, self.layout.backups / "launchers", path.name)
             _atomic_write(path, data, mode)
             changed = True
         return hashes, changed
+
+    def _preflight_cross_version_launcher_targets(
+        self, state: Mapping[str, Any]
+    ) -> None:
+        """Reject unowned/drifted launcher targets before update mutation."""
+
+        state_launchers = state.get("launchers")
+        if not isinstance(state_launchers, Mapping):
+            raise InstallError(
+                "install state lacks launcher ownership metadata"
+            )
+        for path in (
+            self.layout.launcher,
+            self.layout.launcher_bootstrap,
+            self.layout.manager,
+            self.layout.legacy_launcher,
+            self.layout.legacy_launcher_bootstrap,
+            self.layout.legacy_manager,
+        ):
+            if not path.exists() and not path.is_symlink():
+                continue
+            if not _regular_file(path):
+                raise InstallError(
+                    "launcher target is not a regular file: "
+                    + path.name
+                )
+            previous = state_launchers.get(path.name)
+            if (
+                not isinstance(previous, str)
+                or _SAFE_SHA256.fullmatch(previous) is None
+            ):
+                raise InstallError(
+                    "launcher target exists without exact ownership: "
+                    + path.name
+                )
+            if not secrets.compare_digest(
+                _sha256_file(path), previous
+            ):
+                raise InstallError(
+                    "launcher ownership hash drifted: " + path.name
+                )
 
     def install(
         self,
@@ -2117,7 +2818,8 @@ class Installer:
                 ):
                     raise InstallError(
                         "direct cross-version installation is refused; use "
-                        "roblox-studio-mcp-v2-manage update with an exact "
+                        "roblox-studio-mcp-multisession-manage update with "
+                        "an exact "
                         "verified release instead"
                     )
                 try:
@@ -2142,12 +2844,19 @@ class Installer:
                 )
                 reset_catalog_contract = True
         self._preflight_first_install(state)
+        if reset_catalog_contract:
+            if not isinstance(state, Mapping):
+                raise InstallError(
+                    "cross-version launcher preflight lacks ownership state"
+                )
+            self._preflight_cross_version_launcher_targets(state)
         expected_block = _expected_codex_block(self.layout)
         _preflight_codex(
             self.layout,
             state,
             expected_block,
             replace_owned_config=replace_owned_config,
+            allow_legacy_registration_migration=reset_catalog_contract,
         )
         lifecycle_stop = None
         if state is not None and self._lifecycle_sensitive_change_needed(
@@ -2217,11 +2926,13 @@ class Installer:
             config_backup,
             config_changed,
             codex_separator_hex,
+            registration_migration,
         ) = _write_codex_config(
             self.layout,
             expected_block,
             state,
             replace_owned_config=replace_owned_config,
+            allow_legacy_registration_migration=reset_catalog_contract,
         )
 
         installed_at = (
@@ -2241,10 +2952,19 @@ class Installer:
             if config_backup is not None
             else prior_codex.get("last_backup")
         )
+        prior_registration_migration = prior_codex.get(
+            "registration_migration"
+        )
+        persisted_registration_migration = (
+            registration_migration
+            if registration_migration is not None
+            else prior_registration_migration
+        )
         state_value: Dict[str, Any] = {
             "format": INSTALL_STATE_FORMAT,
             "schema_version": INSTALL_STATE_VERSION,
             "product": PRODUCT,
+            "product_display_name": PRODUCT_DISPLAY_NAME,
             "version": VERSION,
             "support_root": str(self.layout.support_root),
             "installed_at": installed_at,
@@ -2283,6 +3003,15 @@ class Installer:
                 "block_sha256": block_hash,
                 "last_backup": last_config_backup,
                 "inserted_separator_hex": codex_separator_hex,
+                **(
+                    {
+                        "registration_migration": (
+                            persisted_registration_migration
+                        )
+                    }
+                    if isinstance(persisted_registration_migration, Mapping)
+                    else {}
+                ),
             },
         }
         state_bytes = _json_bytes(state_value)
@@ -2300,6 +3029,8 @@ class Installer:
             "support_root": str(self.layout.support_root),
             "plugin": str(self.layout.plugin_target),
             "codex_server": SERVER_NAME,
+            "former_codex_server": LEGACY_SERVER_NAME,
+            "registration_migrated": registration_migration is not None,
             "catalog": catalog_details,
             "changed": any(
                 (
@@ -2315,9 +3046,10 @@ class Installer:
                 )
             ),
             "restart_required": (
-                "Restart Codex to load or refresh the Roblox_Studio_v2 MCP "
-                "registration; restart/reload Studio to load a newly installed "
-                "or repaired plugin."
+                "Restart Codex to load or refresh the "
+                "Roblox_Studio_Multisession MCP registration; "
+                "restart/reload Studio to load a newly installed or repaired "
+                "Studio MCP Multisession plugin."
             ),
             "lifecycle_stop": lifecycle_stop,
         }
@@ -2337,6 +3069,8 @@ class Installer:
             state_manifest_hash = state.get("release_manifest_sha256")
             install_state_ok = (
                 state.get("version") == VERSION
+                and state.get("product_display_name")
+                == PRODUCT_DISPLAY_NAME
                 and isinstance(state_manifest_hash, str)
                 and _SAFE_SHA256.fullmatch(state_manifest_hash) is not None
                 and _regular_file(installed_package_manifest)
@@ -2556,19 +3290,72 @@ class Installer:
         expected_block = _expected_codex_block(self.layout)
         try:
             codex_data = self.layout.codex_config.read_bytes()
-            table = _find_codex_table(codex_data)
-            codex_ok = table is not None and secrets.compare_digest(
-                _sha256_bytes(table[2]), _sha256_bytes(expected_block)
+            table, legacy_table = _find_registration_tables(codex_data)
+            state_codex = (
+                state.get("codex")
+                if isinstance(state, Mapping)
+                and isinstance(state.get("codex"), Mapping)
+                else {}
+            )
+            state_block_hash = state_codex.get("block_sha256")
+            expected_hash = _sha256_bytes(expected_block)
+            codex_ok = (
+                table is not None
+                and legacy_table is None
+                and secrets.compare_digest(
+                    _sha256_bytes(table[2]), expected_hash
+                )
+                and state_codex.get("table") == SERVER_HEADER
+                and isinstance(state_block_hash, str)
+                and secrets.compare_digest(state_block_hash, expected_hash)
             )
             record(
                 "codex_config",
                 codex_ok,
-                "exact owned table present; no secret fields"
+                (
+                    "exact owned Roblox_Studio_Multisession table present; "
+                    "legacy registration absent; no secret fields"
+                )
                 if codex_ok
                 else "owned table missing or drifted",
             )
         except (OSError, InstallError) as exc:
             record("codex_config", False, str(exc))
+
+        migration_value = (
+            state.get("codex", {}).get("registration_migration")
+            if isinstance(state, Mapping)
+            and isinstance(state.get("codex"), Mapping)
+            else None
+        )
+        if migration_value is None:
+            record(
+                "codex_registration_migration",
+                True,
+                "not applicable; no former registration was migrated",
+            )
+        elif not isinstance(migration_value, Mapping):
+            record(
+                "codex_registration_migration",
+                False,
+                "migration receipt is not an object",
+            )
+        else:
+            try:
+                migration_backup = _validate_registration_migration_backup(
+                    self.layout, migration_value
+                )
+                record(
+                    "codex_registration_migration",
+                    True,
+                    "exact former config retained at " + str(migration_backup),
+                )
+            except InstallError as exc:
+                record(
+                    "codex_registration_migration",
+                    False,
+                    str(exc),
+                )
 
         state_launchers = (
             state.get("launchers") if isinstance(state, Mapping) else {}
@@ -2577,6 +3364,9 @@ class Installer:
             self.layout.launcher,
             self.layout.launcher_bootstrap,
             self.layout.manager,
+            self.layout.legacy_launcher,
+            self.layout.legacy_launcher_bootstrap,
+            self.layout.legacy_manager,
         ):
             expected_hash = (
                 state_launchers.get(path.name)
@@ -3231,12 +4021,26 @@ class Installer:
         if not _regular_file(self.layout.codex_config):
             raise InstallError("Codex config is missing; refusing partial uninstall")
         config_data = self.layout.codex_config.read_bytes()
-        table = _find_codex_table(config_data)
-        if table is None or not secrets.compare_digest(
-            _sha256_bytes(table[2]), _sha256_bytes(expected_block)
+        table, legacy_table = _find_registration_tables(config_data)
+        registration_state = _validate_live_codex_ownership(
+            state,
+            table,
+            legacy_table,
+            expected_block,
+            replace_owned_config=False,
+            allow_legacy_registration_migration=False,
+        )
+        if (
+            registration_state != "canonical_exact"
+            or table is None
+            or legacy_table is not None
+            or not secrets.compare_digest(
+                _sha256_bytes(table[2]), _sha256_bytes(expected_block)
+            )
         ):
             raise InstallError(
-                "owned Codex v2 table is missing/drifted; refusing partial uninstall"
+                "owned Codex multisession table is missing/drifted or the "
+                "legacy registration reappeared; refusing partial uninstall"
             )
         plugin_hash = state.get("plugin", {}).get("sha256")
         if (
@@ -3247,7 +4051,8 @@ class Installer:
             )
         ):
             raise InstallError(
-                "owned Studio v2 plugin is missing/drifted; refusing partial uninstall"
+                "owned Studio MCP Multisession plugin is missing/drifted; "
+                "refusing partial uninstall"
             )
 
         start, end, _ = table
@@ -3321,7 +4126,8 @@ def _format_result(value: Mapping[str, Any], as_json: bool) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Install and manage the side-by-side Roblox Studio MCP v2. "
+            "Install and manage Roblox Studio MCP Multisession side by side "
+            "with v1. "
             "V1 is never an owned target."
         )
     )
@@ -3465,7 +4271,11 @@ def main() -> None:
         if getattr(args, "json", False):
             print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
         else:
-            sys.stderr.write("Studio MCP v2 installer refused: " + str(exc) + "\n")
+            sys.stderr.write(
+                "Studio MCP Multisession installer refused: "
+                + str(exc)
+                + "\n"
+            )
         raise SystemExit(2)
 
 

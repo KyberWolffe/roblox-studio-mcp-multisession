@@ -12,8 +12,8 @@ from studio_mcp_v2 import __version__
 
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.4.0-rc.4"
-PEP440_VERSION = "0.4.0rc4"
+VERSION = "0.4.0-rc.5"
+PEP440_VERSION = "0.4.0rc5"
 PRERELEASE_MARKERS = (
     "<!-- experimental-prerelease: true -->",
     "<!-- capability-parity: incomplete -->",
@@ -53,7 +53,10 @@ class ReleaseVersionCoherenceTests(unittest.TestCase):
             ROOT / "docs" / ("RELEASE_NOTES_" + VERSION + ".md")
         )
         note_text = release_note.read_text(encoding="utf-8")
-        self.assertIn("# Roblox Studio MCP v2 " + VERSION, note_text)
+        self.assertIn(
+            "# Roblox Studio MCP Multisession " + VERSION,
+            note_text,
+        )
         for marker in PRERELEASE_MARKERS:
             self.assertEqual(1, note_text.count(marker))
         self.assertIn(
@@ -91,6 +94,55 @@ class ReleaseVersionCoherenceTests(unittest.TestCase):
             self.assertEqual(33, len(manifest["files"]))
             self.assertIn('__version__ = "' + VERSION + '"', archived_init)
             self.assertIn('VERSION = "' + VERSION + '"', archived_installer)
+
+    def test_public_name_and_legacy_bridge_surfaces_are_unambiguous(self) -> None:
+        self.assertEqual(
+            "Roblox Studio MCP Multisession",
+            installer.PRODUCT_DISPLAY_NAME,
+        )
+        self.assertEqual(
+            "Roblox_Studio_Multisession",
+            installer.SERVER_NAME,
+        )
+        self.assertEqual(
+            "Studio MCP Multisession",
+            installer.PLUGIN_DISPLAY_NAME,
+        )
+        self.assertEqual(
+            "roblox-studio-mcp-multisession",
+            installer.STABLE_LAUNCHER_NAME,
+        )
+        self.assertEqual(
+            "roblox-studio-mcp-v2",
+            installer.LEGACY_STABLE_LAUNCHER_NAME,
+        )
+
+        canonical = (
+            ROOT / "config" / "codex-multisession.example.toml"
+        ).read_text(encoding="utf-8")
+        legacy = (
+            ROOT / "config" / "codex-v2.example.toml"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            1,
+            canonical.count(
+                "[mcp_servers.Roblox_Studio_Multisession]"
+            ),
+        )
+        self.assertNotIn("[mcp_servers.Roblox_Studio_v2]", canonical)
+        self.assertIn(
+            "/bin/roblox-studio-mcp-multisession",
+            canonical,
+        )
+        self.assertEqual(
+            1,
+            legacy.count("[mcp_servers.Roblox_Studio_v2]"),
+        )
+        self.assertNotIn(
+            "[mcp_servers.Roblox_Studio_Multisession]",
+            legacy,
+        )
+        self.assertIn("enabled = false", legacy)
 
 
 if __name__ == "__main__":

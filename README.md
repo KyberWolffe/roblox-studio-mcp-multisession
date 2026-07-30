@@ -1,29 +1,35 @@
-# Roblox Studio MCP v2
+# Roblox Studio MCP Multisession
 
 <!-- experimental-prerelease: true -->
 <!-- capability-parity: incomplete -->
 <!-- global-v1-fallback: forbidden -->
 
-Roblox Studio MCP v2 is a side-by-side local integration for safely operating
-multiple Studio sessions from concurrent Codex tasks. Every Studio-bound tool
-requires an explicit, server-assigned `studio_id`. There is no active Studio
-pointer, implicit single-session choice, or default-session fallback.
+Roblox Studio MCP Multisession is a side-by-side local integration for safely
+operating multiple Studio sessions from concurrent Codex tasks. Its short
+display name is **Studio MCP Multisession**, and its canonical Codex server
+name is `Roblox_Studio_Multisession`. Every Studio-bound tool requires an
+explicit, server-assigned `studio_id`. There is no active Studio pointer,
+implicit single-session choice, or default-session fallback.
 
-Version `0.4.0-rc.4` is the corrected isolated Phase 2 release candidate based
-on the frozen, live-validated `0.3.0-rc.4` checkpoint. It is not installed and
-has not been published to GitHub. It retains rc.1's bounded workflow and
-revision-protected multi-edit slices, fixes the rendered plugin's Luau
-local-register overflow and the live-gate public-name boundary, and uses a
-proportional receipt-bound native qualification sequence before any future
-live gate. The failed rc.1 commit and artifact remain immutable and rejected;
-rc.2 and rc.3 are preserved as superseded checkpoints. Rc.3 bound the wrong
-qualification policy by treating full-bundle deep/strict verification as a
-hard functional prerequisite.
+Version `0.4.0-rc.5` is the public-name migration candidate based on the
+durable installed `0.4.0-rc.4` release, which remains its immutable immediate
+rollback target. The `0.3.0-rc.4` restore artifact remains available as older
+recovery history. Rc.5 transactionally replaces an owned former
+`Roblox_Studio_v2` Codex registration with
+`Roblox_Studio_Multisession`; the two names must never remain active together.
+The public `_v2` tool names, authenticated `/v2` routes, Python/internal
+identifiers, support root, former launcher aliases, plugin path, archive
+basename, and manifest format remain unchanged. Rc.5 also installs canonical
+launcher/manager names and points the sole Codex registration at the canonical
+launcher. The retained physical aliases form an intentional migration bridge
+so the `0.4.0-rc.4` bootstrap, update journal, and byte-for-byte one-step
+rollback remain usable. Rc.5 is not installed or published by this source
+change.
 
-> **Experimental prerelease:** the safe v2 surface does not yet cover all 25
-> modern v1 capabilities. Twelve P0 rows remain partial or deferred. Publication
-> is allowed only under a prerelease tag, and missing operations never fall back
-> to a global v1 Studio selector. See the exact
+> **Experimental prerelease:** the safe Multisession surface does not yet
+> cover all 25 modern v1 capabilities. Twelve P0 rows remain partial or
+> deferred. Publication is allowed only under a prerelease tag, and missing
+> operations never fall back to a global v1 Studio selector. See the exact
 > [capability parity matrix](docs/CAPABILITY_PARITY.md).
 
 ## Supported system
@@ -38,7 +44,7 @@ Intel Macs and processes running through Rosetta are intentionally unsupported.
 The bootstrap and installer check the platform before creating or changing any
 files.
 
-## What v2 changes
+## What Multisession changes
 
 ```text
 Codex task A ─ stdio frontend ─┐
@@ -109,7 +115,7 @@ python3 -B scripts/release_dry_run.py
 The release dry run audits the repository, builds the deterministic archive
 twice, compares it byte-for-byte, audits the archive, and exercises the
 installer in a temporary home. It does not touch real Codex, Roblox Studio, or
-installed v1/v2 files.
+installed v1 or Multisession files.
 
 Before a rendered candidate may be used for a live Studio gate, its exact
 hashed `.rbxmx` source must also pass
@@ -135,15 +141,18 @@ Do not install from a mutable `main` branch. Use an exact version tag and the
 published SHA-256.
 
 The bootstrap and direct `install.py install` path are for a fresh install or
-the same version only. If any different v2 version is already installed, use
-the installed `roblox-studio-mcp-v2-manage update` command shown below. Direct
+the same version only. If any different Multisession version is already
+installed, use its installed manager. The rc.4-to-rc.5 migration necessarily
+begins through the former `roblox-studio-mcp-v2-manage update` path; after
+rc.5 activates, use `roblox-studio-mcp-multisession-manage`. Direct
 cross-version replacement is refused unless it is the exact candidate inside
 that live, nonce-fenced update transaction.
 
-The release publishes a small versioned bootstrap separately. The following is
-one command: it downloads from an exact tag, verifies both fixed release
-digests, then runs the verified bootstrap. The owner, repository, tag, and
-digests below are pinned to this release:
+The release publishes a small versioned bootstrap separately. The following
+historical `0.3.0-rc.3` command is retained verbatim as provenance: it
+downloads from an exact tag, verifies both fixed release digests, then runs
+the verified bootstrap. The owner, repository, tag, and digests are pinned to
+that release:
 
 ```bash
 /bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.3 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
@@ -153,7 +162,7 @@ The command deliberately does not pipe network content into a shell. The
 verified bootstrap then verifies the archive checksum and internal manifest
 before invoking the fresh/same-version installer.
 
-The explicit archive path is:
+The matching historical explicit archive path is:
 
 ```bash
 curl --fail --location --remote-name \
@@ -175,33 +184,40 @@ The installer derives the user home safely and owns only:
 
 - `~/Library/Application Support/RobloxStudioMCPv2`
 - `~/Documents/Roblox/Plugins/StudioMCPv2SideBySide.rbxmx`
-- `[mcp_servers.Roblox_Studio_v2]` in `~/.codex/config.toml`
+- `[mcp_servers.Roblox_Studio_Multisession]` in `~/.codex/config.toml`
 
 It does not replace the existing `Roblox_Studio` MCP table or v1 plugin. Codex
-starts the v2 launcher on demand; the launcher owns predictable broker startup,
-shutdown, diagnostics, and logs.
+starts the canonical Multisession launcher on demand; the launcher owns
+predictable broker startup, shutdown, diagnostics, and logs.
 
-The side-by-side table follows Codex's supported user MCP configuration
-contract. See the [official Codex MCP setup
-guide](https://learn.chatgpt.com/docs/extend/mcp).
+The canonical table follows Codex's supported user MCP configuration contract.
+See [`config/codex-multisession.example.toml`](config/codex-multisession.example.toml)
+and the [official Codex MCP setup
+guide](https://learn.chatgpt.com/docs/extend/mcp). The retained
+[`config/codex-v2.example.toml`](config/codex-v2.example.toml) is a disabled
+former-name migration reference, not a second active registration.
 
 After installation:
 
 ```bash
-"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" doctor
-"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" status
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" doctor
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" status
 ```
 
-Restart Codex so it refreshes the MCP tool cache. Restart Studio or reload
-local plugins for already-open windows. Each place must allow HTTP requests so
-its plugin can reach the fixed `127.0.0.1` broker; when disabled, that Studio
-simply remains unregistered. After those gates, name the desired place in the
-task; do not manually select a broker session.
+Restart Codex so it refreshes the `Roblox_Studio_Multisession` MCP tool cache.
+Restart Studio or reload local plugins for already-open windows. Each place
+must allow HTTP requests so its plugin can reach the fixed `127.0.0.1` broker;
+when disabled, that Studio simply remains unregistered. After those gates,
+name the desired place in the task; do not manually select a broker session.
 
 ## Repair, update, rollback, and uninstall
 
+The pinned `0.3.0-rc.3` tag and digest in this block are retained as a
+historical exact-release example. Use the target release's reviewed tag and
+published digest for a current update.
+
 ```bash
-MANAGER="$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage"
+MANAGER="$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage"
 "$MANAGER" repair
 "$MANAGER" update \
   --owner KyberWolffe \
@@ -220,9 +236,9 @@ and v1 fallback intact.
 If the manager process or operating system interrupts the switch,
 `status`/`doctor` expose the durable transaction record and plain `repair`
 restores the exact pre-switch snapshot. Recovery verifies the marker,
-snapshot, and retained lifecycle code; stops v2 before restore; runs the
-restored version's real doctor; and clears the marker only after success. It
-never resumes a half-installed candidate and fails closed on tampering or a
+snapshot, and retained lifecycle code; stops Multisession before restore; runs
+the restored version's real doctor; and clears the marker only after success.
+It never resumes a half-installed candidate and fails closed on tampering or a
 stop refusal.
 
 Update and rollback both use this journal. The journal identifies the
@@ -236,7 +252,7 @@ installer again or run `repair` with a current Python 3.9+; repair repins the
 launcher without replacing machine credentials.
 
 For a private repository, authenticate with GitHub separately, download the
-archive and checksum, then use:
+archive and checksum, then use the same historical pinned example shape:
 
 ```bash
 "$MANAGER" update \
@@ -246,15 +262,16 @@ archive and checksum, then use:
   --expected-sha256 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
 ```
 
-V2 never asks for or stores GitHub credentials. See
+Multisession never asks for or stores GitHub credentials. See
 [docs/GITHUB_DISTRIBUTION.md](docs/GITHUB_DISTRIBUTION.md) and
 [release_tools/PORTABLE_INSTALL.md](release_tools/PORTABLE_INSTALL.md).
 
 ## Updating the Roblox tool catalog
 
-Catalog versions are independent of the v2 application version. The manager
-can compare the installed catalog with a trusted local v1 cache or an explicit
-local catalog artifact. Import requires review and exact digest acceptance.
+Catalog versions are independent of the Multisession application version. The
+manager can compare the installed catalog with a trusted local v1 cache or an
+explicit local catalog artifact. Import requires review and exact digest
+acceptance.
 
 ```bash
 "$MANAGER" catalog diff --artifact /path/to/candidate-catalog.json
@@ -277,6 +294,6 @@ hash-fenced.
 - [Testing and release proof](docs/TESTING.md)
 - [GitHub distribution](docs/GITHUB_DISTRIBUTION.md)
 - [Design provenance and source limits](docs/SOURCE_AUDIT.md)
-- [Release notes](docs/RELEASE_NOTES_0.4.0-rc.4.md)
+- [Release notes](docs/RELEASE_NOTES_0.4.0-rc.5.md)
 - [Changelog](CHANGELOG.md)
 - [License status](LICENSE_STATUS.md)

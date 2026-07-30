@@ -117,7 +117,7 @@ class ToolCatalog:
         result = copy.deepcopy(dict(raw))
         result["name"] = public_name
         result["description"] = (
-            "[Roblox Studio MCP v2: resolve the user's named place with "
+            "[Roblox Studio MCP Multisession: resolve the user's named place with "
             "list_roblox_studios_v2, then pass its studio_id internally; "
             "never use a global/default Studio] "
             + str(result.get("description", ""))

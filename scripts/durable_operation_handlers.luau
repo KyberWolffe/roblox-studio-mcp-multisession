@@ -1,5 +1,5 @@
 --[[
-Durable Studio MCP v2 operation registry.
+Durable Studio MCP Multisession operation registry.
 
 This source is inserted into the side-by-side plugin at install time. Every
 handler operates only inside the plugin's already-bound DataModel. Instance

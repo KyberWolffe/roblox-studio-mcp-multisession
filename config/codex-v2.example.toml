@@ -1,15 +1,16 @@
-# Example only. The durable installer writes this as a separate table and
-# refuses to replace the existing Roblox_Studio block.
+# Former-name compatibility example for configurations written before
+# 0.4.0-rc.5. New installs and updates use Roblox_Studio_Multisession instead.
+# Do not leave this table enabled beside the canonical table.
 
 [mcp_servers.Roblox_Studio_v2]
 command = "/absolute/path/to/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2"
 args = []
-enabled = true
+enabled = false
 required = false
 startup_timeout_sec = 20
 tool_timeout_sec = 180
 default_tools_approval_mode = "writes"
 
-# No credential or hub URL belongs in Codex configuration. The stable launcher
-# reads the private, per-install configuration and starts or reuses the
-# authenticated loopback broker.
+# This file exists only to identify and migrate the former registration name.
+# The launcher and support path intentionally retain their legacy filenames for
+# rc.4 bootstrap, update, and rollback compatibility.

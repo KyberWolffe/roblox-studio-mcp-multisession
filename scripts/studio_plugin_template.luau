@@ -1,5 +1,5 @@
 --[[
-Standalone, side-by-side Studio MCP v2 R&D plugin template.
+Standalone, side-by-side Studio MCP Multisession R&D plugin template.
 
 The renderer replaces only the Studio bearer token, run ID, and fixed audited
 Play-server bridge source. Runtime requests have the following closed schemas:
@@ -46,7 +46,7 @@ __PLAY_SERVER_PLUGIN_BRIDGE_BODY__
 		local bridgeOk, bridgeError = pcall(runPlayServerPluginBridge)
 		if not bridgeOk then
 			warn(
-				"Studio MCP v2 PlayServer bridge failed closed: "
+				"Studio MCP Multisession PlayServer bridge failed closed: "
 					.. string.sub(tostring(bridgeError), 1, 200)
 			)
 		end
@@ -66,7 +66,7 @@ then
 	return
 end
 
-assert(plugin ~= nil, "Studio MCP v2 must be installed as a Studio plugin")
+assert(plugin ~= nil, "Studio MCP Multisession must be installed as a Studio plugin")
 
 local CONFIG = table.freeze({
 	studio_bearer_token = "__STUDIO_BEARER_TOKEN__",
@@ -373,7 +373,7 @@ end
 if shared[SINGLETON_KEY] ~= nil then
 	adapterError(
 		"singleton_conflict",
-		"A standalone Studio MCP v2 plugin already owns this DataModel",
+		"A standalone Studio MCP Multisession plugin already owns this DataModel",
 		true
 	)
 end

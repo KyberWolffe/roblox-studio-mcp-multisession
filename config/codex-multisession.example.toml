@@ -1,0 +1,16 @@
+# Canonical example for Roblox Studio MCP Multisession. The durable installer
+# writes this as a separate table and refuses to replace Roblox_Studio.
+
+[mcp_servers.Roblox_Studio_Multisession]
+command = "/absolute/path/to/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession"
+args = []
+enabled = true
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 180
+default_tools_approval_mode = "writes"
+
+# No credential or broker URL belongs in Codex configuration. The stable
+# canonical launcher reads the private per-install configuration and starts or
+# reuses the authenticated loopback broker. The former launcher name remains a
+# compatibility shim during the rc.5 migration bridge.

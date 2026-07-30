@@ -95,7 +95,7 @@ def require_supported_platform(
     else:
         reason = "the machine architecture is " + (status.machine or "unknown")
     raise UnsupportedPlatformError(
-        "Roblox Studio MCP v2 supports native Apple Silicon macOS only; "
+        "Roblox Studio MCP Multisession supports native Apple Silicon macOS only; "
         + reason
         + ". No files were changed."
     )
@@ -108,7 +108,7 @@ def require_supported_runtime(
     if detected >= MINIMUM_PYTHON:
         return detected
     raise UnsupportedPlatformError(
-        "Roblox Studio MCP v2 requires Python 3.9 or newer; detected "
+        "Roblox Studio MCP Multisession requires Python 3.9 or newer; detected "
         + ".".join(str(item) for item in detected)
         + ". No files were changed."
     )

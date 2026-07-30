@@ -4,9 +4,9 @@
 <!-- p0-parity: incomplete -->
 <!-- full-parity-claimed: false -->
 
-Version `0.4.0-rc.4` is an isolated experimental release candidate. Full
-25-tool parity is not claimed. It preserves the frozen rc.4 multi-session
-architecture while Phase 2 addresses the 12 P0 gaps below.
+Version `0.4.0-rc.5` is an experimental release candidate. Full 25-tool parity
+is not claimed. It preserves the frozen `0.4.0-rc.4` multi-session architecture
+and immediate rollback while the 12 P0 gaps below remain partial or deferred.
 
 This matrix covers exactly the first 25 modern tools in
 `config/tool-catalog.json`. The six trailing legacy reference-plugin aliases

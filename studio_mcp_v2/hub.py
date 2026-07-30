@@ -31,7 +31,7 @@ def _default_catalog() -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the isolated Roblox Studio MCP v2 broker. "
+            "Run the isolated Roblox Studio MCP Multisession broker. "
             "This does not discover, stop, or modify the v1 server."
         )
     )
@@ -93,7 +93,7 @@ async def serve_hub(
             ready_callback(server)
         if announce:
             sys.stderr.write(
-                "Studio MCP v2 broker listening on "
+                "Studio MCP Multisession broker listening on "
                 f"http://{host}:{server.server_address[1]}.\n"
             )
             sys.stderr.flush()
@@ -131,7 +131,11 @@ def main() -> None:
     try:
         asyncio.run(run(args))
     except (ValueError, OSError) as exc:
-        sys.stderr.write("Studio MCP v2 hub refused to start: " + str(exc) + "\n")
+        sys.stderr.write(
+            "Studio MCP Multisession hub refused to start: "
+            + str(exc)
+            + "\n"
+        )
         raise SystemExit(2)
 
 

@@ -201,7 +201,7 @@ jobs:
             --draft \
             --verify-tag \
             --target "$RELEASE_COMMIT_SHA" \
-            --title "Roblox Studio MCP v2 $RELEASE_VERSION" \
+            --title "Roblox Studio MCP Multisession $RELEASE_VERSION" \
             --notes-file "docs/RELEASE_NOTES_$RELEASE_VERSION.md" \
             "${prerelease[@]}"
 

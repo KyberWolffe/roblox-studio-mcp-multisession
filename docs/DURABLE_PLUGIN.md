@@ -1,11 +1,11 @@
-# Durable side-by-side Studio plugin
+# Durable Studio MCP Multisession plugin
 
-The durable v2 plugin is not limited to two Studio sessions. Every plugin
-runtime generates its own `client_instance_id`, registration secret, document
-epoch, and derived session tag; the broker assigns a distinct `studio_id`.
-The broker session map has no two-session branch or configured session-count
-limit. Practical capacity is bounded by Studio processes, local HTTP polling,
-memory, and CPU.
+The durable Roblox Studio MCP Multisession plugin is not limited to two Studio
+sessions. Every plugin runtime generates its own `client_instance_id`,
+registration secret, document epoch, and derived session tag; the broker
+assigns a distinct `studio_id`. The broker session map has no two-session
+branch or configured session-count limit. Practical capacity is bounded by
+Studio processes, local HTTP polling, memory, and CPU.
 
 The plugin never selects an active/default Studio. Every operational MCP schema
 gets a required `studio_id` at the broker publication boundary. That ID is
@@ -14,8 +14,8 @@ resume credential, generation, and authorization policy remain separate checks.
 
 ## Durable operation surface
 
-The isolated 0.4.0-rc.4 candidate catalog exposes exactly these Studio-side
-handlers. The live-installed rc.4 catalog remains unchanged:
+The isolated 0.4.0-rc.5 candidate catalog exposes exactly these Studio-side
+handlers. The live-installed `0.4.0-rc.4` catalog remains unchanged:
 
 - `studio_get_state`
 - `studio_list_tree`
@@ -202,7 +202,7 @@ python3 -B -m scripts.review_upstream_catalog \
 ```
 
 Run the full generation and publication contracts without writing anything
-before asking the lifecycle manager to stop the v2 broker:
+before asking the lifecycle manager to stop the Multisession broker:
 
 ```sh
 python3 -B -m scripts.review_upstream_catalog \
@@ -245,10 +245,12 @@ separate reviewed snapshot is
 the pinned release under isolated Python flags, so import does not depend on a
 repository working directory or `PYTHONPATH`.
 
-`roblox-studio-mcp-v2 doctor --json` reports the configured catalog's local format and
-version, effective canonical catalog hash, and the separate sanitized upstream
-version/source hash/compatibility fields. No import command fetches a URL or
-executes candidate code.
+The canonical `roblox-studio-mcp-multisession doctor --json` command reports
+the configured catalog's local format and version, effective canonical catalog
+hash, and the separate sanitized upstream version/source
+hash/compatibility fields. The former `roblox-studio-mcp-v2` command remains a
+compatibility alias for the `0.4.0-rc.4` migration and rollback bridge. No
+import command fetches a URL or executes candidate code.
 
 ## Validation boundary
 

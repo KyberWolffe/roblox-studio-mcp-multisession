@@ -1,4 +1,4 @@
-"""Render the isolated Studio MCP v2 plugin without installing or running it.
+"""Render Studio MCP Multisession without installing or running it.
 
 The pure ``render_fresh_bundle`` API is the preferred orchestration boundary:
 it creates a new hub Studio token and run ID together and returns both beside
@@ -32,6 +32,8 @@ SAFE_SECRET = re.compile(r"^[A-Za-z0-9_.:-]+$")
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9]+$")
 PLACEHOLDER = re.compile(r"__[A-Z0-9_]+__")
 DEFAULT_BASE_URL = "http://127.0.0.1:44756"
+STUDIO_DISPLAY_NAME = "Studio MCP Multisession"
+_LEGACY_DURABLE_DISPLAY_NAME = "StudioMCPv2SideBySide"
 MAX_LUAU_LOCALS_PER_FUNCTION = 200
 LUAU_LOCAL_HEADROOM = 40
 MAX_DURABLE_HANDLER_LOCALS = (
@@ -207,7 +209,7 @@ def _durable_server_template(source: str, base_url: str) -> str:
     source = _replace_exact(
         source,
         """--[[
-Fixed Studio MCP v2 PlayServer plugin bridge.
+Fixed Studio MCP Multisession PlayServer plugin bridge.
 
 This source is embedded twice in the rendered Studio plugin: as executable
 PlayServer plugin code and as the inert temporary Script marker's auditable
@@ -216,7 +218,7 @@ The loopback origin, endpoint paths, retry limits, watchdog duration, and
 EndTest payload are not caller controlled.
 ]]""",
         """--[[
-Durable Studio MCP v2 PlayServer plugin bridge.
+Durable Studio MCP Multisession PlayServer plugin bridge.
 
 This fixed source is embedded as executable plugin code and as the inert
 temporary Script marker's auditable source at install time. It accepts one
@@ -249,10 +251,10 @@ def _durable_plugin_template(
 ) -> str:
     source = _replace_region(
         source,
-        "--[[\nStandalone, side-by-side Studio MCP v2 R&D plugin template.",
+        "--[[\nStandalone, side-by-side Studio MCP Multisession R&D plugin template.",
         "local InitialRunService = game:GetService(\"RunService\")",
         """--[[
-Durable, side-by-side Studio MCP v2 plugin template.
+Durable, side-by-side Studio MCP Multisession plugin template.
 
 Every Studio plugin runtime generates a distinct client UUID, registration
 secret, document epoch, and derived session tag. The broker assigns studio_id.
@@ -594,7 +596,7 @@ def render_durable(
 def package_rbxmx(
     plugin_source: str,
     *,
-    package_name: str = "StudioMCPv2SideBySidePlugin",
+    package_name: str = STUDIO_DISPLAY_NAME,
 ) -> str:
     """Package rendered source as a reversible local-plugin XML model."""
 
@@ -602,12 +604,19 @@ def package_rbxmx(
         raise ValueError("plugin_source must be nonempty text")
     if "]]>" in plugin_source:
         raise ValueError("plugin_source cannot be represented in one CDATA node")
+    if package_name == _LEGACY_DURABLE_DISPLAY_NAME:
+        package_name = STUDIO_DISPLAY_NAME
+    if not isinstance(package_name, str):
+        raise ValueError("package_name must be bounded printable display text")
+    encoded_name = package_name.encode("utf-8")
     if (
-        not isinstance(package_name, str)
-        or not 1 <= len(package_name) <= 64
-        or re.fullmatch(r"[A-Za-z0-9_.-]+", package_name) is None
+        package_name != package_name.strip()
+        or not package_name.isprintable()
+        or not 1 <= len(encoded_name) <= 64
     ):
-        raise ValueError("package_name must be bounded filename-safe text")
+        raise ValueError(
+            "package_name must be bounded trimmed printable display text"
+        )
 
     folder_ref = "RBX" + uuid.uuid4().hex
     script_ref = "RBX" + uuid.uuid4().hex
@@ -691,7 +700,7 @@ def render_fresh_durable_bundle(
         plugin_source=plugin_source,
         plugin_package_rbxmx=package_rbxmx(
             plugin_source,
-            package_name="StudioMCPv2SideBySide",
+            package_name=STUDIO_DISPLAY_NAME,
         ),
     )
 

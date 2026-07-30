@@ -1,15 +1,15 @@
-# Architecture
+# Roblox Studio MCP Multisession architecture
 
 ## Topology
 
 ```text
 Codex task 1 ─ stdio MCP frontend ─┐
 Codex task 2 ─ stdio MCP frontend ─┤
-             ...                   ├─ authenticated loopback API ─ v2 broker
-Codex task N ─ stdio MCP frontend ─┘                              │
-                                                                 ├─ session/lock A ─ Studio A plugin
-                                                                 ├─ session/lock B ─ Studio B plugin
-                                                                 └─ session/lock N ─ Studio N plugin
+             ...                   ├─ authenticated loopback ─ Multisession v2 broker
+Codex task N ─ stdio MCP frontend ─┘                         │
+                                                            ├─ session/lock A ─ Studio A plugin
+                                                            ├─ session/lock B ─ Studio B plugin
+                                                            └─ session/lock N ─ Studio N plugin
 ```
 
 The shared broker is the concurrency authority. A lock inside each Codex
@@ -26,6 +26,22 @@ There is no architectural two-session limit. Automated coverage registers
 more than two sessions against the same registry and scheduler. Practical
 capacity is bounded by Studio processes, local HTTP polling, memory, and CPU,
 not a configured session count.
+
+## Public name and compatibility boundary
+
+The public product is **Roblox Studio MCP Multisession**, with short display
+name **Studio MCP Multisession** and Codex server name
+`Roblox_Studio_Multisession`. Version 0.4.0-rc.5 migrates the owned Codex
+registration and adds the canonical public launcher/display identities.
+
+The `_v2` tool suffixes, `/v2` authenticated routes, Python package/internal
+identifiers, support root, plugin filename, former launcher aliases, archive
+basename, and manifest formats remain compatibility identities. They are
+deliberately unchanged so the immutable `0.4.0-rc.4` bootstrap and transaction
+journal can update to rc.5 and restore `0.4.0-rc.4` byte-for-byte. This split
+does not create a second active server: the owned former
+`Roblox_Studio_v2` Codex table is replaced by the canonical table, never
+retained beside it.
 
 ## Session state
 
@@ -54,10 +70,12 @@ never global. Discovery returns non-secret snapshots only.
 
 ## Studio-side integration
 
-Each Studio window runs an independent instance of the side-by-side v2 plugin.
-The plugin exits before registration in a Play client/server DataModel. The
-durable package has no place allowlist or window-count ceiling; every eligible
-Edit DataModel creates its own runtime identity and registers independently.
+Each Studio window runs an independent instance of the Multisession plugin.
+Its physical package retains the legacy v2 filename for rollback
+compatibility. The plugin exits before registration in a Play client/server
+DataModel. The durable package has no place allowlist or window-count ceiling;
+every eligible Edit DataModel creates its own runtime identity and registers
+independently.
 
 Within an Edit DataModel, the plugin generates a fresh:
 
@@ -295,9 +313,9 @@ active or uncertain records are never compacted.
 
 ## Coexistence with production v1
 
-V2 is a separate broker endpoint, plugin artifact, and optional Codex MCP
-entry. The existing v1 binary, plugin, configuration, and live process are
-left intact as a fallback.
+Multisession is a separate broker endpoint, plugin artifact, and optional
+Codex MCP entry. The existing v1 binary, plugin, configuration, and live
+process are left intact as a fallback.
 
 Wrapping v1 by selecting a Studio before each request would reintroduce the
 race this design removes. V2 operational traffic must therefore go directly

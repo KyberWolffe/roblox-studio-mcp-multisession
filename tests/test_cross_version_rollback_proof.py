@@ -10,10 +10,16 @@ from unittest import mock
 
 from release_tools import builder
 from release_tools.cross_version_proof import (
+    MULTISESSION_CANDIDATE_VERSION,
+    MULTISESSION_PRIOR_ARCHIVE_SHA256,
+    MULTISESSION_PRIOR_MANIFEST_SHA256,
+    MULTISESSION_PRIOR_VERSION,
     ProofError,
+    RC4_VERSION,
     _active_fingerprint,
     _archive_manifest,
     _bounded_subprocesses,
+    prove_multisession_migration_rollback,
 )
 
 
@@ -21,6 +27,47 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class CrossVersionRollbackProofTests(unittest.TestCase):
+    def test_rename_proof_has_a_separate_immutable_prior_identity(
+        self,
+    ) -> None:
+        self.assertEqual("0.3.0-rc.4", RC4_VERSION)
+        self.assertEqual("0.4.0-rc.4", MULTISESSION_PRIOR_VERSION)
+        self.assertEqual(
+            "0.4.0-rc.5", MULTISESSION_CANDIDATE_VERSION
+        )
+        self.assertEqual(
+            (
+                "21e75b1fa74fdc7463d29fde45dffaa35323cb5017e47b85b"
+                "29289619988adf8"
+            ),
+            MULTISESSION_PRIOR_ARCHIVE_SHA256,
+        )
+        self.assertEqual(
+            (
+                "ce926e9e81ab0803c028831cf41614050e29016f11ac2ac073"
+                "25556e63ab44cd"
+            ),
+            MULTISESSION_PRIOR_MANIFEST_SHA256,
+        )
+
+    def test_rename_proof_rejects_the_wrong_candidate_before_io(
+        self,
+    ) -> None:
+        missing = ROOT / "does-not-exist"
+        with self.assertRaisesRegex(
+            ProofError, "requires candidate 0.4.0-rc.5"
+        ):
+            prove_multisession_migration_rollback(
+                prior_archive=missing,
+                prior_checksum_file=missing,
+                candidate_archive=missing,
+                candidate_checksum_file=missing,
+                candidate_expected_sha256="0" * 64,
+                candidate_version="0.4.0-rc.6",
+                source_commit="0" * 40,
+                source_tree="0" * 40,
+            )
+
     def test_wrong_checksum_fails_before_archive_audit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             built = builder.build_release(ROOT, Path(temporary))

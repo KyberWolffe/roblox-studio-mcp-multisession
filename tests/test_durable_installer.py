@@ -450,7 +450,13 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         self.assertTrue(result["changed"])
         config = (self.codex_dir / "config.toml").read_bytes()
         self.assertTrue(config.startswith(self.v1_config))
-        self.assertEqual(1, config.count(b"[mcp_servers.Roblox_Studio_v2]"))
+        self.assertEqual(
+            1,
+            config.count(b"[mcp_servers.Roblox_Studio_Multisession]"),
+        )
+        self.assertEqual(
+            0, config.count(b"[mcp_servers.Roblox_Studio_v2]")
+        )
         self.assertIn(b'default_tools_approval_mode = "writes"', config)
         self.assertIn(b"required = false", config)
         self.assertNotIn(b"STUDIO_MCP_V2_CLIENT_TOKEN", config)
@@ -466,6 +472,29 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         self.assertNotEqual(
             secrets_value["client_token"], secrets_value["studio_token"]
         )
+        state = json.loads(self.layout.install_state.read_text())
+        self.assertEqual(
+            "Roblox Studio MCP Multisession",
+            state["product_display_name"],
+        )
+        self.assertEqual(
+            durable.SERVER_HEADER, state["codex"]["table"]
+        )
+        for launcher in (
+            self.layout.launcher,
+            self.layout.launcher_bootstrap,
+            self.layout.manager,
+            self.layout.legacy_launcher,
+            self.layout.legacy_launcher_bootstrap,
+            self.layout.legacy_manager,
+        ):
+            self.assertTrue(launcher.is_file(), str(launcher))
+            self.assertEqual(
+                0o700,
+                stat.S_IMODE(launcher.stat().st_mode),
+                str(launcher),
+            )
+            self.assertIn(launcher.name, state["launchers"])
 
     def test_repeat_install_is_a_true_noop_and_does_not_stop(self) -> None:
         self._install()
@@ -920,22 +949,95 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         self.assertTrue(any((self.layout.backups / "plugin").iterdir()))
         self.assertEqual(self.v1_plugin_hash, _sha256(self.v1_plugin))
 
-    def test_repair_uses_verified_ephemeral_launcher_when_stable_one_is_missing(
+    def test_repair_uses_owned_legacy_launcher_when_canonical_one_is_missing(
         self,
     ) -> None:
         self._install()
         self.layout.launcher.unlink()
         self.layout.plugin_target.write_bytes(b"corrupt")
-        fake = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=b'{"ok":true,"running":false,"stopped":false}\n',
-            stderr=b"",
-        )
-        with mock.patch("release_tools.installer.subprocess.run", return_value=fake):
+        observed = []
+
+        def fake_run(argv, **_kwargs):
+            observed.append(tuple(argv))
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=0,
+                stdout=b'{"ok":true,"running":false,"stopped":false}\n',
+                stderr=b"",
+            )
+
+        with mock.patch(
+            "release_tools.installer.subprocess.run",
+            side_effect=fake_run,
+        ):
             result = self.manager.install(repair=True)
         self.assertTrue(result["changed"])
+        self.assertEqual(
+            str(self.layout.legacy_launcher), observed[0][0]
+        )
         self.assertTrue(self.layout.launcher.is_file())
+
+    def test_existing_launcher_without_state_ownership_is_never_adopted(
+        self,
+    ) -> None:
+        self._install()
+        state = json.loads(self.layout.install_state.read_text())
+        for path in (
+            self.layout.launcher,
+            self.layout.launcher_bootstrap,
+            self.layout.manager,
+        ):
+            state["launchers"].pop(path.name)
+        durable._atomic_write(
+            self.layout.install_state,
+            durable._json_bytes(state),
+            0o600,
+        )
+        protected = self._snapshot_owned_scope(self.layout)
+        with mock.patch.object(
+            self.manager,
+            "_safe_stop_lifecycle",
+            side_effect=AssertionError(
+                "unowned launcher collision must fail before stop"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                durable.InstallError, "without exact ownership"
+            ):
+                self.manager.install(repair=True)
+        self.assertEqual(
+            protected,
+            self._snapshot_owned_scope(self.layout),
+        )
+
+    def test_repair_uses_verified_ephemeral_launcher_when_both_are_missing(
+        self,
+    ) -> None:
+        self._install()
+        self.layout.launcher.unlink()
+        self.layout.legacy_launcher.unlink()
+        self.layout.plugin_target.write_bytes(b"corrupt")
+        observed = []
+
+        def fake_run(argv, **_kwargs):
+            observed.append(tuple(argv))
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=0,
+                stdout=b'{"ok":true,"running":false,"stopped":false}\n',
+                stderr=b"",
+            )
+
+        with mock.patch(
+            "release_tools.installer.subprocess.run",
+            side_effect=fake_run,
+        ):
+            result = self.manager.install(repair=True)
+        self.assertTrue(result["changed"])
+        self.assertEqual(sys.executable, observed[0][0])
+        self.assertIn(".repair-launcher-", observed[0][3])
+        self.assertTrue(self.layout.launcher.is_file())
+        self.assertTrue(self.layout.legacy_launcher.is_file())
         self.assertFalse(
             any(self.layout.run.glob(".repair-launcher-*.py")),
             "ephemeral recovery launchers must be removed",
@@ -1423,6 +1525,451 @@ print(json.dumps(manager.install(repair=True), sort_keys=True))
         )
         with self.assertRaises(durable.InstallError):
             self.manager.install(repair=True)
+
+    def test_owned_legacy_registration_migrates_atomically(self) -> None:
+        self._install()
+        config_path = self.codex_dir / "config.toml"
+        canonical = durable._expected_codex_block(self.layout)
+        legacy = durable._expected_legacy_codex_block(self.layout)
+        before = config_path.read_bytes()
+        self.assertEqual(1, before.count(canonical))
+        legacy_config = before.replace(canonical, legacy, 1)
+        config_path.write_bytes(legacy_config)
+        state = json.loads(self.layout.install_state.read_text())
+        state["codex"]["table"] = durable.LEGACY_SERVER_HEADER
+        state["codex"]["block_sha256"] = hashlib.sha256(legacy).hexdigest()
+
+        with self.assertRaisesRegex(
+            durable.InstallError, "authenticated cross-version"
+        ):
+            durable._preflight_codex(
+                self.layout,
+                state,
+                canonical,
+                replace_owned_config=False,
+                allow_legacy_registration_migration=False,
+            )
+
+        durable._preflight_codex(
+            self.layout,
+            state,
+            canonical,
+            replace_owned_config=False,
+            allow_legacy_registration_migration=True,
+        )
+        (
+            block_hash,
+            backup,
+            changed,
+            separator_hex,
+            migration,
+        ) = durable._write_codex_config(
+            self.layout,
+            canonical,
+            state,
+            replace_owned_config=False,
+            allow_legacy_registration_migration=True,
+        )
+        self.assertTrue(changed)
+        self.assertIsNotNone(backup)
+        self.assertEqual(
+            hashlib.sha256(canonical).hexdigest(), block_hash
+        )
+        self.assertEqual(state["codex"]["inserted_separator_hex"], separator_hex)
+        self.assertIsInstance(migration, dict)
+        self.assertEqual(
+            hashlib.sha256(legacy_config).hexdigest(),
+            migration["source_config_sha256"],
+        )
+        self.assertEqual(
+            migration["source_config_sha256"],
+            migration["backup_sha256"],
+        )
+        self.assertEqual(
+            legacy_config, Path(str(backup)).read_bytes()
+        )
+        self.assertEqual(
+            Path(str(backup)).resolve(),
+            durable._validate_registration_migration_backup(
+                self.layout, migration
+            ),
+        )
+        after = config_path.read_bytes()
+        self.assertEqual(1, after.count(canonical))
+        self.assertEqual(0, after.count(legacy))
+        self.assertEqual(
+            legacy_config[: legacy_config.index(legacy)],
+            after[: after.index(canonical)],
+        )
+        state["codex"]["table"] = durable.SERVER_HEADER
+        state["codex"]["block_sha256"] = block_hash
+        state["codex"]["last_backup"] = str(backup)
+        state["codex"]["registration_migration"] = migration
+        durable._atomic_write(
+            self.layout.install_state,
+            durable._json_bytes(state),
+            0o600,
+        )
+        with mock.patch.object(
+            self.manager,
+            "_invoke_lifecycle",
+            return_value={
+                "ok": True,
+                "lifecycle": {"condition": "stopped"},
+                "catalog": {"installed_v1_cache": None},
+            },
+        ):
+            doctor = self.manager.doctor()
+        checks = {
+            item["name"]: item["ok"] for item in doctor["checks"]
+        }
+        self.assertTrue(checks["install_state"])
+        self.assertTrue(checks["codex_config"])
+        self.assertTrue(checks["codex_registration_migration"])
+        for launcher in (
+            self.layout.launcher,
+            self.layout.launcher_bootstrap,
+            self.layout.manager,
+            self.layout.legacy_launcher,
+            self.layout.legacy_launcher_bootstrap,
+            self.layout.legacy_manager,
+        ):
+            self.assertTrue(checks["launcher:" + launcher.name])
+
+    def test_legacy_registration_drift_and_dual_registration_fail_closed(
+        self,
+    ) -> None:
+        self._install()
+        config_path = self.codex_dir / "config.toml"
+        canonical = durable._expected_codex_block(self.layout)
+        legacy = durable._expected_legacy_codex_block(self.layout)
+        state = json.loads(self.layout.install_state.read_text())
+        state["codex"]["table"] = durable.LEGACY_SERVER_HEADER
+        state["codex"]["block_sha256"] = hashlib.sha256(legacy).hexdigest()
+
+        dual = config_path.read_bytes() + b"\n" + legacy
+        config_path.write_bytes(dual)
+        with self.assertRaisesRegex(
+            durable.InstallError, "exposes both"
+        ):
+            durable._preflight_codex(
+                self.layout,
+                state,
+                canonical,
+                replace_owned_config=False,
+                allow_legacy_registration_migration=True,
+            )
+
+        drifted = self.v1_config + b"\n" + legacy.replace(
+            b"tool_timeout_sec = 180", b"tool_timeout_sec = 181"
+        )
+        config_path.write_bytes(drifted)
+        protected = config_path.read_bytes()
+        with self.assertRaisesRegex(
+            durable.InstallError, "exact hash-owned"
+        ):
+            durable._preflight_codex(
+                self.layout,
+                state,
+                canonical,
+                replace_owned_config=False,
+                allow_legacy_registration_migration=True,
+            )
+        self.assertEqual(protected, config_path.read_bytes())
+
+    def test_cross_version_launcher_preflight_refuses_unowned_bytes(
+        self,
+    ) -> None:
+        self._install()
+        launcher = self.layout.launcher
+        exact_candidate_bytes = launcher.read_bytes()
+        launcher.unlink()
+        state = json.loads(self.layout.install_state.read_text())
+        del state["launchers"][launcher.name]
+        baseline = self._snapshot_owned_scope(self.layout)
+
+        for label, collision_bytes in (
+            ("different", b"#!/bin/sh\nexit 73\n"),
+            ("byte-identical", exact_candidate_bytes),
+        ):
+            with self.subTest(label=label):
+                launcher.write_bytes(collision_bytes)
+                os.chmod(launcher, 0o700)
+                protected = self._snapshot_owned_scope(self.layout)
+                with self.assertRaisesRegex(
+                    durable.InstallError,
+                    "exists without exact ownership: " + launcher.name,
+                ):
+                    self.manager._preflight_cross_version_launcher_targets(
+                        state
+                    )
+                self.assertEqual(
+                    protected,
+                    self._snapshot_owned_scope(self.layout),
+                )
+                self.assertEqual(collision_bytes, launcher.read_bytes())
+                launcher.unlink()
+                self.assertEqual(
+                    baseline,
+                    self._snapshot_owned_scope(self.layout),
+                )
+
+    def test_registration_state_identity_and_hash_mismatches_fail_before_stop(
+        self,
+    ) -> None:
+        self._install()
+        config_path = self.layout.codex_config
+        canonical_config = config_path.read_bytes()
+        canonical_state = json.loads(self.layout.install_state.read_text())
+        canonical = durable._expected_codex_block(self.layout)
+        legacy = durable._expected_legacy_codex_block(self.layout)
+        cases = (
+            (
+                "canonical live with legacy state",
+                canonical_config,
+                durable.LEGACY_SERVER_HEADER,
+                hashlib.sha256(legacy).hexdigest(),
+                "registration identity",
+            ),
+            (
+                "canonical live with wrong canonical hash",
+                canonical_config,
+                durable.SERVER_HEADER,
+                "f" * 64,
+                "ownership hash",
+            ),
+            (
+                "legacy live with canonical state",
+                canonical_config.replace(canonical, legacy, 1),
+                durable.SERVER_HEADER,
+                hashlib.sha256(canonical).hexdigest(),
+                "exact hash-owned",
+            ),
+            (
+                "owned registration missing",
+                self.v1_config,
+                durable.SERVER_HEADER,
+                hashlib.sha256(canonical).hexdigest(),
+                "registration is missing",
+            ),
+        )
+        for label, config, table, block_hash, error in cases:
+            with self.subTest(label=label):
+                state = json.loads(json.dumps(canonical_state))
+                state["codex"]["table"] = table
+                state["codex"]["block_sha256"] = block_hash
+                durable._atomic_write(
+                    self.layout.install_state,
+                    durable._json_bytes(state),
+                    0o600,
+                )
+                config_path.write_bytes(config)
+                protected = self._snapshot_owned_scope(self.layout)
+                with mock.patch.object(
+                    self.manager,
+                    "_safe_stop_lifecycle",
+                    side_effect=AssertionError(
+                        "registration mismatch must fail before stop"
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        durable.InstallError, error
+                    ):
+                        self.manager.install(repair=True)
+                self.assertEqual(
+                    protected,
+                    self._snapshot_owned_scope(self.layout),
+                )
+
+        durable._atomic_write(
+            self.layout.install_state,
+            durable._json_bytes(canonical_state),
+            0o600,
+        )
+        config_path.write_bytes(canonical_config)
+
+    def test_semantic_registration_aliases_and_descendants_fail_closed(
+        self,
+    ) -> None:
+        self._install()
+        config_path = self.layout.codex_config
+        canonical_config = config_path.read_bytes()
+        canonical = durable._expected_codex_block(self.layout)
+        canonical_body = canonical.split(b"\n", 1)[1]
+        variants = (
+            (
+                b'[mcp_servers."Roblox_Studio_Multisession"]\n'
+                + canonical_body
+            ),
+            (
+                b'[mcp_servers."Roblox_Studio_\\u0076\\u0032"]\n'
+                b'enabled = false\n'
+            ),
+            (
+                canonical
+                + b"\n[mcp_servers.Roblox_Studio_v2.env]\n"
+                b'IGNORED = "must fail closed"\n'
+            ),
+            (
+                canonical
+                + b'\n["mcp_servers".Roblox_Studio_v2]\n'
+                b"enabled = false\n"
+            ),
+            (
+                canonical
+                + b'\n[mcp_servers.Roblox_Studio_v2."x]y"]\n'
+                b'IGNORED = "quoted bracket must not hide this descendant"\n'
+            ),
+        )
+        for index, variant in enumerate(variants):
+            with self.subTest(index=index):
+                config_path.write_bytes(self.v1_config + b"\n" + variant)
+                protected = self._snapshot_owned_scope(self.layout)
+                with mock.patch.object(
+                    self.manager,
+                    "_safe_stop_lifecycle",
+                    side_effect=AssertionError(
+                        "semantic alias must fail before stop"
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        durable.InstallError, "noncanonical"
+                    ):
+                        self.manager.install(repair=True)
+                self.assertEqual(
+                    protected,
+                    self._snapshot_owned_scope(self.layout),
+                )
+                with mock.patch.object(
+                    self.manager,
+                    "_invoke_lifecycle",
+                    return_value={
+                        "ok": True,
+                        "lifecycle": {"condition": "stopped"},
+                        "catalog": {"installed_v1_cache": None},
+                    },
+                ):
+                    doctor = self.manager.doctor()
+                checks = {
+                    item["name"]: item["ok"]
+                    for item in doctor["checks"]
+                }
+                self.assertFalse(checks["codex_config"])
+
+        assignment_variants = (
+            (
+                b'mcp_servers."Roblox_Studio_v2" = '
+                b'{ command = "hidden" }\n'
+                + self.v1_config
+            ),
+            (
+                b'[mcp_servers]\n'
+                b'"Roblox_Studio_Multisession" = '
+                b'{ command = "hidden" }\n'
+            ),
+            (
+                b'mcp_servers . "Roblox_Studio_\\u0076\\u0032" . '
+                b'command = "hidden"\n'
+                + self.v1_config
+            ),
+            (
+                b"mcp_servers = { Roblox_Studio_v2 = "
+                b'{ command = "hidden" } }\n'
+            ),
+            (
+                b'"mcp_servers" = { Roblox_Studio_Multisession = '
+                b'{ command = "hidden" } }\n'
+            ),
+            (
+                b'"\\u006dcp_servers" = { Unrelated = {} }\n'
+            ),
+            b"mcp_servers = {}\n",
+        )
+        for index, variant in enumerate(assignment_variants):
+            with self.subTest(assignment=index):
+                config_path.write_bytes(variant)
+                protected = self._snapshot_owned_scope(self.layout)
+                with mock.patch.object(
+                    self.manager,
+                    "_safe_stop_lifecycle",
+                    side_effect=AssertionError(
+                        "semantic assignment must fail before stop"
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        durable.InstallError, "registration assignment"
+                    ):
+                        self.manager.install(repair=True)
+                self.assertEqual(
+                    protected,
+                    self._snapshot_owned_scope(self.layout),
+                )
+        config_path.write_bytes(canonical_config)
+
+    def test_registration_like_text_in_strings_and_comments_is_ignored(
+        self,
+    ) -> None:
+        harmless = (
+            b"# mcp_servers.Roblox_Studio_v2.command = \"comment\"\n"
+            b'basic = "mcp_servers.Roblox_Studio_v2.command = '
+            b'\\"not a key\\""\n'
+            b"literal = 'mcp_servers.Roblox_Studio_Multisession = {}'\n"
+            b'multiline_basic = """\n'
+            b"[mcp_servers.Roblox_Studio_v2]\n"
+            b"mcp_servers = { Roblox_Studio_v2 = {} }\n"
+            b'"""\n'
+            b"multiline_literal = '''\n"
+            b'[mcp_servers.Roblox_Studio_v2."x]y"]\n'
+            b"mcp_servers.Roblox_Studio_Multisession.command = 'text'\n"
+            b"'''\n"
+        )
+        original = harmless + self.v1_config
+        self.layout.codex_config.write_bytes(original)
+        result = self._install()
+        self.assertTrue(result["ok"])
+        installed = self.layout.codex_config.read_bytes()
+        self.assertTrue(installed.startswith(original))
+        self.assertEqual(
+            1,
+            installed.count(
+                b"[mcp_servers.Roblox_Studio_Multisession]"
+            ),
+        )
+        self.assertEqual(
+            1,
+            installed.count(b"[mcp_servers.Roblox_Studio_v2]"),
+        )
+
+    def test_uninstall_requires_state_bound_canonical_registration(
+        self,
+    ) -> None:
+        self._install()
+        state = json.loads(self.layout.install_state.read_text())
+        state["codex"]["table"] = durable.LEGACY_SERVER_HEADER
+        state["codex"]["block_sha256"] = hashlib.sha256(
+            durable._expected_legacy_codex_block(self.layout)
+        ).hexdigest()
+        durable._atomic_write(
+            self.layout.install_state,
+            durable._json_bytes(state),
+            0o600,
+        )
+        protected = self._snapshot_owned_scope(self.layout)
+        with mock.patch.object(
+            self.manager,
+            "_safe_stop_lifecycle",
+            side_effect=AssertionError(
+                "uninstall mismatch must fail before stop"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                durable.InstallError, "registration identity"
+            ):
+                self.manager.uninstall()
+        self.assertEqual(
+            protected,
+            self._snapshot_owned_scope(self.layout),
+        )
 
     def test_identical_unowned_codex_table_is_never_adopted(self) -> None:
         expected = durable._expected_codex_block(self.layout)

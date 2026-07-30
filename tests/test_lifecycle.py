@@ -88,6 +88,8 @@ class TemporaryInstall:
 class LifecycleConfigurationTests(unittest.TestCase):
     def test_public_lifecycle_commands_are_stable(self):
         parser = build_parser()
+        self.assertEqual("roblox-studio-mcp-multisession", parser.prog)
+        self.assertIn("Roblox Studio MCP Multisession", parser.description)
         for command in (
             "stdio",
             "start",
@@ -177,7 +179,7 @@ class LifecycleConfigurationTests(unittest.TestCase):
         self.assertEqual(
             "studio-mcp-v2-durable-catalog", report["format"]
         )
-        self.assertEqual("0.4.0-rc.4", report["catalog_version"])
+        self.assertEqual("0.4.0-rc.5", report["catalog_version"])
         self.assertEqual(
             "production-v1-snapshot-2026-07-26",
             report["upstream"]["version"],

@@ -18,21 +18,22 @@ MCP_PROTOCOL_VERSION = "2025-06-18"
 MAX_SCREENSHOT_BASE64_BYTES = 10_000_000
 SCREENSHOT_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 MCP_INSTRUCTIONS = (
-    "Use Roblox_Studio_v2 for every operation it supports. Users identify a "
-    "target with an ordinary project/place name; never ask them to copy, "
-    "remember, or type studio_id, start the broker manually, select a global "
-    "active Studio, or coordinate locks between tasks. Before operating, call "
-    "list_roblox_studios_v2 internally. Match the requested name against "
-    "metadata.name and confirm metadata.place_id, metadata.game_id, and "
-    "document_epoch when available. If one session is the clear match, pass "
-    "its studio_id only inside each subsequent v2 tool call. Parallel tasks "
-    "must each discover and explicitly target their own session; the broker "
-    "handles per-session locks. Ask the user only when duplicate or unsaved "
-    "names are genuinely ambiguous, and offer human-readable name/PlaceId/"
-    "GameId distinctions rather than UUIDs. Never route through an active or "
-    "default Studio. V1 is only a disclosed compatibility fallback for an "
-    "operation v2 does not support; never fall back silently, because v1 "
-    "cannot safely multiplex concurrent Studio work."
+    "Use Roblox_Studio_Multisession for every operation it supports. Users "
+    "identify a target with an ordinary project/place name; never ask them to "
+    "copy, remember, or type studio_id, start the broker manually, select a "
+    "global active Studio, or coordinate locks between tasks. Before "
+    "operating, call list_roblox_studios_v2 internally. Match the requested "
+    "name against metadata.name and confirm metadata.place_id, "
+    "metadata.game_id, and document_epoch when available. If one session is "
+    "the clear match, pass its studio_id only inside each subsequent v2 tool "
+    "call. Parallel tasks must each discover and explicitly target their own "
+    "session; the broker handles per-session locks. Ask the user only when "
+    "duplicate or unsaved names are genuinely ambiguous, and offer "
+    "human-readable name/PlaceId/GameId distinctions rather than UUIDs. Never "
+    "route through an active or default Studio. V1 is only a disclosed "
+    "compatibility fallback for an operation v2 does not support; never fall "
+    "back silently, because v1 cannot safely multiplex concurrent Studio "
+    "work."
 )
 
 
@@ -54,7 +55,7 @@ class MCPStdioServer:
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {
-                        "name": "roblox-studio-mcp-v2",
+                        "name": "roblox-studio-mcp-multisession",
                         "version": __version__,
                     },
                     "instructions": MCP_INSTRUCTIONS,
@@ -230,7 +231,11 @@ def main() -> None:
     try:
         client = HubClient.from_environment()
     except ValueError as exc:
-        sys.stderr.write("Studio MCP v2 frontend refused to start: " + str(exc) + "\n")
+        sys.stderr.write(
+            "Studio MCP Multisession frontend refused to start: "
+            + str(exc)
+            + "\n"
+        )
         raise SystemExit(2)
     serve_stdio(client)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the explicit-allowlist portable Studio MCP v2 archive."""
+"""Build the explicit-allowlist Studio MCP Multisession archive."""
 
 from __future__ import annotations
 

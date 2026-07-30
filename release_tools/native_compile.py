@@ -47,10 +47,10 @@ EXPECTED_STUDIO_SIGNATURE_SCOPE = (
 )
 EXPECTED_MAIN_ASSERTION = (
     'assert(plugin ~= nil, '
-    '"Studio MCP v2 must be installed as a Studio plugin")'
+    '"Studio MCP Multisession must be installed as a Studio plugin")'
 )
 EXPECTED_MAIN_ASSERTION_MESSAGE = (
-    "Studio MCP v2 must be installed as a Studio plugin"
+    "Studio MCP Multisession must be installed as a Studio plugin"
 )
 MAX_PACKAGE_BYTES = 2_000_000
 MAX_SOURCE_BYTES = 1_000_000
@@ -69,11 +69,25 @@ SCRIPT_GUID_RE = re.compile(
     r"^\{[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\}$"
 )
-SAFE_PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 USER_PLUGIN_RE = re.compile(
     rb"\buser_[A-Za-z0-9_.-]+\.(?:rbxm|rbxmx)\b",
     re.IGNORECASE,
 )
+
+
+def _valid_package_display_name(value: str) -> bool:
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return bool(
+        value
+        and value == value.strip()
+        and value.isprintable()
+        and len(encoded) <= 64
+    )
+
+
 COMPILE_ERROR_MARKERS = (
     b"out of local registers",
     b"exceeded register limit",
@@ -411,7 +425,7 @@ def extract_exact_main_source(package_path: Path) -> Tuple[bytes, bytes]:
     ]
     if (
         len(folder_name) != 1
-        or SAFE_PACKAGE_NAME_RE.fullmatch(folder_name[0]) is None
+        or not _valid_package_display_name(folder_name[0])
     ):
         raise NativeCompileError("plugin package Folder name is invalid")
 

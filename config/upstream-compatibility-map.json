@@ -1,7 +1,7 @@
 {
   "format": "studio-mcp-v2-upstream-compatibility-map",
   "manifest_version": "3",
-  "durable_catalog_version": "0.4.0-rc.4",
+  "durable_catalog_version": "0.4.0-rc.5",
   "schema_policy": "exact_handler_contract",
   "durable_handler_schema_sha256": {
     "studio_get_state": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",

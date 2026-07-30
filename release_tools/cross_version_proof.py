@@ -55,6 +55,31 @@ RC4_RESTORE_MANIFEST_SHA256 = (
 RC4_SOURCE_COMMIT = "2329c9523cfde4a53fde922d01d0144f31e0adfd"
 RC4_SOURCE_TREE = "7cb0540145a6ccfbec865e8aa128872e444397d2"
 RC4_TAG_OBJECT = "7ec127a26f02154ae327dbe2f236bd507172fdfb"
+MULTISESSION_PRIOR_VERSION = "0.4.0-rc.4"
+MULTISESSION_CANDIDATE_VERSION = "0.4.0-rc.5"
+MULTISESSION_PRIOR_ARCHIVE_SHA256 = (
+    "21e75b1fa74fdc7463d29fde45dffaa35323cb5017e47b85b29289619988adf8"
+)
+MULTISESSION_PRIOR_MANIFEST_SHA256 = (
+    "ce926e9e81ab0803c028831cf41614050e29016f11ac2ac07325556e63ab44cd"
+)
+MULTISESSION_PRIOR_INSTALLER_SHA256 = (
+    "714fa7758f4ca6f43b18898e713117b15c40adcf6d9f6046c8272ba56fb03f11"
+)
+MULTISESSION_PRIOR_UPDATER_SHA256 = (
+    "ecc8ec2db2ffda1f4d1c64ddc35db7b8f2735878bdbfa52de2df0bc4aa756fbe"
+)
+MULTISESSION_PRIOR_BOOTSTRAP_SHA256 = RC4_BOOTSTRAP_SHA256
+_PORTABLE_FORMAT = "roblox-studio-mcp-v2-portable-release"
+_PORTABLE_PRODUCT = "RobloxStudioMCPv2"
+_FORMER_SERVER_NAME = "Roblox_Studio_v2"
+_CANONICAL_SERVER_NAME = "Roblox_Studio_Multisession"
+_FORMER_SERVER_HEADER = (
+    b"[mcp_servers." + _FORMER_SERVER_NAME.encode("ascii") + b"]"
+)
+_CANONICAL_SERVER_HEADER = (
+    b"[mcp_servers." + _CANONICAL_SERVER_NAME.encode("ascii") + b"]"
+)
 _SHA256 = frozenset("0123456789abcdef")
 
 
@@ -553,6 +578,750 @@ def _assert_candidate_catalog_contract(
             raise ProofError(
                 "candidate catalog contract did not reset to package bytes"
             )
+
+
+def prove_multisession_migration_rollback(
+    *,
+    prior_archive: Path,
+    prior_checksum_file: Path,
+    candidate_archive: Path,
+    candidate_checksum_file: Path,
+    candidate_expected_sha256: str,
+    candidate_version: str,
+    source_commit: str,
+    source_tree: str,
+    temporary_parent: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Prove the exact 0.4 rc.4 public-name migration and rollback."""
+
+    if candidate_version != MULTISESSION_CANDIDATE_VERSION:
+        raise ProofError(
+            "multisession migration proof requires candidate "
+            + MULTISESSION_CANDIDATE_VERSION
+        )
+    for label, value in (
+        ("candidate source commit", source_commit),
+        ("candidate source tree", source_tree),
+    ):
+        if (
+            not isinstance(value, str)
+            or len(value) != 40
+            or any(character not in _SHA256 for character in value)
+        ):
+            raise ProofError(label + " is not a lowercase Git object ID")
+
+    prior = _archive_manifest(
+        prior_archive,
+        checksum_file=prior_checksum_file,
+        expected_sha256=MULTISESSION_PRIOR_ARCHIVE_SHA256,
+        expected_version=MULTISESSION_PRIOR_VERSION,
+    )
+    candidate = _archive_manifest(
+        candidate_archive,
+        checksum_file=candidate_checksum_file,
+        expected_sha256=candidate_expected_sha256,
+        expected_version=candidate_version,
+    )
+    for label, release in (
+        ("prior", prior),
+        ("candidate", candidate),
+    ):
+        manifest = release["manifest"]
+        if (
+            manifest.get("format") != _PORTABLE_FORMAT
+            or manifest.get("product") != _PORTABLE_PRODUCT
+        ):
+            raise ProofError(
+                label + " archive compatibility identity is invalid"
+            )
+
+    parent = None
+    if temporary_parent is not None:
+        parent = Path(temporary_parent).resolve(strict=True)
+        if parent.is_symlink() or not parent.is_dir():
+            raise ProofError("temporary proof parent is unsafe")
+
+    counters = {
+        "lifecycle_calls": 0,
+        "stop_calls": 0,
+        "subprocess_stop_calls": 0,
+        "candidate_mutation_phase_entries": 0,
+    }
+    phases: Dict[str, bool] = {
+        "prior_archive_verified": True,
+        "candidate_archive_verified": True,
+    }
+    active_file_count = 0
+    dual_collision_error = ""
+    alias_collision_error = ""
+    launcher_different_collision_error = ""
+    launcher_identical_collision_error = ""
+    migration_backup_sha256 = ""
+    with tempfile.TemporaryDirectory(
+        prefix="studio-mcp-multisession-migration-proof-",
+        dir=None if parent is None else str(parent),
+    ) as temporary:
+        root = Path(temporary)
+        prior_package = _extract_audited_archive(
+            prior["source"], root / "prior-package"
+        )
+        candidate_package = _extract_audited_archive(
+            candidate["source"], root / "candidate-package"
+        )
+        for relative, expected in (
+            (
+                "release-manifest.json",
+                MULTISESSION_PRIOR_MANIFEST_SHA256,
+            ),
+            ("install.py", MULTISESSION_PRIOR_INSTALLER_SHA256),
+            (
+                "release_updater.py",
+                MULTISESSION_PRIOR_UPDATER_SHA256,
+            ),
+            (
+                "bootstrap.py",
+                MULTISESSION_PRIOR_BOOTSTRAP_SHA256,
+            ),
+        ):
+            if _sha256_file(prior_package / relative) != expected:
+                raise ProofError(
+                    "immutable 0.4.0-rc.4 " + relative + " changed"
+                )
+        phases["prior_package_identity_verified"] = True
+
+        prior_module = _load_installer(prior_package)
+        candidate_module = _load_installer(candidate_package)
+        if (
+            getattr(prior_module, "VERSION", None)
+            != MULTISESSION_PRIOR_VERSION
+            or getattr(candidate_module, "VERSION", None)
+            != candidate_version
+        ):
+            raise ProofError("portable installer version identity drifted")
+
+        home = root / "synthetic-home"
+        codex = home / ".codex"
+        plugins = home / "Documents" / "Roblox" / "Plugins"
+        codex.mkdir(mode=0o755, parents=True)
+        plugins.mkdir(mode=0o755, parents=True)
+        initial_config = (
+            b"# synthetic pre-existing user configuration\n"
+            b"[mcp_servers.Roblox_Studio]\n"
+            b'command = "synthetic-v1-command"\n'
+            b"args = []\n"
+            b"\n"
+            b"[features]\n"
+            b"synthetic_user_setting = true\n"
+        )
+        config_path = codex / "config.toml"
+        config_path.write_bytes(initial_config)
+        v1_plugin = plugins / "MCPStudioPlugin.rbxm"
+        v1_plugin.write_bytes(b"synthetic v1 fallback sentinel\n")
+        v1_fingerprint = _file_fingerprint(v1_plugin)
+
+        layout = prior_module.InstallLayout.for_user(home=home)
+        prior_manager = _proof_installer(
+            prior_module, prior_package, layout, counters
+        )
+        prior_updater_module = (
+            prior_module._load_release_updater_module()
+        )
+        with _bounded_subprocesses(root, counters):
+            installed = prior_manager.install()
+            if (
+                installed.get("ok") is not True
+                or installed.get("version")
+                != MULTISESSION_PRIOR_VERSION
+            ):
+                raise ProofError("actual 0.4.0-rc.4 install failed")
+            _assert_doctor_healthy(
+                prior_manager.doctor(), "0.4.0-rc.4 pre-update"
+            )
+            baseline_config = config_path.read_bytes()
+            former_block = prior_module._expected_codex_block(layout)
+            if (
+                baseline_config.count(former_block) != 1
+                or baseline_config.count(_FORMER_SERVER_HEADER) != 1
+                or baseline_config.count(_CANONICAL_SERVER_HEADER) != 0
+            ):
+                raise ProofError(
+                    "0.4.0-rc.4 did not establish one exact former "
+                    "registration"
+                )
+            prior_state = json.loads(
+                layout.install_state.read_text(encoding="utf-8")
+            )
+            if (
+                prior_state.get("version")
+                != MULTISESSION_PRIOR_VERSION
+                or prior_state.get("codex", {}).get("table")
+                != "[mcp_servers." + _FORMER_SERVER_NAME + "]"
+                or prior_state.get("codex", {}).get(
+                    "block_sha256"
+                )
+                != hashlib.sha256(former_block).hexdigest()
+            ):
+                raise ProofError(
+                    "0.4.0-rc.4 former registration ownership is invalid"
+                )
+            baseline = _active_fingerprint(layout)
+            active_file_count = len(baseline)
+            phases["prior_install_doctor_and_identity"] = True
+
+            candidate_layout = candidate_module.InstallLayout(
+                home=layout.home,
+                support_root=layout.support_root,
+                codex_config=layout.codex_config,
+                studio_plugins=layout.studio_plugins,
+            )
+            canonical_block = (
+                candidate_module._expected_codex_block(
+                    candidate_layout
+                )
+            )
+            if (
+                canonical_block.count(_CANONICAL_SERVER_HEADER) != 1
+                or canonical_block.count(_FORMER_SERVER_HEADER) != 0
+            ):
+                raise ProofError(
+                    "candidate canonical registration block is invalid"
+                )
+
+            collision_cases = (
+                (
+                    baseline_config + b"\n" + canonical_block,
+                    "both",
+                    "dual",
+                ),
+                (
+                    baseline_config.replace(
+                        former_block, canonical_block, 1
+                    ),
+                    "install-state registration identity",
+                    "alias",
+                ),
+            )
+            collision_errors = []
+            for collision_config, fragment, label in collision_cases:
+                config_path.write_bytes(collision_config)
+                protected = _active_fingerprint(layout)
+                try:
+                    candidate_module._preflight_codex(
+                        candidate_layout,
+                        prior_state,
+                        canonical_block,
+                        replace_owned_config=False,
+                        allow_legacy_registration_migration=True,
+                    )
+                except candidate_module.InstallError as exc:
+                    rendered = str(exc)
+                    if fragment not in rendered:
+                        raise ProofError(
+                            label
+                            + " registration collision returned the wrong "
+                            "refusal: "
+                            + rendered
+                        ) from exc
+                    collision_errors.append(rendered)
+                else:
+                    raise ProofError(
+                        label
+                        + " registration collision was not refused"
+                    )
+                if _active_fingerprint(layout) != protected:
+                    raise ProofError(
+                        label
+                        + " registration preflight mutated installed bytes"
+                    )
+            dual_collision_error, alias_collision_error = (
+                collision_errors
+            )
+            config_path.write_bytes(baseline_config)
+            if _active_fingerprint(layout) != baseline:
+                raise ProofError(
+                    "collision probes did not restore the exact baseline"
+                )
+            phases["unowned_registration_collisions_refused"] = True
+
+            base_candidate_factory = _candidate_factory(
+                prior_updater_module, counters
+            )
+
+            def tracked_candidate_factory(
+                current_installer: Any,
+                package_root: Path,
+                expected_version: str,
+            ) -> Any:
+                candidate_installer = base_candidate_factory(
+                    current_installer,
+                    package_root,
+                    expected_version,
+                )
+                mutation_phase = getattr(
+                    candidate_installer, "_prepare_directories", None
+                )
+                if not callable(mutation_phase):
+                    raise ProofError(
+                        "candidate lacks its first mutation phase"
+                    )
+
+                def tracked_mutation_phase() -> Any:
+                    counters[
+                        "candidate_mutation_phase_entries"
+                    ] += 1
+                    return mutation_phase()
+
+                candidate_installer._prepare_directories = (
+                    tracked_mutation_phase
+                )
+                return candidate_installer
+
+            forward_updater = prior_updater_module.ReleaseUpdater(
+                prior_manager,
+                candidate_factory=tracked_candidate_factory,
+                platform_check=lambda: None,
+                runtime_check=lambda: None,
+            )
+            canonical_launcher = candidate_layout.launcher
+            if canonical_launcher.exists() or canonical_launcher.is_symlink():
+                raise ProofError(
+                    "rc.4 unexpectedly owns the canonical launcher path"
+                )
+            exact_launcher = candidate_module._shell_exec(
+                sys.executable,
+                candidate_layout.launcher_bootstrap,
+            )
+            launcher_cases = (
+                (
+                    b"#!/bin/sh\nexit 73\n",
+                    "different",
+                ),
+                (
+                    exact_launcher,
+                    "identical",
+                ),
+            )
+            launcher_errors = []
+            for launcher_bytes, label in launcher_cases:
+                canonical_launcher.write_bytes(launcher_bytes)
+                os.chmod(canonical_launcher, 0o700)
+                expected_collision_hash = _sha256_file(
+                    canonical_launcher
+                )
+                protected = _active_fingerprint(layout)
+                mutation_entries_before = counters[
+                    "candidate_mutation_phase_entries"
+                ]
+                try:
+                    forward_updater.update(
+                        tag="v" + candidate_version,
+                        archive=candidate["source"],
+                        checksum_file=Path(
+                            candidate_checksum_file
+                        ).resolve(strict=True),
+                        expected_sha256=candidate["sha256"],
+                    )
+                except prior_updater_module.UpdateError as exc:
+                    rendered = str(exc)
+                    if (
+                        "exists without exact ownership" not in rendered
+                        or canonical_launcher.name not in rendered
+                    ):
+                        raise ProofError(
+                            label
+                            + " canonical launcher collision returned the "
+                            "wrong refusal: "
+                            + rendered
+                        ) from exc
+                    launcher_errors.append(rendered)
+                else:
+                    raise ProofError(
+                        label
+                        + " canonical launcher collision was not refused"
+                    )
+                if _active_fingerprint(layout) != protected:
+                    raise ProofError(
+                        label
+                        + " launcher update changed active installed bytes"
+                    )
+                if (
+                    counters["candidate_mutation_phase_entries"]
+                    != mutation_entries_before
+                ):
+                    raise ProofError(
+                        label
+                        + " launcher collision reached candidate mutation"
+                    )
+                if (
+                    forward_updater.interrupted_update_status().get(
+                        "present"
+                    )
+                    is not False
+                ):
+                    raise ProofError(
+                        label
+                        + " launcher collision left a pending transaction"
+                    )
+                if (
+                    not canonical_launcher.is_file()
+                    or canonical_launcher.is_symlink()
+                    or _sha256_file(canonical_launcher)
+                    != expected_collision_hash
+                ):
+                    raise ProofError(
+                        label
+                        + " synthetic launcher collision changed before "
+                        "cleanup"
+                    )
+                canonical_launcher.unlink()
+                if _active_fingerprint(layout) != baseline:
+                    raise ProofError(
+                        label
+                        + " launcher collision cleanup did not restore rc.4"
+                    )
+            (
+                launcher_different_collision_error,
+                launcher_identical_collision_error,
+            ) = launcher_errors
+            if counters["candidate_mutation_phase_entries"] != 0:
+                raise ProofError(
+                    "launcher collision probes entered candidate mutation"
+                )
+            phases[
+                "unowned_canonical_launcher_collisions_refused"
+            ] = True
+
+            forward = forward_updater.update(
+                tag="v" + candidate_version,
+                archive=candidate["source"],
+                checksum_file=Path(
+                    candidate_checksum_file
+                ).resolve(strict=True),
+                expected_sha256=candidate["sha256"],
+            )
+            install_result = forward.get("install", {})
+            transaction = forward.get("transaction", {})
+            if (
+                forward.get("ok") is not True
+                or forward.get("previous_version")
+                != MULTISESSION_PRIOR_VERSION
+                or forward.get("version") != candidate_version
+                or forward.get("archive_sha256")
+                != candidate["sha256"]
+                or install_result.get("registration_migrated")
+                is not True
+                or install_result.get("codex_server")
+                != _CANONICAL_SERVER_NAME
+                or install_result.get("former_codex_server")
+                != _FORMER_SERVER_NAME
+                or transaction.get("action") != "update"
+                or transaction.get("previous_version")
+                != MULTISESSION_PRIOR_VERSION
+                or transaction.get("current_version")
+                != candidate_version
+            ):
+                raise ProofError(
+                    "rc.4 to multisession transition receipt is invalid"
+                )
+            if counters["candidate_mutation_phase_entries"] != 1:
+                raise ProofError(
+                    "successful update did not enter one mutation phase"
+                )
+
+            expected_forward_config = baseline_config.replace(
+                former_block, canonical_block, 1
+            )
+            if (
+                config_path.read_bytes() != expected_forward_config
+                or expected_forward_config.count(
+                    _CANONICAL_SERVER_HEADER
+                )
+                != 1
+                or expected_forward_config.count(
+                    _FORMER_SERVER_HEADER
+                )
+                != 0
+            ):
+                raise ProofError(
+                    "public registration did not migrate exactly once"
+                )
+            candidate_state = json.loads(
+                layout.install_state.read_text(encoding="utf-8")
+            )
+            migration = candidate_state.get("codex", {}).get(
+                "registration_migration"
+            )
+            if (
+                candidate_state.get("version") != candidate_version
+                or candidate_state.get("codex", {}).get("table")
+                != "[mcp_servers." + _CANONICAL_SERVER_NAME + "]"
+                or not isinstance(migration, Mapping)
+                or migration.get("from") != _FORMER_SERVER_NAME
+                or migration.get("to") != _CANONICAL_SERVER_NAME
+                or migration.get("source_block_sha256")
+                != hashlib.sha256(former_block).hexdigest()
+                or migration.get("source_config_sha256")
+                != hashlib.sha256(baseline_config).hexdigest()
+            ):
+                raise ProofError(
+                    "candidate registration migration receipt is invalid"
+                )
+            migration_backup = (
+                candidate_module._validate_registration_migration_backup(
+                    candidate_layout, migration
+                )
+            )
+            if migration_backup.read_bytes() != baseline_config:
+                raise ProofError(
+                    "registration migration backup changed former config"
+                )
+            migration_backup_sha256 = _sha256_file(
+                migration_backup
+            )
+            phases["forward_registration_migration_receipted"] = True
+
+            _assert_candidate_catalog_contract(
+                layout, candidate_package
+            )
+            candidate_retained = (
+                layout.packages / candidate_version
+            )
+            retained_module = _load_installer(candidate_retained)
+            retained_layout = retained_module.InstallLayout(
+                home=layout.home,
+                support_root=layout.support_root,
+                codex_config=layout.codex_config,
+                studio_plugins=layout.studio_plugins,
+            )
+            candidate_manager = _proof_installer(
+                retained_module,
+                candidate_retained,
+                retained_layout,
+                counters,
+            )
+            candidate_doctor = candidate_manager.doctor()
+            _assert_doctor_healthy(
+                candidate_doctor, "multisession post-update"
+            )
+            candidate_updater_module = (
+                retained_module._load_release_updater_module()
+            )
+            candidate_updater = (
+                candidate_updater_module.ReleaseUpdater(
+                    candidate_manager,
+                    candidate_factory=_candidate_factory(
+                        candidate_updater_module, counters
+                    ),
+                    platform_check=lambda: None,
+                    runtime_check=lambda: None,
+                )
+            )
+            status = candidate_updater.status()
+            if (
+                status.get("ok") is not True
+                or status.get("installed_version")
+                != candidate_version
+                or status.get("rollback", {}).get("available")
+                is not True
+                or status.get("rollback", {}).get(
+                    "target_version"
+                )
+                != MULTISESSION_PRIOR_VERSION
+                or status.get("rollback", {}).get(
+                    "requires_accept_current_version"
+                )
+                != candidate_version
+            ):
+                raise ProofError(
+                    "candidate does not expose exact rc.4 rollback"
+                )
+            phases["candidate_doctor_and_rollback_target"] = True
+
+            reverse = candidate_updater.rollback(
+                to_version=MULTISESSION_PRIOR_VERSION,
+                accept_current_version=candidate_version,
+            )
+            reverse_transaction = reverse.get("transaction", {})
+            if (
+                reverse.get("ok") is not True
+                or reverse.get("previous_version")
+                != candidate_version
+                or reverse.get("version")
+                != MULTISESSION_PRIOR_VERSION
+                or reverse_transaction.get("action") != "rollback"
+                or reverse_transaction.get("previous_version")
+                != candidate_version
+                or reverse_transaction.get("current_version")
+                != MULTISESSION_PRIOR_VERSION
+                or candidate_updater.interrupted_update_status().get(
+                    "present"
+                )
+                is not False
+            ):
+                raise ProofError(
+                    "multisession to rc.4 rollback receipt is invalid"
+                )
+            phases["rollback_receipted"] = True
+
+            if _active_fingerprint(layout) != baseline:
+                raise ProofError(
+                    "rollback did not restore exact active bytes and modes"
+                )
+            if (
+                config_path.read_bytes() != baseline_config
+                or config_path.read_bytes().count(
+                    _FORMER_SERVER_HEADER
+                )
+                != 1
+                or config_path.read_bytes().count(
+                    _CANONICAL_SERVER_HEADER
+                )
+                != 0
+                or _file_fingerprint(v1_plugin) != v1_fingerprint
+            ):
+                raise ProofError(
+                    "rollback did not restore the exact former boundary"
+                )
+            phases["active_bytes_modes_and_former_name_restored"] = True
+
+            prior_retained = (
+                layout.packages / MULTISESSION_PRIOR_VERSION
+            )
+            candidate_updater_module._preverify_candidate_package(
+                prior_retained,
+                MULTISESSION_PRIOR_VERSION,
+                expected_manifest_sha256=(
+                    MULTISESSION_PRIOR_MANIFEST_SHA256
+                ),
+            )
+            restored_module = _load_installer(prior_retained)
+            restored_layout = restored_module.InstallLayout(
+                home=layout.home,
+                support_root=layout.support_root,
+                codex_config=layout.codex_config,
+                studio_plugins=layout.studio_plugins,
+            )
+            restored_manager = _proof_installer(
+                restored_module,
+                prior_retained,
+                restored_layout,
+                counters,
+            )
+            restored_doctor = restored_manager.doctor()
+            _assert_doctor_healthy(
+                restored_doctor, "restored 0.4.0-rc.4"
+            )
+            if (
+                restored_doctor.get("version")
+                != MULTISESSION_PRIOR_VERSION
+            ):
+                raise ProofError(
+                    "restored rc.4 doctor version drifted"
+                )
+            phases["restored_prior_package_and_doctor"] = True
+
+            uninstalled = restored_manager.uninstall()
+            if uninstalled.get("ok") is not True:
+                raise ProofError("restored rc.4 uninstall failed")
+            recovery = Path(
+                str(uninstalled.get("support_recovery", ""))
+            )
+            try:
+                recovery.resolve(strict=True).relative_to(
+                    root.resolve(strict=True)
+                )
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                raise ProofError(
+                    "uninstall recovery escaped the disposable root"
+                ) from exc
+            if (
+                config_path.read_bytes() != initial_config
+                or _file_fingerprint(v1_plugin) != v1_fingerprint
+                or layout.plugin_target.exists()
+                or layout.support_root.exists()
+            ):
+                raise ProofError(
+                    "uninstall did not restore the original boundary"
+                )
+            phases["uninstall_and_v1_restore"] = True
+
+    return {
+        "ok": True,
+        "format": (
+            "roblox-studio-mcp-multisession-migration-rollback-proof"
+        ),
+        "schema_version": 1,
+        "source": {
+            "commit": source_commit,
+            "tree": source_tree,
+        },
+        "baseline": {
+            "version": MULTISESSION_PRIOR_VERSION,
+            "archive_sha256": prior["sha256"],
+            "manifest_sha256": MULTISESSION_PRIOR_MANIFEST_SHA256,
+            "installer_sha256": MULTISESSION_PRIOR_INSTALLER_SHA256,
+            "updater_sha256": MULTISESSION_PRIOR_UPDATER_SHA256,
+            "bootstrap_sha256": MULTISESSION_PRIOR_BOOTSTRAP_SHA256,
+            "registration": _FORMER_SERVER_NAME,
+        },
+        "candidate": {
+            "version": candidate_version,
+            "archive_sha256": candidate["sha256"],
+            "manifest_file_count": len(
+                candidate["manifest"]["files"]
+            ),
+            "registration": _CANONICAL_SERVER_NAME,
+        },
+        "transition": {
+            "forward": (
+                MULTISESSION_PRIOR_VERSION
+                + "->"
+                + candidate_version
+            ),
+            "rollback": (
+                candidate_version
+                + "->"
+                + MULTISESSION_PRIOR_VERSION
+            ),
+            "active_file_count": active_file_count,
+            "exact_bytes_and_modes_restored": True,
+            "single_registration_migrated": True,
+            "former_registration_restored": True,
+            "migration_backup_sha256": migration_backup_sha256,
+        },
+        "negative_tests": {
+            "dual_registration_refused_before_mutation": True,
+            "canonical_alias_reuse_refused_before_mutation": True,
+            "different_launcher_refused_before_mutation": True,
+            "identical_launcher_refused_before_mutation": True,
+            "launcher_collision_mutation_phase_entries": 0,
+            "dual_refusal": dual_collision_error,
+            "alias_refusal": alias_collision_error,
+            "different_launcher_refusal": (
+                launcher_different_collision_error
+            ),
+            "identical_launcher_refusal": (
+                launcher_identical_collision_error
+            ),
+        },
+        "phases": phases,
+        "isolation": {
+            "temporary_home_removed": True,
+            "network_or_broker_started": False,
+            "live_codex_config_touched": False,
+            "live_studio_plugins_touched": False,
+            "lifecycle_calls_simulated": counters[
+                "lifecycle_calls"
+            ],
+            "stop_calls_simulated": counters["stop_calls"],
+            "subprocess_stop_calls_simulated": counters[
+                "subprocess_stop_calls"
+            ],
+            "candidate_mutation_phase_entries": counters[
+                "candidate_mutation_phase_entries"
+            ],
+        },
+    }
 
 
 def prove_cross_version_rollback(

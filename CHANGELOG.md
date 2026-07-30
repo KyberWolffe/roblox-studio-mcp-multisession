@@ -4,6 +4,41 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.4.0-rc.5 — unreleased
+
+Renamed the public product and Codex registration to Roblox Studio MCP
+Multisession without changing the v2 protocol, tool, or physical installation
+identities that rc.4 recovery depends on.
+
+### Canonical public identity
+
+- Uses `Roblox Studio MCP Multisession` as the human product name,
+  `Studio MCP Multisession` as the short display name,
+  `Roblox_Studio_Multisession` as the Codex server name, and
+  `roblox-studio-mcp-multisession` as the repository/release slug.
+- Transactionally replaces the exactly owned former
+  `[mcp_servers.Roblox_Studio_v2]` registration. Installation, doctor, repair,
+  update, rollback, and uninstall reject a dual-active or unowned ambiguous
+  configuration instead of guessing.
+- Adds the canonical Codex configuration example and retains the old-name
+  example only as a disabled compatibility/migration reference.
+
+### Rc.4 migration and rollback bridge
+
+- Preserves `_v2` public tool names, `/v2` routes, Python package/internal
+  identifiers, the `RobloxStudioMCPv2` support root,
+  `StudioMCPv2SideBySide.rbxmx`, legacy launcher/manager names, archive
+  basename, and manifest identity.
+- Retains legacy artifact filenames deliberately because the immutable rc.4
+  bootstrap, update journal, package manifests, and byte-for-byte one-step
+  rollback verify those exact names.
+- Captures and hash-binds the complete pre-migration Codex configuration,
+  activates exactly one canonical registration, and keeps the installed
+  `0.4.0-rc.4` release as the immediate rollback target.
+- Does not widen tools, schemas, permissions, routing, or fallback behavior.
+  Every operational tool still requires explicit `studio_id`; discovery is
+  the only exception, and silent v1 fallback remains forbidden.
+
 ## 0.4.0-rc.4 — unreleased
 
 Corrected the Phase 2 native qualification policy while preserving the

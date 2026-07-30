@@ -3,13 +3,18 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "roblox-studio-mcp-v2-prototype"
-version = "0.4.0rc4"
-description = "Explicitly targeted concurrent Roblox Studio MCP sessions for Apple Silicon macOS"
+name = "roblox-studio-mcp-multisession"
+version = "0.4.0rc5"
+description = "Explicitly targeted concurrent Roblox Studio sessions for Apple Silicon macOS"
 requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
+roblox-studio-mcp-multisession-hub = "studio_mcp_v2.hub:main"
+roblox-studio-mcp-multisession-stdio = "studio_mcp_v2.mcp_stdio:main"
+roblox-studio-mcp-multisession = "studio_mcp_v2.lifecycle:main"
+roblox-studio-mcp-multisession-mock = "studio_mcp_v2.mock_studio:main"
+# Compatibility aliases retained for existing development environments.
 studio-mcp-v2-hub = "studio_mcp_v2.hub:main"
 studio-mcp-v2 = "studio_mcp_v2.mcp_stdio:main"
 roblox-studio-mcp-v2 = "studio_mcp_v2.lifecycle:main"

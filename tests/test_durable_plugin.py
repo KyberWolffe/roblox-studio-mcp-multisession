@@ -61,7 +61,7 @@ DURABLE_OPERATIONS = {
 class DurableCatalogTests(unittest.TestCase):
     def test_catalog_is_versioned_closed_and_explicitly_targeted(self):
         payload = json.loads(DURABLE_CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual(payload["catalog_version"], "0.4.0-rc.4")
+        self.assertEqual(payload["catalog_version"], "0.4.0-rc.5")
         self.assertEqual(
             payload["upstream"]["compatibility"],
             "reviewed-local-subset-only",
@@ -73,6 +73,12 @@ class DurableCatalogTests(unittest.TestCase):
         catalog = ToolCatalog.from_file(DURABLE_CATALOG)
         self.assertEqual(catalog.remote_names, frozenset(DURABLE_OPERATIONS))
         for tool in catalog.tools_for_mcp():
+            self.assertTrue(
+                tool["description"].startswith(
+                    "[Roblox Studio MCP Multisession:"
+                )
+            )
+            self.assertNotIn("Roblox Studio MCP v2", tool["description"])
             schema = tool["inputSchema"]
             self.assertIn("studio_id", schema["required"])
             self.assertEqual(
@@ -142,11 +148,11 @@ class DurableRendererTests(unittest.TestCase):
             base_url=base_url,
         )
 
-    def test_render_matches_phase2_0_4_0_rc_4_contract(self):
+    def test_render_matches_phase2_0_4_0_rc_5_contract(self):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),
-            "2cd30c4864178fece6ba082ce804219305ef54608963ef9aa590950cca65062e",
+            "fc1b49f5dababa4d79f4be4c0de88243f75b45f639a9cec77004cf2408d45c9e",
         )
 
     def test_durable_handlers_are_private_and_below_local_budget(self):
@@ -422,7 +428,50 @@ class DurableRendererTests(unittest.TestCase):
         self.assertEqual(first.plugin_source, second.plugin_source)
         self.assertEqual(first.studio_token, TOKEN)
         self.assertEqual(first.run_id, RUN_ID)
-        self.assertIn("StudioMCPv2SideBySide", first.plugin_package_rbxmx)
+        self.assertIn(
+            '<string name="Name">Studio MCP Multisession</string>',
+            first.plugin_package_rbxmx,
+        )
+        self.assertNotIn("StudioMCPv2SideBySide", first.plugin_package_rbxmx)
+
+    def test_plugin_display_name_is_bounded_printable_and_xml_escaped(self):
+        source = "return"
+        escaped = render_studio_plugin.package_rbxmx(
+            source,
+            package_name="Studio & MCP <Multisession>",
+        )
+        self.assertIn(
+            '<string name="Name">Studio &amp; MCP &lt;Multisession&gt;</string>',
+            escaped,
+        )
+        for invalid in (
+            "",
+            " Studio MCP Multisession",
+            "Studio MCP Multisession ",
+            "Studio\nMCP",
+            "Studio\x00MCP",
+            "é" * 33,
+        ):
+            with self.subTest(invalid=repr(invalid)):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "bounded.*printable display text",
+                ):
+                    render_studio_plugin.package_rbxmx(
+                        source,
+                        package_name=invalid,
+                    )
+
+    def test_legacy_durable_xml_name_maps_to_canonical_display(self):
+        package = render_studio_plugin.package_rbxmx(
+            "return",
+            package_name="StudioMCPv2SideBySide",
+        )
+        self.assertIn(
+            '<string name="Name">Studio MCP Multisession</string>',
+            package,
+        )
+        self.assertNotIn("StudioMCPv2SideBySide", package)
 
 
 class UpstreamCatalogReviewTests(unittest.TestCase):

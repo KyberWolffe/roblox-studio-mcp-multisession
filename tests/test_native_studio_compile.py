@@ -64,7 +64,7 @@ then
 \treturn
 end
 
-assert(plugin ~= nil, "Studio MCP v2 must be installed as a Studio plugin")
+assert(plugin ~= nil, "Studio MCP Multisession must be installed as a Studio plugin")
 
 local CONFIG = table.freeze({
 \trun_id = "AAAAAAAAAAAAAAAA",
@@ -88,7 +88,7 @@ class NativeCompileTests(unittest.TestCase):
         self.package.write_text(
             package_rbxmx(
                 self.source.decode("utf-8"),
-                package_name="StudioMCPv2Candidate",
+                package_name="Studio MCP Multisession",
             ),
             encoding="utf-8",
         )

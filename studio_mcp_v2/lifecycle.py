@@ -1193,8 +1193,10 @@ def _print_json(payload: Mapping[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="roblox-studio-mcp-v2",
-        description="Durable side-by-side Roblox Studio MCP v2 lifecycle",
+        prog="roblox-studio-mcp-multisession",
+        description=(
+            "Durable side-by-side Roblox Studio MCP Multisession lifecycle"
+        ),
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("stdio", help="ensure the broker and serve MCP over stdio")
@@ -1305,7 +1307,11 @@ def _main_with_paths(
                 }
             )
         else:
-            sys.stderr.write("Roblox Studio MCP v2 refused to start: " + message + "\n")
+            sys.stderr.write(
+                "Roblox Studio MCP Multisession refused to start: "
+                + message
+                + "\n"
+            )
             sys.stderr.flush()
         raise SystemExit(2)
 

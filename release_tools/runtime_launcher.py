@@ -33,9 +33,13 @@ def main() -> None:
     release = RELEASE_ROOT.resolve(strict=True)
     expected_release_parent = support / "releases"
     if release.parent != expected_release_parent or not release.is_dir():
-        raise SystemExit("Studio MCP v2 installed release path is invalid")
+        raise SystemExit(
+            "Studio MCP Multisession installed release path is invalid"
+        )
     if not (release / "studio_mcp_v2" / "__init__.py").is_file():
-        raise SystemExit("Studio MCP v2 installed release is incomplete")
+        raise SystemExit(
+            "Studio MCP Multisession installed release is incomplete"
+        )
 
     environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
     for key in ("LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"):

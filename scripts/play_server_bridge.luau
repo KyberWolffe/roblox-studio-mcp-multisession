@@ -1,5 +1,5 @@
 --[[
-Fixed Studio MCP v2 PlayServer plugin bridge.
+Fixed Studio MCP Multisession PlayServer plugin bridge.
 
 This source is embedded twice in the rendered Studio plugin: as executable
 PlayServer plugin code and as the inert temporary Script marker's auditable
@@ -197,7 +197,7 @@ if not RunService:IsStudio()
 	or not RunService:IsServer()
 	or not RunService:IsRunning()
 then
-	error("Studio MCP v2 Play bridge must run in server context", 0)
+	error("Studio MCP Multisession Play bridge must run in server context", 0)
 end
 
 -- Arm the bounded EndTest watchdog only after proving this is a running
@@ -209,7 +209,7 @@ if not isInteger(game.PlaceId)
 	or not isInteger(game.GameId)
 	or game.GameId < 0
 then
-	error("Studio MCP v2 Play bridge document identity is invalid", 0)
+	error("Studio MCP Multisession Play bridge document identity is invalid", 0)
 end
 
 -- Roblox only permits EndTest from the running server DataModel. Arm the

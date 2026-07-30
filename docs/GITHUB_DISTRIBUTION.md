@@ -1,22 +1,31 @@
-# GitHub distribution
+# Roblox Studio MCP Multisession GitHub distribution
 
 This document describes the release flow for
 `KyberWolffe/roblox-studio-mcp-multisession`. Never substitute a mutable branch
 for an exact version tag.
 
+Version `0.4.0-rc.5` uses the canonical product name Roblox Studio MCP
+Multisession and Codex server name `Roblox_Studio_Multisession`. Its archive,
+bootstrap, plugin, support-root, manifest, and former launcher-alias names
+intentionally retain their `v2` physical identities. The immutable
+`0.4.0-rc.4` update and rollback machinery verifies those exact names, so
+renaming the compatibility artifacts would break the migration bridge.
+
 ## Public repository
 
 A public release requires no GitHub credentials to install. This single
-command downloads the versioned bootstrap from an exact tag, verifies its
-published digest, pins the archive digest, and runs only the verified file:
+historical `0.3.0-rc.3` command is retained verbatim as provenance. It
+downloads the versioned bootstrap from an exact tag, verifies its published
+digest, pins the archive digest, and runs only the verified file:
 
 ```bash
 /bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.3 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
 ```
 
 This bootstrap path is for a fresh install or reinstalling the same version.
-Upgrade an existing different v2 version only through the installed manager's
-exact-tag `update` command below; direct cross-version install is refused.
+Upgrade an existing different Multisession version only through the installed
+manager's exact-tag `update` command below; direct cross-version install is
+refused.
 
 The bootstrap:
 
@@ -28,7 +37,7 @@ The bootstrap:
 The bootstrap itself is not trusted until its fixed SHA-256 is verified. It
 does not execute content from `main`.
 
-## Manual archive verification
+## Historical manual archive verification
 
 ```bash
 curl --fail --location --remote-name \
@@ -47,7 +56,7 @@ channel before running the installer.
 ## Private repository
 
 GitHub requires authentication to download private release assets. Keep that
-authentication outside v2:
+authentication outside Multisession:
 
 ```bash
 gh auth status
@@ -68,8 +77,9 @@ installed manager:
   --expected-sha256 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
 ```
 
-Do not paste a GitHub token into chat, a v2 configuration file, a command-line
-argument, or an issue. V2 does not need access to that token.
+Do not paste a GitHub token into chat, a Multisession configuration file, a
+command-line argument, or an issue. Multisession does not need access to that
+token.
 
 ## Maintainer release procedure
 
@@ -133,10 +143,13 @@ publish job, where `contents: write` is required to create the release:
 
 ## Update and rollback
 
+The initial rc.4-to-rc.5 migration is invoked through rc.4's former manager
+name. After rc.5 activates, use the canonical manager shown below.
+
 Online update:
 
 ```bash
-"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
   update \
   --owner KyberWolffe \
   --repo roblox-studio-mcp-multisession \
@@ -147,14 +160,15 @@ Online update:
 Rollback to a retained installed version:
 
 ```bash
-"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
   rollback \
   --to-version PREVIOUS_VERSION \
   --accept-current-version CURRENT_VERSION
 ```
 
 Update and rollback do not change the v1 integration. Restart Codex after a
-version switch. Restart Studio or reload local plugins when the plugin package
+version switch so `Roblox_Studio_Multisession` is the sole active product
+registration. Restart Studio or reload local plugins when the plugin package
 changes. Each place that should connect must allow HTTP requests. Once
 registered, users name places/projects normally; Codex discovers and targets
 the corresponding `studio_id` internally. Duplicate or unsaved names may
