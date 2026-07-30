@@ -136,6 +136,10 @@ def _mutation_receipt():
         "outcome": "applied",
         "safe_terminal": True,
         "recovery_required": False,
+        "cleanup_authorized": False,
+        "cleanup_contract": "",
+        "cleanup_authorization_sha256": "",
+        "cleanup_expires_in_ms": 0,
         "target_count": 2,
         "edit_count": 3,
         "create_count": 0,
@@ -751,7 +755,7 @@ class Phase2MultiEditModelTests(unittest.TestCase):
     def test_mutation_receipt_golden_hash_and_every_field_drifts(self) -> None:
         receipt = _mutation_receipt()
         expected = (
-            "5e808a56e2dfd04d8445825a8aaf91eea29a4febe32e94beb9a748a42e72485a"
+            "76c128f8c42294616d7c87d1f0123543341e8012ae1fac3fa5678fa480a55091"
         )
         self.assertEqual(mutation_receipt_sha256(receipt), expected)
         self.assertEqual(
@@ -778,6 +782,10 @@ class Phase2MultiEditModelTests(unittest.TestCase):
             "outcome",
             "safe_terminal",
             "recovery_required",
+            "cleanup_authorized",
+            "cleanup_contract",
+            "cleanup_authorization_sha256",
+            "cleanup_expires_in_ms",
             "target_count",
             "edit_count",
             "create_count",

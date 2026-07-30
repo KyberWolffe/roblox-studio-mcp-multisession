@@ -1713,6 +1713,11 @@ local function cacheResponse(request, signature, success, result, requestError)
 			and type(result) == "table"
 			and result.safe_terminal == true
 			and result.recovery_required == false
+	elseif request.operation == "studio_cleanup_multi_edit" then
+		settlementSafe = success
+			and type(result) == "table"
+			and result.safe_terminal == true
+			and result.recovery_required == false
 	elseif request.operation == "studio_multi_edit" then
 		if type(request.args) ~= "table"
 			or request.args._phase ~= "prepare"

@@ -14,16 +14,18 @@ Codex table.
 The bootstrap and every mutating manager command check the platform/runtime
 before changing files and return a clear non-mutating error when unsupported.
 
-## Rc.6 script-lifecycle candidate
+## Rc.7 script-lifecycle candidate
 
-Version `0.4.0-rc.6` adds bounded expected-absent creation of `Script`,
-`LocalScript`, and `ModuleScript` to the revision-protected multi-edit
-transaction. It does not expose general deletion: compensation may remove only
-the exact same-generation Instance proven created by that transaction while
-its full identity, class, source revision, zero children, zero attributes, and
-zero tags remain unchanged. Install or update only an exact qualified archive;
-an isolated source checkout is not an authorization to replace the durable
-installed rc.5 integration.
+Version `0.4.0-rc.7` corrects rc.6's successful-creation cleanup admission.
+An applied creation retains a separate ten-minute, identity-bound,
+same-generation authorization. Cleanup accepts only the original transaction,
+apply-receipt, and authorization hashes; it cannot accept caller-selected
+paths, sources, or delete targets. It may remove only an exact unchanged
+Instance proven created by that transaction while its retained parent/path,
+class, source revision, zero children, zero attributes, and zero tags remain
+unchanged. Install or update only an exact qualified archive; an isolated
+source checkout is not an authorization to replace the durable installed rc.5
+integration.
 
 ## Rc.5 legacy-filename bridge
 

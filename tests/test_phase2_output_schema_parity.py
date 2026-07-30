@@ -312,7 +312,7 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
             True,
         )
         self.assertEqual(
-            "a865132ec5083bee64b82a0aa9cfc026199eab600bcaafcc94805ddf55e356fd",
+            "ecede438cf3f2df81c1ef5c47bb7962072c01fda60ee1177f78aaf8f906e716d",
             canonical_sha256(schema),
         )
 
@@ -322,8 +322,21 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
         self.assertEqual(set(JOB_PHASE_FIELDS), set(phase["required"]))
         self.assertIs(phase["additionalProperties"], False)
 
-        resolution = JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][
+        resolution_union = JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][
             "resolutionReceipt"
+        ]
+        self.assertEqual(
+            {
+                "#/$defs/recoveryResolutionReceipt",
+                "#/$defs/cleanupResolutionReceipt",
+            },
+            {
+                branch["$ref"]
+                for branch in resolution_union["oneOf"]
+            },
+        )
+        resolution = JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][
+            "recoveryResolutionReceipt"
         ]
         self.assertEqual(
             set(JOB_RESOLUTION_FIELDS), set(resolution["properties"])
@@ -443,6 +456,77 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
                 "resolver_job_id"
             ]["minLength"],
         )
+        cleanup_resolution = JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][
+            "cleanupResolutionReceipt"
+        ]
+        self.assertEqual(
+            set(JOB_RESOLUTION_FIELDS),
+            set(cleanup_resolution["properties"]),
+        )
+        self.assertEqual(
+            set(JOB_RESOLUTION_FIELDS),
+            set(cleanup_resolution["required"]),
+        )
+        self.assertIs(
+            cleanup_resolution["additionalProperties"], False
+        )
+        self.assertEqual(
+            "exact_multi_edit_cleanup",
+            cleanup_resolution["properties"]["kind"]["const"],
+        )
+        self.assertEqual(
+            {"cleaned", "refused"},
+            set(cleanup_resolution["properties"]["outcome"]["enum"]),
+        )
+        self.assertEqual(
+            "#/$defs/cleanupResult",
+            cleanup_resolution["properties"]["result"]["$ref"],
+        )
+        cleanup_result = JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][
+            "cleanupResult"
+        ]
+        self.assertIs(cleanup_result["additionalProperties"], False)
+        self.assertEqual(
+            set(cleanup_result["properties"]),
+            set(cleanup_result["required"]),
+        )
+        self.assertEqual(
+            "studio_cleanup_multi_edit",
+            cleanup_result["properties"]["operation"]["const"],
+        )
+        self.assertEqual(
+            {"cleaned", "refused"},
+            set(cleanup_result["properties"]["outcome"]["enum"]),
+        )
+        cached_terminal = cleanup_result["allOf"][0]["else"][
+            "oneOf"
+        ]
+        self.assertEqual(
+            {("cleaned", "cleaned"), ("refused", "refused")},
+            {
+                (
+                    branch["properties"]["outcome"]["const"],
+                    branch["properties"][
+                        "prior_terminal_outcome"
+                    ]["const"],
+                )
+                for branch in cached_terminal
+            },
+        )
+        self.assertEqual(
+            {
+                "deleted",
+                "already_absent",
+                "not_deleted",
+                "preserved_conflict",
+                "cleanup_required",
+            },
+            set(
+                JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][
+                    "cleanupTargetReceipt"
+                ]["properties"]["status"]["enum"]
+            ),
+        )
 
     def test_job_admission_and_result_error_conditionals_are_explicit(self) -> None:
         schema = JOB_RECEIPT_OUTPUT_SCHEMA
@@ -450,6 +534,7 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
         self.assertEqual(
             {
                 "#/$defs/multiEditAdmission",
+                "#/$defs/multiEditCleanupAdmission",
                 "#/$defs/treeAdmission",
                 "#/$defs/scriptQueryAdmission",
                 "#/$defs/inspectionAdmission",
@@ -459,6 +544,7 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
         )
         for name in (
             "multiEditAdmission",
+            "multiEditCleanupAdmission",
             "treeAdmission",
             "scriptQueryAdmission",
             "inspectionAdmission",
@@ -502,6 +588,9 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
             "dispatched",
             "resolution_receipts",
             "resolved_by_exact_recovery:recovered",
+            "resolved_by_exact_cleanup:cleaned",
+            "resolved_by_exact_cleanup:refused",
+            "studio_cleanup_multi_edit",
         ):
             with self.subTest(conditional=field):
                 self.assertIn(field, encoded)

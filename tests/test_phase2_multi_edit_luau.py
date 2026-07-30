@@ -145,6 +145,67 @@ def create_compensation_allowed(
     )
 
 
+def created_cleanup_allowed(
+    *,
+    same_generation: bool,
+    same_retained_instance: bool,
+    same_retained_parent: bool,
+    exact_unique_path: bool,
+    name_matches: bool,
+    class_matches: bool,
+    source_bytes_match: bool,
+    source_sha256_matches: bool,
+    no_property_change_observed: bool,
+    property_fingerprint_matches: bool,
+    change_tracker_connected: bool,
+    no_children: bool,
+    no_attributes: bool,
+    no_tags: bool,
+) -> bool:
+    """Model the cleanup grant's all-target destructive fence."""
+
+    return all(
+        (
+            same_generation,
+            same_retained_instance,
+            same_retained_parent,
+            exact_unique_path,
+            name_matches,
+            class_matches,
+            source_bytes_match,
+            source_sha256_matches,
+            no_property_change_observed,
+            property_fingerprint_matches,
+            change_tracker_connected,
+            no_children,
+            no_attributes,
+            no_tags,
+        )
+    )
+
+
+def cleanup_retry_model(states: list[str]) -> tuple[str, list[str]]:
+    """Model same-grant cleanup reconciliation after a partial first pass."""
+
+    if any(state not in {"created_exact", "absent"} for state in states):
+        return "refused", [
+            (
+                "already_absent"
+                if state == "absent"
+                else (
+                    "not_deleted"
+                    if state == "created_exact"
+                    else "preserved_conflict"
+                )
+            )
+            for state in states
+        ]
+    return "cleaned", [
+        "deleted" if state == "created_exact" else "already_absent"
+        for state in states
+    ]
+
+
 def create_failure_status(*, mutated: bool, observed_after_state: str) -> str:
     if mutated or observed_after_state != "absent":
         return "recovery_required"
@@ -318,7 +379,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
 
     def test_receipt_bounds_are_proved_before_mutation(self) -> None:
         self.assertEqual(
-            2,
+            3,
             self.source.count(
                 "#encodedReceipt > "
                 "DURABLE_BOUNDS.MAX_MULTI_EDIT_RECEIPT_BYTES"
@@ -358,7 +419,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         recovery = _section(
             self.source,
             "local function recoverMultiEdit(",
-            "local function readScript(",
+            "local function newMultiEditCleanupTargetOutcome(",
         )
         self.assertLess(
             recovery.index(
@@ -477,7 +538,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         recovery = _section(
             self.source,
             "local function recoverMultiEdit(",
-            "local function readScript(",
+            "local function newMultiEditCleanupTargetOutcome(",
         )
         self.assertEqual(
             1,
@@ -492,7 +553,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         recovery = _section(
             self.source,
             "local function recoverMultiEdit(",
-            "local function readScript(",
+            "local function newMultiEditCleanupTargetOutcome(",
         )
         self.assertIn(
             "local function recoverMultiEdit(args, requestId, deadlineMs)",
@@ -513,7 +574,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         recovery = _section(
             self.source,
             "local function recoverMultiEdit(",
-            "local function readScript(",
+            "local function newMultiEditCleanupTargetOutcome(",
         )
         generation_fence = (
             "or plan.generation ~= peer.generation"
@@ -537,11 +598,12 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
             "local function dispatch(request)",
             'adapterError("unsupported_operation"',
         )
-        self.assertEqual(3, dispatch.count("request.deadline_ms"))
+        self.assertEqual(4, dispatch.count("request.deadline_ms"))
         for function_name in (
             "prepareMultiEdit",
             "applyMultiEdit",
             "recoverMultiEdit",
+            "cleanupMultiEdit",
         ):
             call = dispatch[
                 dispatch.index(function_name + "(") :
@@ -563,6 +625,344 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
             drifted[field] = False
             with self.subTest(field=field):
                 self.assertFalse(create_compensation_allowed(**drifted))
+
+    def test_cleanup_model_requires_every_identity_and_content_fence(
+        self,
+    ) -> None:
+        exact = {
+            "same_generation": True,
+            "same_retained_instance": True,
+            "same_retained_parent": True,
+            "exact_unique_path": True,
+            "name_matches": True,
+            "class_matches": True,
+            "source_bytes_match": True,
+            "source_sha256_matches": True,
+            "no_property_change_observed": True,
+            "property_fingerprint_matches": True,
+            "change_tracker_connected": True,
+            "no_children": True,
+            "no_attributes": True,
+            "no_tags": True,
+        }
+        self.assertTrue(created_cleanup_allowed(**exact))
+        for field in exact:
+            drifted = dict(exact)
+            drifted[field] = False
+            with self.subTest(field=field):
+                self.assertFalse(created_cleanup_allowed(**drifted))
+
+    def test_cleanup_contract_is_targetless_closed_and_hash_ordered(
+        self,
+    ) -> None:
+        operation_keys = _section(
+            self.source,
+            "local OPERATION_ARG_KEYS = table.freeze({",
+            "local function isFiniteNumber(",
+        )
+        cleanup_keys = _section(
+            operation_keys,
+            "\tstudio_cleanup_multi_edit = table.freeze({",
+            "\t}),",
+        )
+        for field in (
+            "transaction_id = true",
+            "apply_receipt_sha256 = true",
+            "cleanup_authorization_sha256 = true",
+        ):
+            self.assertIn(field, cleanup_keys)
+        for forbidden in ("path", "source", "class_name", "name"):
+            self.assertNotIn(forbidden, cleanup_keys)
+
+        hashing = _section(
+            self.source,
+            "local function multiEditMutationSha256(",
+            "local function copyPreparedMultiEditTarget(",
+        )
+        mutation_order = (
+            "receipt.recovery_required",
+            "receipt.cleanup_authorized",
+            "receipt.cleanup_contract",
+            "receipt.cleanup_authorization_sha256",
+            "receipt.cleanup_expires_in_ms",
+            "receipt.target_count",
+            "receipt.edit_count",
+            "receipt.create_count",
+        )
+        positions = [hashing.index(marker) for marker in mutation_order]
+        self.assertEqual(positions, sorted(positions))
+
+        authorization = _section(
+            hashing,
+            "local function multiEditCleanupAuthorizationSha256(",
+            "local function multiEditCleanupSha256(",
+        )
+        authorization_order = (
+            '"studio-multi-edit-cleanup-authorization-v1"',
+            "peer.studio_id",
+            "CLIENT_INSTANCE_ID",
+            "DOCUMENT_EPOCH",
+            "peer.generation",
+            "plan.transaction_id",
+            "plan.prepare_request_id",
+            "plan.prepare_sha256",
+            "applyRequestId",
+            "PROTOCOL_METADATA.MULTI_EDIT_CLEANUP_CONTRACT",
+            "DURABLE_BOUNDS.MULTI_EDIT_CLEANUP_TTL_SECONDS * 1_000",
+        )
+        positions = []
+        cursor = 0
+        for marker in authorization_order:
+            cursor = authorization.index(marker, cursor)
+            positions.append(cursor)
+            cursor += len(marker)
+        self.assertEqual(positions, sorted(positions))
+
+        cleanup_hash = _section(
+            self.source,
+            "local function multiEditCleanupSha256(",
+            "local function copyPreparedMultiEditTarget(",
+        )
+        self.assertIn('"studio-multi-edit-cleanup-v1"', cleanup_hash)
+        self.assertIn(
+            "appendCanonicalMultiEditValue(parts, #receipt.targets)",
+            cleanup_hash,
+        )
+        target_order = (
+            "target.index",
+            "target.kind",
+            "target.path",
+            "target.parent_path",
+            '"name"',
+            '"class_name"',
+            '"expected_absent"',
+            '"planned_sha256"',
+            '"planned_source_length"',
+            '"observed_before_state"',
+            '"observed_after_state"',
+            '"observed_after_class_name"',
+            '"observed_after_sha256"',
+            '"status"',
+        )
+        positions = [cleanup_hash.index(marker) for marker in target_order]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_applied_creation_retains_one_separate_ten_minute_grant(
+        self,
+    ) -> None:
+        self.assertIn(
+            "MULTI_EDIT_CLEANUP_TTL_SECONDS = 600",
+            self.source,
+        )
+        installer = _section(
+            self.source,
+            "local function installMultiEditCleanupGrant(",
+            "local function preparedMultiEditTargetMatches(",
+        )
+        for marker in (
+            "peer.multi_edit_cleanup_grant = {",
+            "transaction_id = plan.transaction_id",
+            "document_epoch = DOCUMENT_EPOCH",
+            "generation = peer.generation",
+            "apply_request_id = applyRequestId",
+            "apply_receipt_sha256 = applyReceiptSha256",
+            "cleanup_authorization_sha256 =",
+            "observeMultiEditCreate(planTarget)",
+            'state ~= "created_exact"',
+            "planned_source = planTarget.planned_source",
+            "created_instance = planTarget.created_instance",
+            "parent = planTarget.parent",
+        ):
+            self.assertIn(marker, installer)
+        self.assertNotIn("peer.multi_edit_plan =", installer)
+
+        receipt = _section(
+            self.source,
+            "local function newMultiEditMutationReceipt(",
+            "local function assertMultiEditMutationReceiptBound(",
+        )
+        self.assertIn(
+            'local cleanupAuthorized = phase == "apply"\n'
+            '\t\tand outcome == "applied"\n'
+            "\t\tand plan.create_count > 0",
+            receipt,
+        )
+        self.assertIn("installMultiEditCleanupGrant(", receipt)
+
+        prepare = _section(
+            self.source,
+            "local function prepareMultiEdit(",
+            "local function multiEditCasReplace(",
+        )
+        self.assertIn(
+            "if createCount > 0 and cleanupGrant ~= nil then",
+            prepare,
+        )
+        self.assertIn(
+            'cleanupGrant.status == "cleanup_required"',
+            prepare,
+        )
+        self.assertNotIn(
+            "peer.multi_edit_cleanup_grant = nil\n"
+            "\tlocal planTargets",
+            prepare,
+        )
+
+    def test_cleanup_preflights_every_target_before_exact_destroy(
+        self,
+    ) -> None:
+        cleanup = _section(
+            self.source,
+            "local function cleanupMultiEdit(",
+            "local function readScript(",
+        )
+        preflight = cleanup.index(
+            "for index, cleanupTarget in ipairs(grant.targets) do"
+        )
+        refused = cleanup.index('grant.status = "refused"')
+        bounded = cleanup.index("local worstCaseOutcomes = {}")
+        mutation = cleanup.index(
+            "for index = #grant.targets, 1, -1 do"
+        )
+        destroy = cleanup.index(
+            "compensateMultiEditCreate(\n"
+            "\t\t\t\t\tcleanupTarget,\n"
+            "\t\t\t\t\tgrant.expires_at"
+        )
+        self.assertLess(preflight, refused)
+        self.assertLess(refused, bounded)
+        self.assertLess(bounded, mutation)
+        self.assertLess(mutation, destroy)
+        for marker in (
+            'state == "created_exact"',
+            'state == "absent"',
+            'targetOutcome.status = "preserved_conflict"',
+            'targetOutcome.status = "already_absent"',
+            'targetOutcome.status = "cleanup_required"',
+            'grant.status = "cleanup_required"',
+            '"cleanup_required",\n'
+            "\t\t\tfalse,",
+        ):
+            self.assertIn(marker, cleanup)
+
+        exact_delete = _section(
+            self.source,
+            "local function compensateMultiEditCreate(",
+            "local function installMultiEditCleanupGrant(",
+        )
+        for marker in (
+            'beforeState ~= "created_exact"',
+            "beforeClass ~= planTarget.class_name",
+            "beforeDigest ~= planTarget.planned_sha256",
+            'contentState ~= "empty"',
+            "reboundParent ~= planTarget.parent",
+            "matchCount ~= 1",
+            "exact ~= created",
+            'multiEditCreatedContentState(planTarget) ~= "empty"',
+            'type(cleanupExpiresAt) == "number"',
+            "os.clock() >= cleanupExpiresAt",
+            "created:Destroy()",
+            'afterState == "absent"',
+        ):
+            self.assertIn(marker, exact_delete)
+        self.assertLess(
+            exact_delete.index("os.clock() >= cleanupExpiresAt"),
+            exact_delete.index("created:Destroy()"),
+        )
+
+    def test_cleanup_retry_reconciles_only_the_same_exact_grant(
+        self,
+    ) -> None:
+        refresh = _section(
+            self.source,
+            "local function refreshMultiEditCleanupGrant(",
+            "local function prepareMultiEdit(",
+        )
+        for marker in (
+            "grant.generation ~= peer.generation",
+            "grant.document_epoch ~= DOCUMENT_EPOCH",
+            'grant.status == "cleanup_required"',
+            "os.clock() >= grant.expires_at",
+            "grant.settlement_only = true",
+            "disconnectMultiEditCreatedTrackers(grant)",
+            "peer.multi_edit_cleanup_grant = nil",
+        ):
+            self.assertIn(marker, refresh)
+
+        cleanup = _section(
+            self.source,
+            "local function cleanupMultiEdit(",
+            "local function readScript(",
+        )
+        identity_end = cleanup.index(
+            "local evidence = grant.safe_terminal_evidence"
+        )
+        first_preflight = cleanup.index(
+            "for index, cleanupTarget in ipairs(grant.targets) do"
+        )
+        first_destroy = cleanup.index(
+            "compensateMultiEditCreate("
+        )
+        expiry_admission = cleanup.index(
+            "if grant.settlement_only == true"
+        )
+        preflight_expiry = cleanup.index(
+            "if os.clock() >= grant.expires_at",
+            first_preflight,
+        )
+        mutation_expiry = cleanup.index(
+            "if os.clock() >= grant.expires_at",
+            preflight_expiry + 1,
+        )
+        for identity_field in (
+            "grant.transaction_id ~= args.transaction_id",
+            "grant.document_epoch ~= DOCUMENT_EPOCH",
+            "grant.generation ~= peer.generation",
+            "grant.apply_receipt_sha256",
+            "~= args.apply_receipt_sha256",
+            "grant.cleanup_authorization_sha256",
+            "~= args.cleanup_authorization_sha256",
+        ):
+            self.assertIn(identity_field, cleanup[:identity_end])
+        self.assertLess(identity_end, first_preflight)
+        self.assertLess(expiry_admission, first_preflight)
+        self.assertLess(preflight_expiry, first_destroy)
+        self.assertLess(mutation_expiry, first_destroy)
+        self.assertLess(first_preflight, first_destroy)
+        for marker in (
+            '"cleanup_execution"',
+            '"cached_cleanup_terminal"',
+            'grant.status == "cleaned" or grant.status == "refused"',
+            'grant.status ~= "authorized"',
+            'and grant.status ~= "cleanup_required"',
+            'grant.status = "cleanup_required"',
+            "authorizationExpired",
+            "expiredDuringCleanup",
+            '"multi_edit_cleanup_expired"',
+        ):
+            self.assertIn(marker, self.source)
+        self.assertNotIn(
+            '"Cleanup has an unproven partial outcome and cannot be retried"',
+            cleanup,
+        )
+
+        # The first pass deleted the second target but could not prove or
+        # finish the first. The exact same grant then treats the retained,
+        # already-absent target as terminal and deletes only the remaining
+        # unchanged retained Instance.
+        self.assertEqual(
+            ("cleaned", ["deleted", "already_absent"]),
+            cleanup_retry_model(["created_exact", "absent"]),
+        )
+        self.assertEqual(
+            (
+                "refused",
+                ["not_deleted", "preserved_conflict"],
+            ),
+            cleanup_retry_model(
+                ["created_exact", "present_unproven"]
+            ),
+        )
 
     def test_create_failure_model_quarantines_every_non_absent_state(
         self,
@@ -609,6 +1009,98 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
             drifted[field] = value
             with self.subTest(field=field):
                 self.assertFalse(created_content_empty(**drifted))
+
+    def test_created_property_drift_is_latched_and_fingerprinted_before_delete(
+        self,
+    ) -> None:
+        fingerprint = _section(
+            self.source,
+            "local function multiEditCreatedPropertyFingerprint(",
+            "local function multiEditCreatedContentState(",
+        )
+        for property_name in (
+            "Archivable",
+            "Sandboxed",
+            "Capabilities",
+            "DefinesCapabilities",
+            "Disabled",
+            "Enabled",
+            "RunContext",
+            "LinkedSource",
+        ):
+            self.assertIn(f'"{property_name}"', fingerprint)
+        self.assertIn(
+            "appendCanonicalMultiEditValue(parts, propertyName)",
+            fingerprint,
+        )
+        self.assertIn("return sourceSha256(table.concat(parts))", fingerprint)
+
+        content = _section(
+            self.source,
+            "local function multiEditCreatedContentState(",
+            "local function observeMultiEditCreate(",
+        )
+        for marker in (
+            "planTarget.created_change_tracker",
+            "tracker.dirty ~= false",
+            "tracker.connection == nil",
+            "tracker.connection.Connected ~= true",
+            "planTarget.created_property_fingerprint",
+            "multiEditCreatedPropertyFingerprint(created)",
+            'return "present_unproven"',
+        ):
+            self.assertIn(marker, content)
+
+        apply_create = _section(
+            self.source,
+            "local function applyMultiEditCreate(",
+            "local function compensateMultiEditCreate(",
+        )
+        connect = apply_create.index("created.Changed:Connect(")
+        parent_write = apply_create.index("created.Parent = parent")
+        fingerprint_capture = apply_create.index(
+            "planTarget.created_property_fingerprint ="
+        )
+        readback = apply_create.index(
+            "observeMultiEditCreate(planTarget)",
+            fingerprint_capture,
+        )
+        self.assertLess(connect, parent_write)
+        self.assertLess(parent_write, fingerprint_capture)
+        self.assertLess(fingerprint_capture, readback)
+        for marker in (
+            'propertyName == "Parent"',
+            "tracker.initial_parent_change_pending",
+            "created.Parent == planTarget.parent",
+            "tracker.dirty = true",
+            "planTarget.created_change_tracker = tracker",
+        ):
+            self.assertIn(marker, apply_create)
+
+        installer = _section(
+            self.source,
+            "local function installMultiEditCleanupGrant(",
+            "local function preparedMultiEditTargetMatches(",
+        )
+        self.assertIn("created_change_tracker =", installer)
+        self.assertIn("created_property_fingerprint =", installer)
+
+        disconnect = _section(
+            self.source,
+            "local function disconnectMultiEditCreatedTrackers(",
+            "local function refreshMultiEditCleanupGrant(",
+        )
+        self.assertIn("tracker.connection:Disconnect()", disconnect)
+        self.assertIn("tracker.connection = nil", disconnect)
+        cleanup = _section(
+            self.source,
+            "local function cleanupMultiEdit(",
+            "local function readScript(",
+        )
+        self.assertGreaterEqual(
+            cleanup.count("disconnectMultiEditCreatedTrackers(grant)"),
+            2,
+        )
 
     def test_lost_apply_receipt_plan_states_remain_recoverable(self) -> None:
         for status in (
@@ -829,7 +1321,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
             compensate.index("created:Destroy()"),
         )
         self.assertLess(
-            compensate.index("multiEditCreatedContentState(created)"),
+            compensate.index("multiEditCreatedContentState(planTarget)"),
             compensate.index("created:Destroy()"),
         )
         final_observation = compensate.index(
@@ -1049,8 +1541,8 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
     ) -> None:
         receipts = _section(
             self.source,
-            "local function copyMultiEditTargetOutcomes(",
-            "local function assertMultiEditMutationReceiptBound(",
+            "\tif safeTerminal\n\t\tand (",
+            "\treturn receipt\nend\n\nlocal function assertMultiEditMutationReceiptBound(",
         )
         for marker in (
             'outcome == "aborted_preflight"',
@@ -1068,7 +1560,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         recovery = _section(
             self.source,
             "local function recoverMultiEdit(",
-            "local function readScript(",
+            "local function newMultiEditCleanupTargetOutcome(",
         )
         replay_start = recovery.index(
             "local evidence = plan.safe_terminal_evidence"
@@ -1100,7 +1592,7 @@ class Phase2MultiEditLuauTests(unittest.TestCase):
         recovery = _section(
             self.source,
             "local function recoverMultiEdit(",
-            "local function readScript(",
+            "local function newMultiEditCleanupTargetOutcome(",
         )
         for marker in (
             "or plan.document_epoch ~= DOCUMENT_EPOCH",

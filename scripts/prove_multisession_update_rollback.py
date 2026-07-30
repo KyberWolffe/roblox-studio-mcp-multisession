@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove exact Multisession rc.5 -> rc.6 -> rc.5 rollback."""
+"""Prove exact Multisession rc.5 -> rc.7 -> rc.5 rollback."""
 
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ def _validated_output_paths(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Install exact immutable 0.4.0-rc.5 and an exact rc.6 "
+            "Install exact immutable 0.4.0-rc.5 and an exact rc.7 "
             "candidate in one disposable synthetic home, verify the "
             "transactional update and immediate rollback target, restore "
             "all active bytes/modes/registration, and emit non-secret JSON."

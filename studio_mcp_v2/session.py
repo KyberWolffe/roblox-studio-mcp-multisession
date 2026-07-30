@@ -34,11 +34,15 @@ from .multi_edit import (
     MAX_MULTI_EDIT_SOURCE_BYTES,
     MAX_MULTI_EDIT_TARGETS,
     MULTI_EDIT_ATOMICITY,
+    MULTI_EDIT_CLEANUP_CONTRACT,
+    MULTI_EDIT_CLEANUP_TTL_MS,
     MULTI_EDIT_ORDERING_VERSION,
     MULTI_EDIT_RECEIPT_CONTRACT,
     SHA256_RE,
     canonical_json_bytes,
     canonical_json_sha256,
+    cleanup_authorization_sha256,
+    cleanup_receipt_sha256,
     mutation_receipt_sha256,
     normalize_multi_edit_arguments,
     prepare_receipt_sha256,
@@ -138,6 +142,7 @@ MAX_ACTIVE_SESSION_JOBS = 32
 MAX_RETAINED_JOB_BYTES = 32_000_000
 MAX_JOB_RESOLUTION_RECEIPTS = 4
 MAX_JOB_RETIREMENT_TOMBSTONES = 64
+MAX_MULTI_EDIT_CLEANUP_TOMBSTONES = 32
 
 _DURABLE_SCRIPT_ADAPTER = "studio-mcp-v2-durable-plugin"
 _DURABLE_SCRIPT_CLASSES = frozenset(
@@ -600,11 +605,62 @@ _DURABLE_MULTI_EDIT_MUTATION_KEYS = frozenset(
         "outcome",
         "safe_terminal",
         "recovery_required",
+        "cleanup_authorized",
+        "cleanup_contract",
+        "cleanup_authorization_sha256",
+        "cleanup_expires_in_ms",
         "target_count",
         "edit_count",
         "create_count",
         "targets",
         "receipt_sha256",
+    }
+)
+_DURABLE_MULTI_EDIT_CLEANUP_KEYS = frozenset(
+    {
+        "adapter",
+        "v",
+        "operation",
+        "phase",
+        "studio_id",
+        "client_instance_id",
+        "document_epoch",
+        "generation",
+        "request_id",
+        "transaction_id",
+        "prepare_request_id",
+        "prepare_sha256",
+        "apply_request_id",
+        "apply_receipt_sha256",
+        "cleanup_authorization_sha256",
+        "cleanup_contract",
+        "evidence_mode",
+        "prior_terminal_outcome",
+        "prior_terminal_receipt_sha256",
+        "outcome",
+        "safe_terminal",
+        "recovery_required",
+        "create_count",
+        "targets",
+        "receipt_sha256",
+    }
+)
+_DURABLE_MULTI_EDIT_CLEANUP_TARGET_KEYS = frozenset(
+    {
+        "index",
+        "kind",
+        "path",
+        "parent_path",
+        "name",
+        "class_name",
+        "expected_absent",
+        "planned_sha256",
+        "planned_source_length",
+        "observed_before_state",
+        "observed_after_state",
+        "observed_after_class_name",
+        "observed_after_sha256",
+        "status",
     }
 )
 _DURABLE_MULTI_EDIT_TARGET_OUTCOME_KEYS = frozenset(
@@ -679,6 +735,9 @@ class PendingRequest:
     remote_tool: str
     arguments: Dict[str, Any]
     future: asyncio.Future
+    dispatched_at_monotonic: float = field(
+        default_factory=time.monotonic
+    )
 
 
 def _job_admitted_contract(
@@ -738,6 +797,19 @@ def _job_admitted_contract(
             }
         )
         return summary
+    if remote_tool == "studio_cleanup_multi_edit":
+        return {
+            "contract_version": "studio-job-admission-v1",
+            "operation": remote_tool,
+            "transaction_id": arguments["transaction_id"],
+            "apply_receipt_sha256": arguments[
+                "apply_receipt_sha256"
+            ],
+            "cleanup_authorization_sha256": arguments[
+                "cleanup_authorization_sha256"
+            ],
+            "cleanup_contract": MULTI_EDIT_CLEANUP_CONTRACT,
+        }
     if remote_tool == "studio_list_tree":
         summary.update(
             {
@@ -942,6 +1014,19 @@ class StudioSession:
             "studio_start_stop_play",
         }
     )
+    CLEANUP_COMPATIBLE_READ_TOOLS = frozenset(
+        {
+            "rnd_get_state",
+            "studio_get_state",
+            "studio_list_tree",
+            "studio_search_scripts",
+            "studio_grep_scripts",
+            "studio_inspect_instance",
+            "studio_read_script",
+            "studio_get_console",
+            "studio_capture_screenshot",
+        }
+    )
 
     def __init__(
         self,
@@ -999,6 +1084,12 @@ class StudioSession:
         self.uncertain_pending: Dict[str, PendingRequest] = {}
         self.multi_edit_recovery: Optional[Dict[str, Any]] = None
         self.multi_edit_prepared_receipt: Optional[Dict[str, Any]] = None
+        self.multi_edit_cleanup: Optional[Dict[str, Any]] = None
+        self.multi_edit_cleanup_retirement_count = 0
+        self.multi_edit_cleanup_retirement_chain_sha256 = "0" * 64
+        self.multi_edit_cleanup_tombstones: Deque[
+            Dict[str, Any]
+        ] = deque(maxlen=MAX_MULTI_EDIT_CLEANUP_TOMBSTONES)
         # Conservative v2 baseline: every Studio-bound operation is exclusive.
         self.operation_lock = asyncio.Lock()
         # Explicit admission chaining makes the order deterministic even when
@@ -1026,6 +1117,184 @@ class StudioSession:
         self._admission_tail = completion
         return admission
 
+    def _multi_edit_cleanup_snapshot(self) -> Optional[Dict[str, Any]]:
+        self._expire_multi_edit_cleanup()
+        cleanup = self.multi_edit_cleanup
+        if cleanup is None:
+            return None
+        remaining_ms = max(
+            0,
+            int(
+                (
+                    cleanup["expires_at_monotonic"]
+                    - time.monotonic()
+                )
+                * 1_000
+            ),
+        )
+        return {
+            "transaction_id": cleanup["transaction_id"],
+            "studio_id": self.studio_id,
+            "client_instance_id": self.client_instance_id,
+            "document_epoch": self.document_epoch,
+            "generation": cleanup["generation"],
+            "prepare_request_id": cleanup["prepare_request_id"],
+            "prepare_sha256": cleanup["prepare_sha256"],
+            "apply_request_id": cleanup["apply_request_id"],
+            "apply_receipt_sha256": cleanup[
+                "apply_receipt_sha256"
+            ],
+            "cleanup_authorization_sha256": cleanup[
+                "cleanup_authorization_sha256"
+            ],
+            "cleanup_contract": MULTI_EDIT_CLEANUP_CONTRACT,
+            "cleanup_expires_in_ms": remaining_ms,
+            "create_count": cleanup["create_count"],
+            "state": cleanup["state"],
+            "cleanup_request_id": cleanup.get(
+                "cleanup_request_id", ""
+            ),
+        }
+
+    def _retire_multi_edit_cleanup(
+        self,
+        reason: str,
+        *,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        cleanup = self.multi_edit_cleanup
+        if cleanup is None:
+            return
+        tombstone = {
+            "transaction_id": cleanup["transaction_id"],
+            "studio_id": self.studio_id,
+            "client_instance_id": self.client_instance_id,
+            "document_epoch": self.document_epoch,
+            "generation": cleanup["generation"],
+            "prepare_request_id": cleanup["prepare_request_id"],
+            "prepare_sha256": cleanup["prepare_sha256"],
+            "apply_request_id": cleanup["apply_request_id"],
+            "apply_receipt_sha256": cleanup[
+                "apply_receipt_sha256"
+            ],
+            "cleanup_authorization_sha256": cleanup[
+                "cleanup_authorization_sha256"
+            ],
+            "cleanup_contract": MULTI_EDIT_CLEANUP_CONTRACT,
+            "create_count": cleanup["create_count"],
+            "created_targets_sha256": canonical_json_sha256(
+                cleanup["targets"]
+            ),
+            "prior_state": cleanup["state"],
+            "reason": str(reason)[:160],
+            "cleanup_request_id": cleanup.get(
+                "cleanup_request_id", ""
+            ),
+            "cleanup_outcome": (
+                result.get("outcome", "")
+                if isinstance(result, dict)
+                else ""
+            ),
+            "cleanup_receipt_sha256": (
+                result.get("receipt_sha256", "")
+                if isinstance(result, dict)
+                else ""
+            ),
+            "authorization_expired_before_settlement": (
+                cleanup.get("expired_at") is not None
+            ),
+            "authorization_expired_at": cleanup.get(
+                "expired_at"
+            ),
+            "retired_at": time.time(),
+        }
+        previous = self.multi_edit_cleanup_retirement_chain_sha256
+        next_sha256 = canonical_json_sha256(
+            {
+                "previous_sha256": previous,
+                "retired": tombstone,
+            }
+        )
+        tombstone["previous_chain_sha256"] = previous
+        tombstone["chain_sha256"] = next_sha256
+        self.multi_edit_cleanup_retirement_chain_sha256 = next_sha256
+        self.multi_edit_cleanup_tombstones.append(tombstone)
+        self.multi_edit_cleanup_retirement_count += 1
+        self.multi_edit_cleanup = None
+
+    def _expire_multi_edit_cleanup(self) -> None:
+        cleanup = self.multi_edit_cleanup
+        if cleanup is None or time.monotonic() < cleanup.get(
+            "expires_at_monotonic", 0
+        ):
+            return
+        state = cleanup.get("state")
+        if state == "available":
+            self._retire_multi_edit_cleanup(
+                "cleanup_authorization_expired"
+            )
+        elif state in {"cleanup_dispatched", "cleanup_required"}:
+            # Once deletion was dispatched, expiry cannot discard the
+            # identity/evidence needed to settle a late same-generation
+            # receipt. It does, however, permanently close mutation
+            # admission: this state accepts settlement evidence only.
+            cleanup["state"] = "cleanup_expired_settlement"
+            cleanup["expired_at_monotonic"] = time.monotonic()
+            cleanup["expired_at"] = time.time()
+            self.uncertainty_state = (
+                "multi_edit_cleanup:cleanup_expired_settlement"
+            )
+
+    def _grant_multi_edit_cleanup(
+        self,
+        pending: PendingRequest,
+        result: Dict[str, Any],
+    ) -> bool:
+        prepared = self.multi_edit_prepared_receipt
+        if prepared is None:
+            return False
+        self._expire_multi_edit_cleanup()
+        if self.multi_edit_cleanup is not None:
+            return False
+        targets = [
+            copy.deepcopy(target)
+            for target in prepared["targets"]
+            if target.get("kind") == "create"
+        ]
+        if len(targets) != result["create_count"] or not targets:
+            return False
+        origin_job_id = ""
+        for job in self.jobs.values():
+            if pending.request_id in job.dispatched_request_ids:
+                origin_job_id = job.job_id
+                break
+        self.multi_edit_cleanup = {
+            "transaction_id": result["transaction_id"],
+            "generation": pending.generation,
+            "prepare_request_id": result["prepare_request_id"],
+            "prepare_sha256": result["prepare_sha256"],
+            "apply_request_id": pending.request_id,
+            "apply_receipt_sha256": result["receipt_sha256"],
+            "cleanup_authorization_sha256": result[
+                "cleanup_authorization_sha256"
+            ],
+            "targets": targets,
+            "create_count": len(targets),
+            "origin_job_id": origin_job_id,
+            # The plugin cannot install its cleanup grant before this apply
+            # dispatch. Anchoring host expiry here is conservative: the host
+            # never dispatches after the plugin's advertised 600-second TTL,
+            # even if the apply receipt took time to return.
+            "issued_at_monotonic": pending.dispatched_at_monotonic,
+            "expires_at_monotonic": (
+                pending.dispatched_at_monotonic
+                + MULTI_EDIT_CLEANUP_TTL_MS / 1_000
+            ),
+            "state": "available",
+            "cleanup_request_id": "",
+        }
+        return True
+
     def snapshot(self) -> Dict[str, Any]:
         return {
             "studio_id": self.studio_id,
@@ -1043,6 +1312,16 @@ class StudioSession:
                 copy.deepcopy(self.multi_edit_recovery)
                 if self.multi_edit_recovery is not None
                 else None
+            ),
+            "multi_edit_cleanup": self._multi_edit_cleanup_snapshot(),
+            "multi_edit_cleanup_retirement_count": (
+                self.multi_edit_cleanup_retirement_count
+            ),
+            "multi_edit_cleanup_retirement_chain_sha256": (
+                self.multi_edit_cleanup_retirement_chain_sha256
+            ),
+            "multi_edit_cleanup_tombstones": copy.deepcopy(
+                list(self.multi_edit_cleanup_tombstones)
             ),
             "uncertain_request_count": len(self.uncertain_requests),
             "pending_count": len(self.pending),
@@ -1188,6 +1467,7 @@ class StudioSession:
                     in {
                         "studio_multi_edit",
                         "studio_recover_multi_edit",
+                        "studio_cleanup_multi_edit",
                     }
                     and pending.arguments.get("_phase") != "prepare"
                 ):
@@ -1256,6 +1536,14 @@ class StudioSession:
 
     def _disconnect_current(self, reason: str) -> None:
         disconnect_mode = self.mode.lower()
+        self._expire_multi_edit_cleanup()
+        if (
+            self.multi_edit_cleanup is not None
+            and self.multi_edit_cleanup.get("state") == "available"
+        ):
+            self._retire_multi_edit_cleanup(
+                "connection_lost_before_cleanup"
+            )
         if self.transport is not None:
             self.transport.close()
         self.transport = None
@@ -1315,6 +1603,7 @@ class StudioSession:
             self.last_confirmed_mode == "edit"
             and self.play_bridge_uncertain is None
             and self.multi_edit_recovery is None
+            and self.multi_edit_cleanup is None
             and not self.operation_lock.locked()
             and not self.pending
             and not self.uncertain_requests
@@ -1356,6 +1645,7 @@ class StudioSession:
         remote_tool: str,
         arguments: Optional[Dict[str, Any]] = None,
     ) -> None:
+        self._expire_multi_edit_cleanup()
         operation_arguments = arguments or {}
         recovery_transaction_id = (
             self.multi_edit_recovery.get("transaction_id")
@@ -1403,9 +1693,58 @@ class StudioSession:
                 )
             )
         )
+        cleanup = self.multi_edit_cleanup
+        cleanup_identity_matches = (
+            remote_tool == "studio_cleanup_multi_edit"
+            and cleanup is not None
+            and operation_arguments.get("transaction_id")
+            == cleanup.get("transaction_id")
+            and operation_arguments.get("apply_receipt_sha256")
+            == cleanup.get("apply_receipt_sha256")
+            and operation_arguments.get(
+                "cleanup_authorization_sha256"
+            )
+            == cleanup.get("cleanup_authorization_sha256")
+            and cleanup.get("generation") == admitted_generation
+        )
+        cleanup_uncertainty_matches = (
+            cleanup_identity_matches
+            and uncertainty_ids_match
+            and all(
+                pending.generation == admitted_generation
+                and self.uncertain_requests[request_id].get(
+                    "generation"
+                )
+                == admitted_generation
+                and pending.remote_tool
+                == "studio_cleanup_multi_edit"
+                and pending.arguments.get("transaction_id")
+                == cleanup.get("transaction_id")
+                and pending.arguments.get("apply_receipt_sha256")
+                == cleanup.get("apply_receipt_sha256")
+                and pending.arguments.get(
+                    "cleanup_authorization_sha256"
+                )
+                == cleanup.get("cleanup_authorization_sha256")
+                for request_id, pending in (
+                    self.uncertain_pending.items()
+                )
+            )
+        )
+        cleanup_allowed = cleanup_identity_matches and (
+            (
+                cleanup.get("state") == "available"
+                and not self.uncertain_requests
+            )
+            or (
+                cleanup.get("state")
+                in {"cleanup_dispatched", "cleanup_required"}
+                and cleanup_uncertainty_matches
+            )
+        )
         self.assert_generation_online(
             admitted_generation,
-            allow_uncertain=recovery_allowed,
+            allow_uncertain=recovery_allowed or cleanup_allowed,
         )
         if (
             self.multi_edit_recovery is not None
@@ -1415,6 +1754,48 @@ class StudioSession:
                 "This Studio has an exact multi-edit recovery fence; only "
                 "the matching bounded recovery transaction is admitted"
             )
+        if cleanup is not None and not cleanup_allowed:
+            cleanup_state = cleanup.get("state")
+            edit_only_multi_edit = (
+                remote_tool == "studio_multi_edit"
+                and (
+                    (
+                        operation_arguments.get("_phase") == "prepare"
+                        and not operation_arguments.get("creates")
+                    )
+                    or (
+                        operation_arguments.get("_phase") == "apply"
+                        and self.multi_edit_prepared_receipt
+                        is not None
+                        and self.multi_edit_prepared_receipt.get(
+                            "create_count"
+                        )
+                        == 0
+                    )
+                )
+            )
+            edit_only_recovery = (
+                recovery_allowed
+                and self.multi_edit_prepared_receipt is not None
+                and self.multi_edit_prepared_receipt.get(
+                    "create_count"
+                )
+                == 0
+            )
+            compatible_while_available = (
+                cleanup_state == "available"
+                and (
+                    remote_tool in self.CLEANUP_COMPATIBLE_READ_TOOLS
+                    or edit_only_multi_edit
+                    or edit_only_recovery
+                )
+            )
+            if not compatible_while_available:
+                raise SessionConflictError(
+                    "This Studio retains an exact transaction-created script "
+                    "cleanup authorization; only bounded reads, edit-only "
+                    "multi-edit, or the matching cleanup are admitted"
+                )
         if (
             self.play_bridge_uncertain is not None
             and remote_tool not in self.PLAY_BRIDGE_RECOVERY_TOOLS
@@ -1434,6 +1815,19 @@ class StudioSession:
             self.uncertainty_state = (
                 "multi_edit:"
                 + str(self.multi_edit_recovery.get("state", "recovery"))
+            )
+        elif (
+            self.multi_edit_cleanup is not None
+            and self.multi_edit_cleanup.get("state")
+            in {
+                "cleanup_dispatched",
+                "cleanup_required",
+                "cleanup_expired_settlement",
+            }
+        ):
+            self.uncertainty_state = (
+                "multi_edit_cleanup:"
+                + str(self.multi_edit_cleanup.get("state"))
             )
         else:
             self.uncertainty_state = fallback
@@ -1726,6 +2120,77 @@ class StudioSession:
             and request_id != excluding_request_id
         )
 
+    def _mark_multi_edit_cleanup_dispatched(
+        self,
+        request_id: str,
+        generation: int,
+    ) -> None:
+        cleanup = self.multi_edit_cleanup
+        if (
+            cleanup is None
+            or cleanup.get("generation") != generation
+            or cleanup.get("state")
+            not in {
+                "available",
+                "cleanup_required",
+                "cleanup_expired_settlement",
+            }
+        ):
+            raise SessionConflictError(
+                "Exact cleanup dispatch lost its transaction authorization"
+            )
+        cleanup["cleanup_request_id"] = request_id
+        if cleanup.get("state") != "cleanup_expired_settlement":
+            cleanup["state"] = "cleanup_dispatched"
+
+    def _set_multi_edit_cleanup_required(
+        self,
+        request_id: str,
+        generation: int,
+        reason: str,
+    ) -> None:
+        cleanup = self.multi_edit_cleanup
+        if (
+            cleanup is None
+            or cleanup.get("generation") != generation
+        ):
+            return
+        self._expire_multi_edit_cleanup()
+        cleanup = self.multi_edit_cleanup
+        if cleanup is None:
+            return
+        cleanup["cleanup_request_id"] = request_id
+        if cleanup.get("state") == "cleanup_expired_settlement":
+            self.uncertainty_state = (
+                "multi_edit_cleanup:cleanup_expired_settlement"
+            )
+        else:
+            cleanup["state"] = "cleanup_required"
+            self.uncertainty_state = (
+                "multi_edit_cleanup:" + str(reason)[:120]
+            )
+
+    def _exact_multi_edit_cleanup_controls(
+        self,
+        transaction_id: Any,
+        *,
+        excluding_request_id: str = "",
+    ) -> bool:
+        cleanup = self.multi_edit_cleanup
+        if (
+            not isinstance(transaction_id, str)
+            or cleanup is None
+            or cleanup.get("transaction_id") != transaction_id
+            or cleanup.get("generation") != self.generation
+        ):
+            return False
+        request_id = cleanup.get("cleanup_request_id")
+        return (
+            isinstance(request_id, str)
+            and bool(request_id)
+            and request_id != excluding_request_id
+        )
+
     async def _invoke_locked(
         self,
         remote_tool: str,
@@ -1746,6 +2211,25 @@ class StudioSession:
                 "No exact recovery-required multi-edit transaction matches "
                 "this explicit Studio session"
             )
+        if remote_tool == "studio_cleanup_multi_edit":
+            # Cleanup authority is deliberately short-lived. Expire it before
+            # the exact-match precheck so a request cannot pass that check,
+            # lose its grant during admission, and still reach Studio.
+            self._expire_multi_edit_cleanup()
+            cleanup = self.multi_edit_cleanup
+            if (
+                cleanup is None
+                or arguments.get("transaction_id")
+                != cleanup.get("transaction_id")
+                or arguments.get("apply_receipt_sha256")
+                != cleanup.get("apply_receipt_sha256")
+                or arguments.get("cleanup_authorization_sha256")
+                != cleanup.get("cleanup_authorization_sha256")
+            ):
+                raise SessionConflictError(
+                    "No exact applied-creation cleanup authorization matches "
+                    "this explicit Studio session"
+                )
         # Critical no-replay fence for calls that waited through reconnect.
         self.assert_operation_admissible(
             admitted_generation,
@@ -1790,11 +2274,31 @@ class StudioSession:
         dispatched = False
         try:
             assert self.transport is not None
+            if remote_tool == "studio_cleanup_multi_edit":
+                # This is the final synchronous fence immediately before
+                # transport dispatch. A queued request that reached the
+                # absolute cleanup deadline must not cause any new deletion.
+                self._expire_multi_edit_cleanup()
+                cleanup = self.multi_edit_cleanup
+                if (
+                    cleanup is None
+                    or cleanup.get("state")
+                    not in {"available", "cleanup_required"}
+                ):
+                    raise SessionConflictError(
+                        "The exact applied-creation cleanup authorization "
+                        "expired; only late settlement evidence is accepted"
+                    )
             await self.transport.send(envelope)
             dispatched = True
             if remote_tool == "studio_recover_multi_edit":
                 self._mark_multi_edit_recovery_dispatched(
                     arguments.get("transaction_id"),
+                    operation_request_id,
+                    admitted_generation,
+                )
+            elif remote_tool == "studio_cleanup_multi_edit":
+                self._mark_multi_edit_cleanup_dispatched(
                     operation_request_id,
                     admitted_generation,
                 )
@@ -1804,7 +2308,12 @@ class StudioSession:
                     dispatched_phase = (
                         "recover"
                         if remote_tool == "studio_recover_multi_edit"
-                        else "direct"
+                        else (
+                            "cleanup"
+                            if remote_tool
+                            == "studio_cleanup_multi_edit"
+                            else "direct"
+                        )
                     )
                 try:
                     on_dispatched(
@@ -1842,6 +2351,15 @@ class StudioSession:
                             admitted_generation,
                             "post_dispatch_observer_failed",
                         )
+                    elif (
+                        remote_tool == "studio_cleanup_multi_edit"
+                        and isinstance(transaction_id, str)
+                    ):
+                        self._set_multi_edit_cleanup_required(
+                            operation_request_id,
+                            admitted_generation,
+                            "post_dispatch_observer_failed",
+                        )
                     else:
                         self._refresh_uncertainty()
                     raise
@@ -1862,6 +2380,12 @@ class StudioSession:
                 "reason": "response_timeout_after_dispatch",
             }
             self.uncertain_pending[operation_request_id] = pending
+            if remote_tool == "studio_cleanup_multi_edit":
+                self._set_multi_edit_cleanup_required(
+                    operation_request_id,
+                    admitted_generation,
+                    "response_timeout_after_dispatch",
+                )
             self._refresh_uncertainty()
             raise RequestTimeoutError(
                 "Timed out waiting for the targeted Studio response"
@@ -1874,6 +2398,12 @@ class StudioSession:
                     "reason": "local_wait_cancelled_after_dispatch",
                 }
                 self.uncertain_pending[operation_request_id] = pending
+                if remote_tool == "studio_cleanup_multi_edit":
+                    self._set_multi_edit_cleanup_required(
+                        operation_request_id,
+                        admitted_generation,
+                        "local_wait_cancelled_after_dispatch",
+                    )
                 self._refresh_uncertainty()
             raise
         finally:
@@ -3826,6 +4356,57 @@ class StudioSession:
             is (outcome == "recovery_required")
         ):
             return False
+        cleanup_authorized = result.get("cleanup_authorized")
+        cleanup_contract = result.get("cleanup_contract")
+        cleanup_sha256 = result.get(
+            "cleanup_authorization_sha256"
+        )
+        cleanup_expires_in_ms = result.get(
+            "cleanup_expires_in_ms"
+        )
+        should_authorize_cleanup = (
+            not is_recovery
+            and outcome == "applied"
+            and result["create_count"] > 0
+        )
+        if (
+            type(cleanup_authorized) is not bool
+            or type(cleanup_contract) is not str
+            or type(cleanup_sha256) is not str
+            or type(cleanup_expires_in_ms) is not int
+            or (
+                should_authorize_cleanup
+                and (
+                    cleanup_authorized is not True
+                    or cleanup_contract
+                    != MULTI_EDIT_CLEANUP_CONTRACT
+                    or cleanup_expires_in_ms
+                    != MULTI_EDIT_CLEANUP_TTL_MS
+                    or SHA256_RE.fullmatch(cleanup_sha256) is None
+                )
+            )
+            or (
+                not should_authorize_cleanup
+                and (
+                    cleanup_authorized is not False
+                    or cleanup_contract != ""
+                    or cleanup_sha256 != ""
+                    or cleanup_expires_in_ms != 0
+                )
+            )
+        ):
+            return False
+        if should_authorize_cleanup:
+            self._expire_multi_edit_cleanup()
+            if self.multi_edit_cleanup is not None:
+                return False
+            try:
+                if cleanup_sha256 != cleanup_authorization_sha256(
+                    result
+                ):
+                    return False
+            except (KeyError, TypeError, ValidationError):
+                return False
         evidence_mode = result.get("evidence_mode")
         prior_terminal_outcome = result.get(
             "prior_terminal_outcome"
@@ -4237,6 +4818,217 @@ class StudioSession:
             preflight_conflict,
         )
 
+    def _valid_multi_edit_cleanup_result(
+        self, pending: PendingRequest, result: Any
+    ) -> bool:
+        cleanup = self.multi_edit_cleanup
+        if (
+            pending.remote_tool != "studio_cleanup_multi_edit"
+            or cleanup is None
+            or type(result) is not dict
+            or frozenset(result) != _DURABLE_MULTI_EDIT_CLEANUP_KEYS
+            or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
+            or result.get("v") != 2
+            or type(result.get("v")) is not int
+            or result.get("operation")
+            != "studio_cleanup_multi_edit"
+            or result.get("phase") != "cleanup"
+            or result.get("studio_id") != self.studio_id
+            or result.get("client_instance_id")
+            != self.client_instance_id
+            or result.get("document_epoch") != self.document_epoch
+            or result.get("generation") != pending.generation
+            or result.get("generation") != self.generation
+            or type(result.get("generation")) is not int
+            or result.get("request_id") != pending.request_id
+            or result.get("transaction_id")
+            != cleanup.get("transaction_id")
+            or result.get("transaction_id")
+            != pending.arguments.get("transaction_id")
+            or result.get("prepare_request_id")
+            != cleanup.get("prepare_request_id")
+            or result.get("prepare_sha256")
+            != cleanup.get("prepare_sha256")
+            or result.get("apply_request_id")
+            != cleanup.get("apply_request_id")
+            or result.get("apply_receipt_sha256")
+            != cleanup.get("apply_receipt_sha256")
+            or result.get("apply_receipt_sha256")
+            != pending.arguments.get("apply_receipt_sha256")
+            or result.get("cleanup_authorization_sha256")
+            != cleanup.get("cleanup_authorization_sha256")
+            or result.get("cleanup_authorization_sha256")
+            != pending.arguments.get(
+                "cleanup_authorization_sha256"
+            )
+            or result.get("cleanup_contract")
+            != MULTI_EDIT_CLEANUP_CONTRACT
+            or type(result.get("safe_terminal")) is not bool
+            or type(result.get("recovery_required")) is not bool
+            or result["safe_terminal"]
+            is result["recovery_required"]
+            or result.get("create_count")
+            != cleanup.get("create_count")
+            or type(result.get("create_count")) is not int
+        ):
+            return False
+        outcome = result.get("outcome")
+        if (
+            outcome not in {"cleaned", "refused", "cleanup_required"}
+            or result["safe_terminal"]
+            is (outcome == "cleanup_required")
+        ):
+            return False
+        evidence_mode = result.get("evidence_mode")
+        prior_outcome = result.get("prior_terminal_outcome")
+        prior_sha256 = result.get(
+            "prior_terminal_receipt_sha256"
+        )
+        if evidence_mode == "cleanup_execution":
+            if prior_outcome != "" or prior_sha256 != "":
+                return False
+        elif evidence_mode == "cached_cleanup_terminal":
+            if (
+                outcome not in {"cleaned", "refused"}
+                or prior_outcome not in {"cleaned", "refused"}
+                or outcome != prior_outcome
+                or type(prior_sha256) is not str
+                or SHA256_RE.fullmatch(prior_sha256) is None
+            ):
+                return False
+        else:
+            return False
+        targets = result.get("targets")
+        expected_targets = cleanup.get("targets")
+        if (
+            type(targets) is not list
+            or type(expected_targets) is not list
+            or len(targets) != result["create_count"]
+            or len(targets) != len(expected_targets)
+        ):
+            return False
+        saw_conflict = False
+        saw_cleanup_required = False
+        states = {
+            "absent",
+            "created_exact",
+            "present_unproven",
+            "unavailable",
+        }
+        for target, expected in zip(targets, expected_targets):
+            if (
+                type(target) is not dict
+                or frozenset(target)
+                != _DURABLE_MULTI_EDIT_CLEANUP_TARGET_KEYS
+                or target.get("index") != expected.get("index")
+                or target.get("kind") != "create"
+                or expected.get("kind") != "create"
+                or self._normalized_script_path(
+                    target.get("path"), allow_empty=False
+                )
+                != self._normalized_script_path(
+                    expected.get("path"), allow_empty=False
+                )
+                or self._normalized_script_path(
+                    target.get("parent_path"), allow_empty=False
+                )
+                != self._normalized_script_path(
+                    expected.get("parent_path"), allow_empty=False
+                )
+            ):
+                return False
+            for field_name in (
+                "name",
+                "class_name",
+                "expected_absent",
+                "planned_sha256",
+                "planned_source_length",
+            ):
+                if target.get(field_name) != expected.get(field_name):
+                    return False
+            before = target.get("observed_before_state")
+            after = target.get("observed_after_state")
+            after_class = target.get("observed_after_class_name")
+            after_sha256 = target.get("observed_after_sha256")
+            status = target.get("status")
+            if (
+                before not in states
+                or after not in states
+                or after_class not in (_DURABLE_SCRIPT_CLASSES | {""})
+                or type(after_sha256) is not str
+                or (
+                    after_sha256
+                    and SHA256_RE.fullmatch(after_sha256) is None
+                )
+                or status
+                not in {
+                    "deleted",
+                    "already_absent",
+                    "not_deleted",
+                    "preserved_conflict",
+                    "cleanup_required",
+                }
+            ):
+                return False
+            if after == "created_exact":
+                if (
+                    after_class != expected["class_name"]
+                    or after_sha256 != expected["planned_sha256"]
+                ):
+                    return False
+            elif after_class or after_sha256:
+                return False
+            if status == "deleted" and not (
+                before == "created_exact" and after == "absent"
+            ):
+                return False
+            if status == "already_absent" and not (
+                before == "absent" and after == "absent"
+            ):
+                return False
+            if status == "not_deleted" and not (
+                before == "created_exact"
+                and after == "created_exact"
+            ):
+                return False
+            if status == "preserved_conflict":
+                saw_conflict = True
+                if after == "absent":
+                    return False
+            if status == "cleanup_required":
+                saw_cleanup_required = True
+            if outcome == "cleaned" and status not in {
+                "deleted",
+                "already_absent",
+            }:
+                return False
+            if outcome == "refused" and status not in {
+                "already_absent",
+                "not_deleted",
+                "preserved_conflict",
+            }:
+                return False
+        if outcome == "refused" and not saw_conflict:
+            return False
+        if (
+            outcome == "cleanup_required"
+        ) is not saw_cleanup_required:
+            return False
+        if (
+            type(result.get("receipt_sha256")) is not str
+            or SHA256_RE.fullmatch(result["receipt_sha256"]) is None
+        ):
+            return False
+        try:
+            if result["receipt_sha256"] != cleanup_receipt_sha256(
+                result
+            ):
+                return False
+            encoded = canonical_json_bytes(result)
+        except (KeyError, TypeError, ValidationError):
+            return False
+        return len(encoded) <= MAX_MULTI_EDIT_RECEIPT_BYTES
+
     def _valid_multi_edit_result(
         self, pending: PendingRequest, result: Any
     ) -> bool:
@@ -4252,6 +5044,10 @@ class StudioSession:
             "studio_recover_multi_edit",
         }:
             return self._valid_multi_edit_mutation_result(
+                pending, result
+            )
+        if pending.remote_tool == "studio_cleanup_multi_edit":
+            return self._valid_multi_edit_cleanup_result(
                 pending, result
             )
         return False
@@ -4518,6 +5314,28 @@ class StudioSession:
             )
             return
         if result.get("safe_terminal") is True:
+            if (
+                result.get("phase") == "apply"
+                and result.get("outcome") == "applied"
+                and result.get("cleanup_authorized") is True
+                and not self._grant_multi_edit_cleanup(
+                    pending, result
+                )
+            ):
+                self.uncertain_requests[pending.request_id] = {
+                    "generation": pending.generation,
+                    "operation": pending.remote_tool,
+                    "reason": "cleanup_authorization_retention_failed",
+                    "transaction_id": transaction_id,
+                }
+                self.uncertain_pending[pending.request_id] = pending
+                self._set_multi_edit_recovery(
+                    transaction_id,
+                    pending.request_id,
+                    pending.generation,
+                    "cleanup_authorization_retention_failed",
+                )
+                return
             resolver_job_id = ""
             for candidate in self.jobs.values():
                 if pending.request_id in candidate.dispatched_request_ids:
@@ -4617,6 +5435,103 @@ class StudioSession:
                     job.updated_at = time.time()
                     self._finalize_job_storage(job)
 
+    def _observe_multi_edit_cleanup_receipt(
+        self, pending: PendingRequest, result: Dict[str, Any]
+    ) -> None:
+        transaction_id = result["transaction_id"]
+        if self._exact_multi_edit_cleanup_controls(
+            transaction_id,
+            excluding_request_id=pending.request_id,
+        ):
+            # A later exact cleanup dispatch owns resolution. A late receipt
+            # from the earlier request is retained as evidence only.
+            return
+        if result.get("recovery_required") is True:
+            self.uncertain_requests[pending.request_id] = {
+                "generation": pending.generation,
+                "operation": pending.remote_tool,
+                "reason": "validated_cleanup_required",
+                "transaction_id": transaction_id,
+            }
+            self.uncertain_pending[pending.request_id] = pending
+            self._set_multi_edit_cleanup_required(
+                pending.request_id,
+                pending.generation,
+                "validated_cleanup_required",
+            )
+            return
+        if result.get("safe_terminal") is not True:
+            return
+        resolver_job_id = ""
+        for candidate in self.jobs.values():
+            if pending.request_id in candidate.dispatched_request_ids:
+                resolver_job_id = candidate.job_id
+                break
+        encoded_resolution = canonical_json_bytes(result)
+        resolution_receipt = {
+            "format": "studio-mcp-v2-job-resolution",
+            "schema_version": 1,
+            "kind": "exact_multi_edit_cleanup",
+            "studio_id": self.studio_id,
+            "client_instance_id": self.client_instance_id,
+            "document_epoch": self.document_epoch,
+            "generation": pending.generation,
+            "request_id": pending.request_id,
+            "transaction_id": transaction_id,
+            "operation": "studio_cleanup_multi_edit",
+            "phase": "cleanup",
+            "source": "job" if resolver_job_id else "direct",
+            "resolver_job_id": resolver_job_id,
+            "success": True,
+            "safe_terminal": True,
+            "recovery_required": False,
+            "outcome": result["outcome"],
+            "receipt_sha256": result["receipt_sha256"],
+            "result_sha256": canonical_json_sha256(result),
+            "result_bytes": len(encoded_resolution),
+            "result": copy.deepcopy(result),
+        }
+        for request_id, context in list(
+            self.uncertain_pending.items()
+        ):
+            if (
+                context.remote_tool == "studio_cleanup_multi_edit"
+                and context.arguments.get("transaction_id")
+                == transaction_id
+            ):
+                self.uncertain_pending.pop(request_id, None)
+                self.uncertain_requests.pop(request_id, None)
+        self._retire_multi_edit_cleanup(
+            "cleanup_" + result["outcome"],
+            result=result,
+        )
+        self._refresh_uncertainty()
+        for job in list(self.jobs.values()):
+            if (
+                job.remote_tool != "studio_cleanup_multi_edit"
+                or job.transaction_id != transaction_id
+                or job.status != "outcome_unknown"
+                or pending.request_id in job.dispatched_request_ids
+            ):
+                continue
+            if any(
+                receipt.get("request_id") == pending.request_id
+                for receipt in job.resolution_receipts
+            ):
+                continue
+            if len(job.resolution_receipts) >= MAX_JOB_RESOLUTION_RECEIPTS:
+                continue
+            job.status = "completed"
+            job.resolution_receipts.append(
+                copy.deepcopy(resolution_receipt)
+            )
+            job.terminal_outcome = (
+                "resolved_by_exact_cleanup:" + result["outcome"]
+            )
+            job.error = None
+            job.updated_at = time.time()
+            self._finalize_job_storage(job)
+
     def _record_job_response(
         self,
         pending: PendingRequest,
@@ -4631,12 +5546,24 @@ class StudioSession:
             phase = (
                 "recover"
                 if pending.remote_tool == "studio_recover_multi_edit"
-                else "direct"
+                else (
+                    "cleanup"
+                    if pending.remote_tool
+                    == "studio_cleanup_multi_edit"
+                    else "direct"
+                )
             )
-        mutation_phase = phase in {"apply", "recover"}
+        mutation_phase = phase in {"apply", "recover", "cleanup"}
         recovery_controls_late_apply = (
             phase == "apply"
             and self._exact_multi_edit_recovery_controls(
+                pending.arguments.get("transaction_id"),
+                excluding_request_id=pending.request_id,
+            )
+        )
+        cleanup_controls_late_receipt = (
+            phase == "cleanup"
+            and self._exact_multi_edit_cleanup_controls(
                 pending.arguments.get("transaction_id"),
                 excluding_request_id=pending.request_id,
             )
@@ -4686,6 +5613,7 @@ class StudioSession:
                 if (
                     phase != "prepare"
                     and not recovery_controls_late_apply
+                    and not cleanup_controls_late_receipt
                 ):
                     job.result = copy.deepcopy(result)
                     job.result_sha256 = result_sha256
@@ -4819,6 +5747,15 @@ class StudioSession:
                 ):
                     return
                 if (
+                    isinstance(result, dict)
+                    and result.get("phase") == "cleanup"
+                    and self._exact_multi_edit_cleanup_controls(
+                        result.get("transaction_id"),
+                        excluding_request_id=request_id,
+                    )
+                ):
+                    return
+                if (
                     job.remote_tool == "studio_multi_edit"
                     and isinstance(result, dict)
                     and result.get("phase") == "prepare"
@@ -4874,6 +5811,7 @@ class StudioSession:
         if pending.remote_tool in {
             "studio_multi_edit",
             "studio_recover_multi_edit",
+            "studio_cleanup_multi_edit",
         }:
             return self._valid_multi_edit_result(pending, result)
         return True
@@ -4914,6 +5852,15 @@ class StudioSession:
                         )
                         if result.get("recovery_required") is True:
                             return True
+                    elif (
+                        context.remote_tool
+                        == "studio_cleanup_multi_edit"
+                    ):
+                        self._observe_multi_edit_cleanup_receipt(
+                            context, result
+                        )
+                        if result.get("recovery_required") is True:
+                            return True
                     self._settle_late_job(
                         request_id,
                         success=True,
@@ -4934,6 +5881,7 @@ class StudioSession:
                     in {
                         "studio_multi_edit",
                         "studio_recover_multi_edit",
+                        "studio_cleanup_multi_edit",
                     }
                     and context.arguments.get("_phase") != "prepare"
                 ):
@@ -4962,6 +5910,7 @@ class StudioSession:
                 in {
                     "studio_multi_edit",
                     "studio_recover_multi_edit",
+                    "studio_cleanup_multi_edit",
                 }
                 and not self._valid_multi_edit_result(
                     pending, result
@@ -4984,12 +5933,22 @@ class StudioSession:
                     ),
                 }
                 self.uncertain_pending[pending.request_id] = pending
-                self._set_multi_edit_recovery(
-                    pending.arguments.get("transaction_id", ""),
-                    pending.request_id,
-                    pending.generation,
-                    "invalid_mutation_receipt",
-                )
+                if (
+                    pending.remote_tool
+                    == "studio_cleanup_multi_edit"
+                ):
+                    self._set_multi_edit_cleanup_required(
+                        pending.request_id,
+                        pending.generation,
+                        "invalid_mutation_receipt",
+                    )
+                else:
+                    self._set_multi_edit_recovery(
+                        pending.arguments.get("transaction_id", ""),
+                        pending.request_id,
+                        pending.generation,
+                        "invalid_mutation_receipt",
+                    )
                 pending.future.set_exception(
                     RemoteToolError(
                         "Targeted Studio returned an invalid mutation "
@@ -5002,6 +5961,10 @@ class StudioSession:
                 "studio_recover_multi_edit",
             }:
                 self._observe_multi_edit_receipt(pending, result)
+            elif pending.remote_tool == "studio_cleanup_multi_edit":
+                self._observe_multi_edit_cleanup_receipt(
+                    pending, result
+                )
             if (
                 pending.remote_tool == "studio_get_state"
                 and not self._valid_durable_state_result(result)
@@ -5071,6 +6034,7 @@ class StudioSession:
                 in {
                     "studio_multi_edit",
                     "studio_recover_multi_edit",
+                    "studio_cleanup_multi_edit",
                 }
                 and pending.arguments.get("_phase") != "prepare"
             ):
@@ -5083,12 +6047,22 @@ class StudioSession:
                     ),
                 }
                 self.uncertain_pending[pending.request_id] = pending
-                self._set_multi_edit_recovery(
-                    pending.arguments.get("transaction_id", ""),
-                    pending.request_id,
-                    pending.generation,
-                    "mutation_error_without_safe_receipt",
-                )
+                if (
+                    pending.remote_tool
+                    == "studio_cleanup_multi_edit"
+                ):
+                    self._set_multi_edit_cleanup_required(
+                        pending.request_id,
+                        pending.generation,
+                        "mutation_error_without_safe_receipt",
+                    )
+                else:
+                    self._set_multi_edit_recovery(
+                        pending.arguments.get("transaction_id", ""),
+                        pending.request_id,
+                        pending.generation,
+                        "mutation_error_without_safe_receipt",
+                    )
             message = (
                 error.get("message")
                 if isinstance(error, dict) and isinstance(error.get("message"), str)
@@ -5284,6 +6258,7 @@ class StudioSession:
                     in {
                         "studio_multi_edit",
                         "studio_recover_multi_edit",
+                        "studio_cleanup_multi_edit",
                     }
                     and isinstance(result, dict)
                     and result.get("recovery_required") is True

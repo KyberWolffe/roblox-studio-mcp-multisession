@@ -922,6 +922,13 @@ class SessionRegistry:
             if session.connected:
                 connected_count += 1
             reasons: List[str] = []
+            session._expire_multi_edit_cleanup()
+            cleanup = session.multi_edit_cleanup
+            cleanup_state = (
+                str(cleanup.get("state", "unknown"))[:64]
+                if isinstance(cleanup, dict)
+                else None
+            )
             retained_terminal = self._terminal_disconnected_is_safe(session)
             observed_mode = (
                 "edit" if retained_terminal else session.mode.lower()
@@ -946,6 +953,18 @@ class SessionRegistry:
                 reasons.append("session_uncertain")
             if session.play_bridge_uncertain is not None:
                 reasons.append("play_bridge_uncertain")
+            if cleanup_state == "available":
+                reasons.append("multi_edit_cleanup_authorization")
+            elif cleanup_state == "cleanup_dispatched":
+                reasons.append("multi_edit_cleanup_in_flight")
+            elif cleanup_state == "cleanup_required":
+                reasons.append("multi_edit_cleanup_required")
+            elif cleanup_state == "cleanup_expired_settlement":
+                reasons.append(
+                    "multi_edit_cleanup_expired_settlement"
+                )
+            elif cleanup_state is not None:
+                reasons.append("multi_edit_cleanup_uncertain")
             nonterminal_jobs: Dict[str, int] = {}
             dispatched_jobs = 0
             for job in session.jobs.values():
@@ -973,6 +992,7 @@ class SessionRegistry:
                 "uncertain_request_count": len(session.uncertain_requests),
                 "nonterminal_job_counts": nonterminal_jobs,
                 "dispatched_nonterminal_job_count": dispatched_jobs,
+                "multi_edit_cleanup_state": cleanup_state,
                 "retained_terminal_disconnected": retained_terminal,
                 "blockers": reasons,
             }

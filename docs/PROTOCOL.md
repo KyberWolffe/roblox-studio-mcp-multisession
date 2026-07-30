@@ -27,7 +27,8 @@ First connection:
   "capabilities": [
     "studio_get_state",
     "studio_multi_edit",
-    "studio_recover_multi_edit"
+    "studio_recover_multi_edit",
+    "studio_cleanup_multi_edit"
   ]
 }
 ```
@@ -155,13 +156,13 @@ receipt preserves the admitted Studio/client/document/generation identity and
 schema hashes; metadata drift or an impossible handler result is rejected
 before delivery or retention.
 
-An exact recovery of a job-backed multi-edit appends a bounded resolution
-receipt containing the recovery request identity, validated recovery result,
-result digest, and terminal resolution. It does not overwrite the original
-apply request/result digest. Terminal jobs may retire only when no associated
-request is active, uncertain, or recovery-required. Retirement emits a
-bounded hash-chain tombstone; uncertain or active evidence is never
-compacted.
+An exact recovery of a job-backed multi-edit, or exact reconciliation of an
+outcome-unknown cleanup job, appends a bounded discriminated resolution receipt
+containing the resolver request identity, validated result, result digest, and
+terminal resolution. It does not overwrite the original request/result digest.
+Terminal jobs may retire only when no associated request is active, uncertain,
+recovery-required, or cleanup-required. Retirement emits a bounded hash-chain
+tombstone; uncertain or active evidence is never compacted.
 
 ## Revision-protected multi-edit
 
@@ -297,6 +298,69 @@ created by that transaction; moved, renamed, edited, replaced, ambiguous, or
 unavailable content, or content with a child, attribute, or tag, fails closed.
 The exact parent path must still resolve to the prepared parent immediately
 before destruction. No general deletion operation exists.
+
+## Successful-creation cleanup
+
+An `applied` receipt with at least one create carries:
+
+```json
+{
+  "cleanup_authorized": true,
+  "cleanup_contract": "transaction-created-unchanged-only-v1",
+  "cleanup_authorization_sha256": "64-lowercase-hex",
+  "cleanup_expires_in_ms": 600000
+}
+```
+
+Every other apply or recovery receipt carries `false`, empty strings, and
+`0`. The authorization digest binds the exact Studio/client/document/
+generation, transaction, prepare request and receipt, apply request, contract,
+and retention bound. The broker retains one grant per session separately from
+normal recovery.
+
+`studio_cleanup_multi_edit_v2` requires the explicit `studio_id` and exactly:
+
+```json
+{
+  "transaction_id": "canonical-transaction-uuid",
+  "apply_receipt_sha256": "64-lowercase-hex",
+  "cleanup_authorization_sha256": "64-lowercase-hex"
+}
+```
+
+The request carries no caller-selected path, class, source, or delete target.
+Wrong identity, hashes, generation, expiry, consumed authorization, or replay
+fails before dispatch. While an available grant exists, bounded reads and an
+edit-only multi-edit may proceed; a second create-bearing transaction and
+unrelated mutations are fenced.
+
+Studio preflights the entire retained create set before any new destruction.
+Each target must still be the retained transaction-created Instance under the
+retained exact parent/path/name, with the retained class and source
+bytes/SHA-256 and zero children, attributes, and tags. Cleanup returns a closed
+receipt with `cleaned`, `refused`, or `cleanup_required`:
+
+- `cleaned` proves every target `deleted` or `already_absent`;
+- `refused` proves no new delete was dispatched after a drift or ambiguity
+  and marks exact peers `not_deleted` plus drifted targets
+  `preserved_conflict`;
+- `cleanup_required` records a partial or unproven dispatched cleanup and
+  quarantines the session.
+
+Only the same exact cleanup in the same generation may enter that quarantine.
+It can prove prior targets `already_absent` and delete only remaining exact
+unchanged targets before the original absolute ten-minute authorization
+deadline. A post-exposure property-change latch and bounded mutable-property
+fingerprint supplement the final path, class, source, child, attribute, and tag
+checks. The deadline is not extended by a partial result, timeout, retry, or
+job. At expiry, an unused authorization retires without dispatch; a dispatched
+or cleanup-required authorization becomes settlement-only quarantine. No fresh
+deletion may be dispatched, but safe terminal evidence from a request already
+dispatched before the deadline remains admissible. Cached safe-terminal
+evidence must repeat the exact prior terminal outcome and receipt digest.
+Available, dispatched, cleanup-required, or expired-settlement grants are
+explicit broker stop blockers and retire through bounded hash-chain audit
+tombstones only after safe settlement.
 
 ## Play bridge context
 

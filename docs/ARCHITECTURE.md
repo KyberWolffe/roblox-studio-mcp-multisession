@@ -33,8 +33,8 @@ The public product is **Roblox Studio MCP Multisession**, with short display
 name **Studio MCP Multisession** and Codex server name
 `Roblox_Studio_Multisession`. Version 0.4.0-rc.5 migrated the owned Codex
 registration and added the canonical public launcher/display identities.
-The isolated 0.4.0-rc.6 line retains that identity while extending only the
-revision-protected multi-edit transaction with bounded script creation.
+The isolated 0.4.0-rc.7 line retains that identity while correcting rc.6's
+successful-creation cleanup admission with a distinct bounded authorization.
 
 The `_v2` tool suffixes, `/v2` authenticated routes, Python package/internal
 identifiers, support root, plugin filename, former launcher aliases, archive
@@ -62,7 +62,7 @@ pending request map
 mode and outcome uncertainty
 console sequence/buffer
 job map
-multi-edit transaction/recovery ledger
+multi-edit transaction/recovery and successful-creation cleanup ledgers
 metadata
 Play-transition state
 ```
@@ -208,6 +208,32 @@ that prior outcome and prior receipt SHA-256 explicitly. Live recovery uses
 `live_recovery` evidence and cannot substitute cached evidence. There is no
 general script or Instance deletion handler.
 
+Successful creation and uncertain-mutation recovery are separate state
+machines. After an `applied` receipt with creates is validated, normal recovery
+closes and one session-local cleanup grant retains only the transaction's exact
+created targets plus the Studio/client/document/generation, prepare, apply, and
+receipt identities. The caller receives only the transaction, apply receipt
+SHA-256, and cleanup authorization SHA-256. It cannot widen the retained
+targets.
+
+While the ten-minute grant is available, bounded reads and edit-only
+multi-edit remain allowed; other mutations and a second create-bearing
+transaction are fenced. `studio_cleanup_multi_edit_v2` revalidates all retained
+targets before the first destruction. A moved, changed, decorated, replaced,
+ambiguous, or unavailable target makes the whole preflight `refused` without a
+new deletion. A post-exposure property-change latch and bounded mutable-property
+fingerprint supplement the exact path, class, source, child, attribute, and tag
+checks. If a dispatched cleanup becomes partial or unproven, the session enters
+cleanup quarantine. Only the same exact cleanup in the same generation can
+reconcile already-absent targets and remaining unchanged targets before the
+original absolute ten-minute deadline. Expiry never renews on retry: an unused
+grant retires, while a dispatched or required grant becomes settlement-only
+quarantine that rejects fresh deletion dispatch but can still validate safe
+terminal evidence from an already-dispatched request. A reconnect,
+wrong-session/hash reuse, or consumed grant never rebinds cleanup. Lifecycle
+health reports available, dispatched, required, or expired-settlement cleanup
+state as an explicit stop blocker until it is safely retired.
+
 ## Play/Stop lifecycle
 
 Roblox documents `StudioTestService:ExecutePlayModeAsync()` as a yielding
@@ -275,10 +301,11 @@ References:
 ## Tool catalog
 
 `config/durable-tool-catalog.json` is the default runtime catalog. It exposes
-exactly fourteen audited operations: state, tree, fixed-allowlist instance
+exactly fifteen audited operations: state, tree, fixed-allowlist instance
 inspection, script-name search, literal cross-script grep, script read/update,
-revision-protected multi-edit and its exact-transaction recovery, attribute
-update, console, screenshot, Scriptable `InputBinding`, and Play/Stop.
+revision-protected multi-edit, exact-transaction recovery, separate exact
+transaction-created cleanup, attribute update, console, screenshot, Scriptable
+`InputBinding`, and Play/Stop.
 Instance inspection is an Edit-only observational snapshot of one exact
 unambiguous path. It uses bounded closed value encoding and does not reflect
 arbitrary properties, read source, or expose security identities. At the

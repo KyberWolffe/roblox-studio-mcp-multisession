@@ -50,6 +50,7 @@ DURABLE_OPERATIONS = {
     "studio_update_script",
     "studio_multi_edit",
     "studio_recover_multi_edit",
+    "studio_cleanup_multi_edit",
     "studio_set_attribute",
     "studio_get_console",
     "studio_capture_screenshot",
@@ -61,7 +62,7 @@ DURABLE_OPERATIONS = {
 class DurableCatalogTests(unittest.TestCase):
     def test_catalog_is_versioned_closed_and_explicitly_targeted(self):
         payload = json.loads(DURABLE_CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual(payload["catalog_version"], "0.4.0-rc.6")
+        self.assertEqual(payload["catalog_version"], "0.4.0-rc.7")
         self.assertEqual(
             payload["upstream"]["compatibility"],
             "reviewed-local-subset-only",
@@ -154,6 +155,10 @@ class DurableCatalogTests(unittest.TestCase):
                     "evidence_mode",
                     "prior_terminal_outcome",
                     "prior_terminal_receipt_sha256",
+                    "cleanup_authorized",
+                    "cleanup_contract",
+                    "cleanup_authorization_sha256",
+                    "cleanup_expires_in_ms",
                 ):
                     self.assertIn(field, output["required"])
                 self.assertEqual(
@@ -180,6 +185,45 @@ class DurableCatalogTests(unittest.TestCase):
             {"live_recovery", "cached_safe_terminal"},
             set(
                 recovery_output["properties"]["evidence_mode"]["enum"]
+            ),
+        )
+        cleanup = tools["studio_cleanup_multi_edit"]
+        self.assertEqual(
+            {
+                "transaction_id",
+                "apply_receipt_sha256",
+                "cleanup_authorization_sha256",
+            },
+            set(cleanup["inputSchema"]["properties"]),
+        )
+        self.assertEqual(
+            set(cleanup["inputSchema"]["properties"]),
+            set(cleanup["inputSchema"]["required"]),
+        )
+        self.assertIs(
+            cleanup["inputSchema"]["additionalProperties"], False
+        )
+        cleanup_output = cleanup["outputSchema"]
+        self.assertEqual(
+            "transaction-created-unchanged-only-v1",
+            cleanup_output["properties"]["cleanup_contract"]["const"],
+        )
+        self.assertEqual(
+            {"cleaned", "refused", "cleanup_required"},
+            set(cleanup_output["properties"]["outcome"]["enum"]),
+        )
+        self.assertEqual(
+            {
+                "deleted",
+                "already_absent",
+                "not_deleted",
+                "preserved_conflict",
+                "cleanup_required",
+            },
+            set(
+                cleanup_output["$defs"]["cleanupTargetReceipt"][
+                    "properties"
+                ]["status"]["enum"]
             ),
         )
 
@@ -241,11 +285,11 @@ class DurableRendererTests(unittest.TestCase):
             base_url=base_url,
         )
 
-    def test_render_matches_phase2_0_4_0_rc_6_contract(self):
+    def test_render_matches_phase2_0_4_0_rc_7_contract(self):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),
-            "fa507cc5fef0efc18082a29df085fac85189da03a1b49e84b585e543bd7d1268",
+            "613a8fcb1a97a41f50b8105235490a52614e967a01eb025fc1c0b5fd720226c7",
         )
 
     def test_durable_handlers_are_private_and_below_local_budget(self):

@@ -94,6 +94,7 @@ local DURABLE_BOUNDS = table.freeze({
 	MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES = 8_192,
 	MAX_MULTI_EDIT_RECEIPT_BYTES = 100_000,
 	MULTI_EDIT_PREPARE_TTL_SECONDS = 120,
+	MULTI_EDIT_CLEANUP_TTL_SECONDS = 600,
 })
 local PROTOCOL_METADATA = table.freeze({
 	TREE_CURSOR_VERSION = 1,
@@ -109,6 +110,8 @@ local PROTOCOL_METADATA = table.freeze({
 		"preflight-all-per-target-cas-created-script-compensation-no-cross-script-atomicity-v2",
 	MULTI_EDIT_RECEIPT_CONTRACT =
 		"broker-validated-downstream-ack-v2",
+	MULTI_EDIT_CLEANUP_CONTRACT =
+		"transaction-created-unchanged-only-v1",
 	INSPECT_SNAPSHOT_CONTRACT =
 		"path-edit-generation-fenced-observational-v1",
 	INSPECT_PROPERTY_ALLOWLIST_VERSION =
@@ -178,6 +181,11 @@ local OPERATION_ARG_KEYS = table.freeze({
 	}),
 	studio_recover_multi_edit = table.freeze({
 		transaction_id = true,
+	}),
+	studio_cleanup_multi_edit = table.freeze({
+		transaction_id = true,
+		apply_receipt_sha256 = true,
+		cleanup_authorization_sha256 = true,
 	}),
 	studio_set_attribute = table.freeze({
 		path = true,
@@ -1286,6 +1294,22 @@ local function validateDurableArgs(operation, args, deadlineMs)
 				false
 			)
 		end
+	elseif operation == "studio_cleanup_multi_edit" then
+		if not isCanonicalUuid(args.transaction_id) then
+			adapterError(
+				"invalid_args",
+				"transaction_id must be a canonical UUID",
+				false
+			)
+		end
+		validateSha256(
+			args.apply_receipt_sha256,
+			"apply_receipt_sha256"
+		)
+		validateSha256(
+			args.cleanup_authorization_sha256,
+			"cleanup_authorization_sha256"
+		)
 	elseif operation == "studio_set_attribute" then
 		validatePath(args.path, false, "path")
 		if type(args.name) ~= "string"
@@ -4404,6 +4428,10 @@ local function multiEditMutationSha256(receipt)
 		receipt.outcome,
 		receipt.safe_terminal,
 		receipt.recovery_required,
+		receipt.cleanup_authorized,
+		receipt.cleanup_contract,
+		receipt.cleanup_authorization_sha256,
+		receipt.cleanup_expires_in_ms,
 		receipt.target_count,
 		receipt.edit_count,
 		receipt.create_count,
@@ -4446,6 +4474,77 @@ local function multiEditMutationSha256(receipt)
 			}) do
 				appendCanonicalMultiEditValue(parts, target[fieldName])
 			end
+		end
+	end
+	return sourceSha256(table.concat(parts))
+end
+
+local function multiEditCleanupAuthorizationSha256(plan, applyRequestId)
+	local parts = {}
+	for _, value in ipairs({
+		"studio-multi-edit-cleanup-authorization-v1",
+		peer.studio_id,
+		CLIENT_INSTANCE_ID,
+		DOCUMENT_EPOCH,
+		peer.generation,
+		plan.transaction_id,
+		plan.prepare_request_id,
+		plan.prepare_sha256,
+		applyRequestId,
+		PROTOCOL_METADATA.MULTI_EDIT_CLEANUP_CONTRACT,
+		DURABLE_BOUNDS.MULTI_EDIT_CLEANUP_TTL_SECONDS * 1_000,
+	}) do
+		appendCanonicalMultiEditValue(parts, value)
+	end
+	return sourceSha256(table.concat(parts))
+end
+
+local function multiEditCleanupSha256(receipt)
+	local parts = {}
+	for _, value in ipairs({
+		"studio-multi-edit-cleanup-v1",
+		receipt.phase,
+		receipt.studio_id,
+		receipt.client_instance_id,
+		receipt.document_epoch,
+		receipt.generation,
+		receipt.request_id,
+		receipt.transaction_id,
+		receipt.prepare_request_id,
+		receipt.prepare_sha256,
+		receipt.apply_request_id,
+		receipt.apply_receipt_sha256,
+		receipt.cleanup_authorization_sha256,
+		receipt.cleanup_contract,
+		receipt.evidence_mode,
+		receipt.prior_terminal_outcome,
+		receipt.prior_terminal_receipt_sha256,
+		receipt.outcome,
+		receipt.safe_terminal,
+		receipt.recovery_required,
+		receipt.create_count,
+	}) do
+		appendCanonicalMultiEditValue(parts, value)
+	end
+	appendCanonicalMultiEditValue(parts, #receipt.targets)
+	for _, target in ipairs(receipt.targets) do
+		appendCanonicalMultiEditValue(parts, target.index)
+		appendCanonicalMultiEditValue(parts, target.kind)
+		appendCanonicalMultiEditPath(parts, target.path)
+		appendCanonicalMultiEditPath(parts, target.parent_path)
+		for _, fieldName in ipairs({
+			"name",
+			"class_name",
+			"expected_absent",
+			"planned_sha256",
+			"planned_source_length",
+			"observed_before_state",
+			"observed_after_state",
+			"observed_after_class_name",
+			"observed_after_sha256",
+			"status",
+		}) do
+			appendCanonicalMultiEditValue(parts, target[fieldName])
 		end
 	end
 	return sourceSha256(table.concat(parts))
@@ -4788,6 +4887,51 @@ local function prepareMultiEditCreateTarget(requested, targetIndex, deadline)
 	}, #requested.source
 end
 
+local function disconnectMultiEditCreatedTrackers(holder)
+	if holder == nil or type(holder.targets) ~= "table" then
+		return
+	end
+	for _, target in ipairs(holder.targets) do
+		local tracker = target.created_change_tracker
+		if type(tracker) == "table"
+			and tracker.connection ~= nil
+		then
+			pcall(function()
+				tracker.connection:Disconnect()
+			end)
+			tracker.connection = nil
+		end
+	end
+end
+
+local function refreshMultiEditCleanupGrant()
+	local grant = peer.multi_edit_cleanup_grant
+	if grant == nil then
+		return nil
+	end
+	if grant.generation ~= peer.generation
+		or grant.document_epoch ~= DOCUMENT_EPOCH
+	then
+		disconnectMultiEditCreatedTrackers(grant)
+		if grant.status == "cleanup_required" then
+			grant.settlement_only = true
+			return grant
+		end
+		peer.multi_edit_cleanup_grant = nil
+		return nil
+	end
+	if os.clock() >= grant.expires_at then
+		disconnectMultiEditCreatedTrackers(grant)
+		if grant.status == "cleanup_required" then
+			grant.settlement_only = true
+			return grant
+		end
+		peer.multi_edit_cleanup_grant = nil
+		return nil
+	end
+	return grant
+end
+
 local function prepareMultiEdit(args, requestId, deadlineMs)
 	requireEditMode()
 	local deadline = os.clock() + (deadlineMs / 1_000)
@@ -4808,6 +4952,30 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		args.targets,
 		args.creates
 	)
+	local cleanupGrant = refreshMultiEditCleanupGrant()
+	if cleanupGrant ~= nil
+		and cleanupGrant.status == "cleanup_required"
+	then
+		adapterError(
+			"multi_edit_cleanup_required",
+			"An earlier creation cleanup has an unproven outcome",
+			false
+		)
+	end
+	if createCount > 0 and cleanupGrant ~= nil then
+		if cleanupGrant.status == "cleaned"
+			or cleanupGrant.status == "refused"
+		then
+			disconnectMultiEditCreatedTrackers(cleanupGrant)
+			peer.multi_edit_cleanup_grant = nil
+		else
+			adapterError(
+				"multi_edit_cleanup_pending",
+				"An earlier applied creation retains exact cleanup authorization",
+				false
+			)
+		end
+	end
 	local planTargets = {}
 	local receiptTargets = {}
 	local seenInstances = {}
@@ -5024,7 +5192,50 @@ local function multiEditCasReplace(
 			mutationFenceFailed or confirmedSha256 ~= expectedSha256
 end
 
-local function multiEditCreatedContentState(created)
+local function multiEditCreatedPropertyFingerprint(created)
+	local parts = {}
+	for _, propertyName in ipairs({
+		"Archivable",
+		"Sandboxed",
+		"Capabilities",
+		"DefinesCapabilities",
+		"Disabled",
+		"Enabled",
+		"RunContext",
+		"LinkedSource",
+	}) do
+		local readOk, value = pcall(function()
+			return created[propertyName]
+		end)
+		appendCanonicalMultiEditValue(parts, propertyName)
+		appendCanonicalMultiEditValue(parts, readOk)
+		appendCanonicalMultiEditValue(
+			parts,
+			readOk and (typeof(value) .. ":" .. tostring(value)) or ""
+		)
+	end
+	return sourceSha256(table.concat(parts))
+end
+
+local function multiEditCreatedContentState(planTarget)
+	local created = planTarget.created_instance
+	local tracker = planTarget.created_change_tracker
+	local trackerOk, trackerChanged = pcall(function()
+		return type(tracker) ~= "table"
+			or tracker.dirty ~= false
+			or tracker.connection == nil
+			or tracker.connection.Connected ~= true
+			or type(planTarget.created_property_fingerprint) ~= "string"
+			or #planTarget.created_property_fingerprint ~= 64
+			or multiEditCreatedPropertyFingerprint(created)
+				~= planTarget.created_property_fingerprint
+	end)
+	if not trackerOk then
+		return "unavailable"
+	end
+	if trackerChanged then
+		return "present_unproven"
+	end
 	local inspectOk, changed = pcall(function()
 		local children = created:GetChildren()
 		if type(children) ~= "table"
@@ -5094,7 +5305,7 @@ local function observeMultiEditCreate(planTarget)
 	then
 		return "present_unproven", "", ""
 	end
-	local contentState = multiEditCreatedContentState(child)
+	local contentState = multiEditCreatedContentState(planTarget)
 	if contentState ~= "empty" then
 		return contentState, "", ""
 	end
@@ -5181,6 +5392,30 @@ local function applyMultiEditCreate(planTarget)
 		local state = observeMultiEditCreate(planTarget)
 		return false, false, state, "", ""
 	end
+	local tracker = {
+		connection = nil,
+		dirty = false,
+		initial_parent_change_pending = true,
+	}
+	local trackingOk, connection = pcall(function()
+		return created.Changed:Connect(function(propertyName)
+			if propertyName == "Parent"
+				and tracker.initial_parent_change_pending
+				and created.Parent == planTarget.parent
+			then
+				tracker.initial_parent_change_pending = false
+				return
+			end
+			tracker.dirty = true
+		end)
+	end)
+	if not trackingOk or connection == nil then
+		discardUnparentedMultiEditCreate(created)
+		local state = observeMultiEditCreate(planTarget)
+		return false, false, state, "", ""
+	end
+	tracker.connection = connection
+	planTarget.created_change_tracker = tracker
 	assertExpectedDocument()
 	local parentOk, parent = pcall(function()
 		return resolveExactPath(planTarget.parent_path, false)
@@ -5225,6 +5460,10 @@ local function applyMultiEditCreate(planTarget)
 		created.Parent = parent
 	end)
 	if not parentedOk then
+		disconnectMultiEditCreatedTrackers({
+			targets = { planTarget },
+		})
+		planTarget.created_change_tracker = nil
 		discardUnparentedMultiEditCreate(created)
 		local state, className, digest =
 			observeMultiEditCreate(planTarget)
@@ -5239,11 +5478,21 @@ local function applyMultiEditCreate(planTarget)
 	if mutated then
 		planTarget.created_instance = created
 	end
+	local fingerprintOk, propertyFingerprint = pcall(function()
+		return multiEditCreatedPropertyFingerprint(created)
+	end)
+	if not fingerprintOk
+		or type(propertyFingerprint) ~= "string"
+		or #propertyFingerprint ~= 64
+	then
+		return false, mutated, "unavailable", "", ""
+	end
+	planTarget.created_property_fingerprint = propertyFingerprint
 	local state, className, digest = observeMultiEditCreate(planTarget)
 	return state == "created_exact", mutated, state, className, digest
 end
 
-local function compensateMultiEditCreate(planTarget)
+local function compensateMultiEditCreate(planTarget, cleanupExpiresAt)
 	local beforeState, beforeClass, beforeDigest =
 		observeMultiEditCreate(planTarget)
 	if beforeState == "absent"
@@ -5259,7 +5508,7 @@ local function compensateMultiEditCreate(planTarget)
 		return false, beforeState, beforeState, beforeClass, beforeDigest
 	end
 	local created = planTarget.created_instance
-	local contentState = multiEditCreatedContentState(created)
+	local contentState = multiEditCreatedContentState(planTarget)
 	if contentState ~= "empty" then
 		return false, contentState, contentState, "", ""
 	end
@@ -5288,9 +5537,14 @@ local function compensateMultiEditCreate(planTarget)
 			exactNamedChild(planTarget.parent, planTarget.name)
 		if matchCount ~= 1
 			or exact ~= created
-			or multiEditCreatedContentState(created) ~= "empty"
+			or multiEditCreatedContentState(planTarget) ~= "empty"
 		then
 			error("created script identity changed before compensation")
+		end
+		if type(cleanupExpiresAt) == "number"
+			and os.clock() >= cleanupExpiresAt
+		then
+			error("cleanup authorization expired before destruction")
 		end
 		created:Destroy()
 	end)
@@ -5311,6 +5565,82 @@ local function compensateMultiEditCreate(planTarget)
 		return true, beforeState, afterState, "", ""
 	end
 	return false, beforeState, afterState, afterClass, afterDigest
+end
+
+local function installMultiEditCleanupGrant(
+	plan,
+	applyRequestId,
+	applyReceiptSha256,
+	cleanupAuthorizationSha256
+)
+	local cleanupTargets = {}
+	for _, planTarget in ipairs(plan.targets) do
+		if planTarget.kind == "create" then
+			local state, className, digest =
+				observeMultiEditCreate(planTarget)
+			if state ~= "created_exact"
+				or className ~= planTarget.class_name
+				or digest ~= planTarget.planned_sha256
+				or planTarget.created_instance == nil
+				or planTarget.created_instance.Parent
+					~= planTarget.parent
+			then
+				adapterError(
+					"multi_edit_cleanup_grant_invalid",
+					"Applied creation is not exact enough to authorize cleanup",
+					false
+				)
+			end
+			table.insert(cleanupTargets, {
+				index = planTarget.index,
+				kind = "create",
+				path = copyPath(planTarget.path),
+				parent_path = copyPath(planTarget.parent_path),
+				parent = planTarget.parent,
+				name = planTarget.name,
+				class_name = planTarget.class_name,
+				expected_absent = true,
+				planned_sha256 = planTarget.planned_sha256,
+				planned_source_length =
+					planTarget.planned_source_length,
+				planned_source = planTarget.planned_source,
+				created_instance = planTarget.created_instance,
+				created_change_tracker =
+					planTarget.created_change_tracker,
+				created_property_fingerprint =
+					planTarget.created_property_fingerprint,
+			})
+		end
+	end
+	if #cleanupTargets ~= plan.create_count
+		or #cleanupTargets < 1
+		or #cleanupTargets > DURABLE_BOUNDS.MAX_MULTI_EDIT_CREATES
+	then
+		adapterError(
+			"multi_edit_cleanup_grant_invalid",
+			"Applied creation cleanup authorization could not be bounded",
+			true
+		)
+	end
+	peer.multi_edit_cleanup_grant = {
+		transaction_id = plan.transaction_id,
+		document_epoch = DOCUMENT_EPOCH,
+		generation = peer.generation,
+		prepare_request_id = plan.prepare_request_id,
+		prepare_sha256 = plan.prepare_sha256,
+		apply_request_id = applyRequestId,
+		apply_receipt_sha256 = applyReceiptSha256,
+		cleanup_authorization_sha256 =
+			cleanupAuthorizationSha256,
+		cleanup_contract =
+			PROTOCOL_METADATA.MULTI_EDIT_CLEANUP_CONTRACT,
+		expires_at =
+			os.clock() + DURABLE_BOUNDS.MULTI_EDIT_CLEANUP_TTL_SECONDS,
+		status = "authorized",
+		create_count = #cleanupTargets,
+		targets = cleanupTargets,
+		safe_terminal_evidence = nil,
+	}
 end
 
 local function preparedMultiEditTargetMatches(supplied, expected)
@@ -5401,10 +5731,17 @@ local function newMultiEditMutationReceipt(
 	targetOutcomes,
 	evidenceMode,
 	priorTerminalOutcome,
-	priorTerminalReceiptSha256
+	priorTerminalReceiptSha256,
+	installCleanupGrant
 )
 	local effectiveEvidenceMode = evidenceMode
 		or (phase == "apply" and "apply_execution" or "live_recovery")
+	local cleanupAuthorized = phase == "apply"
+		and outcome == "applied"
+		and plan.create_count > 0
+	local cleanupAuthorizationSha256 = cleanupAuthorized
+		and multiEditCleanupAuthorizationSha256(plan, requestId)
+		or ""
 	local receipt = {
 		adapter = "studio-mcp-v2-durable-plugin",
 		v = 2,
@@ -5430,12 +5767,39 @@ local function newMultiEditMutationReceipt(
 		outcome = outcome,
 		safe_terminal = safeTerminal,
 		recovery_required = not safeTerminal,
+		cleanup_authorized = cleanupAuthorized,
+		cleanup_contract = cleanupAuthorized
+			and PROTOCOL_METADATA.MULTI_EDIT_CLEANUP_CONTRACT
+			or "",
+		cleanup_authorization_sha256 =
+			cleanupAuthorizationSha256,
+		cleanup_expires_in_ms = cleanupAuthorized
+			and DURABLE_BOUNDS.MULTI_EDIT_CLEANUP_TTL_SECONDS * 1_000
+			or 0,
 		target_count = #plan.targets,
 		edit_count = plan.edit_count,
 		create_count = plan.create_count,
 		targets = targetOutcomes,
 	}
 	receipt.receipt_sha256 = multiEditMutationSha256(receipt)
+	if cleanupAuthorized and installCleanupGrant ~= false then
+		installMultiEditCleanupGrant(
+			plan,
+			requestId,
+			receipt.receipt_sha256,
+			cleanupAuthorizationSha256
+		)
+	elseif phase == "recover"
+		and safeTerminal
+		and peer.multi_edit_cleanup_grant ~= nil
+		and peer.multi_edit_cleanup_grant.transaction_id
+			== plan.transaction_id
+	then
+		disconnectMultiEditCreatedTrackers(
+			peer.multi_edit_cleanup_grant
+		)
+		peer.multi_edit_cleanup_grant = nil
+	end
 	local receiptOk, encodedReceipt = pcall(function()
 		return HttpService:JSONEncode(receipt)
 	end)
@@ -5459,6 +5823,7 @@ local function newMultiEditMutationReceipt(
 			or (phase == "recover" and outcome == "recovered")
 		)
 	then
+		disconnectMultiEditCreatedTrackers(plan)
 		plan.safe_terminal_evidence = {
 			status = plan.status,
 			outcome = outcome,
@@ -5496,6 +5861,20 @@ local function assertMultiEditMutationReceiptBound(plan, requestId, phase)
 		"aborted_preflight",
 		string.rep("0", 64)
 	)
+	if phase == "apply" and plan.create_count > 0 then
+		newMultiEditMutationReceipt(
+			plan,
+			requestId,
+			"apply",
+			"applied",
+			true,
+			worstCaseOutcomes,
+			"apply_execution",
+			"",
+			"",
+			false
+		)
+	end
 end
 
 local function applyMultiEdit(args, requestId, deadlineMs)
@@ -5997,6 +6376,320 @@ local function recoverMultiEdit(args, requestId, deadlineMs)
 	)
 end
 
+local function newMultiEditCleanupTargetOutcome(cleanupTarget)
+	return {
+		index = cleanupTarget.index,
+		kind = "create",
+		path = copyPath(cleanupTarget.path),
+		parent_path = copyPath(cleanupTarget.parent_path),
+		name = cleanupTarget.name,
+		class_name = cleanupTarget.class_name,
+		expected_absent = true,
+		planned_sha256 = cleanupTarget.planned_sha256,
+		planned_source_length =
+			cleanupTarget.planned_source_length,
+		observed_before_state = "unavailable",
+		observed_after_state = "unavailable",
+		observed_after_class_name = "",
+		observed_after_sha256 = "",
+		status = "not_deleted",
+	}
+end
+
+local function newMultiEditCleanupReceipt(
+	grant,
+	requestId,
+	outcome,
+	safeTerminal,
+	targetOutcomes,
+	evidenceMode,
+	priorTerminalOutcome,
+	priorTerminalReceiptSha256
+)
+	local receipt = {
+		adapter = "studio-mcp-v2-durable-plugin",
+		v = 2,
+		operation = "studio_cleanup_multi_edit",
+		phase = "cleanup",
+		studio_id = peer.studio_id,
+		client_instance_id = CLIENT_INSTANCE_ID,
+		document_epoch = DOCUMENT_EPOCH,
+		generation = peer.generation,
+		request_id = requestId,
+		transaction_id = grant.transaction_id,
+		prepare_request_id = grant.prepare_request_id,
+		prepare_sha256 = grant.prepare_sha256,
+		apply_request_id = grant.apply_request_id,
+		apply_receipt_sha256 = grant.apply_receipt_sha256,
+		cleanup_authorization_sha256 =
+			grant.cleanup_authorization_sha256,
+		cleanup_contract = grant.cleanup_contract,
+		evidence_mode = evidenceMode or "cleanup_execution",
+		prior_terminal_outcome = priorTerminalOutcome or "",
+		prior_terminal_receipt_sha256 =
+			priorTerminalReceiptSha256 or "",
+		outcome = outcome,
+		safe_terminal = safeTerminal,
+		recovery_required = not safeTerminal,
+		create_count = grant.create_count,
+		targets = targetOutcomes,
+	}
+	receipt.receipt_sha256 = multiEditCleanupSha256(receipt)
+	local receiptOk, encodedReceipt = pcall(function()
+		return HttpService:JSONEncode(receipt)
+	end)
+	if not receiptOk
+		or type(encodedReceipt) ~= "string"
+		or #encodedReceipt > DURABLE_BOUNDS.MAX_MULTI_EDIT_RECEIPT_BYTES
+	then
+		adapterError(
+			"multi_edit_cleanup_receipt_oversize",
+			"Multi-edit cleanup receipt exceeds the durable output bound",
+			false
+		)
+	end
+	return receipt
+end
+
+local function cleanupMultiEdit(args, requestId, deadlineMs)
+	requireEditMode()
+	local deadline = os.clock() + (deadlineMs / 1_000)
+	local grant = refreshMultiEditCleanupGrant()
+	if grant == nil
+		or grant.transaction_id ~= args.transaction_id
+		or grant.document_epoch ~= DOCUMENT_EPOCH
+		or grant.generation ~= peer.generation
+		or grant.apply_receipt_sha256
+			~= args.apply_receipt_sha256
+		or grant.cleanup_authorization_sha256
+			~= args.cleanup_authorization_sha256
+		or grant.cleanup_contract
+			~= PROTOCOL_METADATA.MULTI_EDIT_CLEANUP_CONTRACT
+	then
+		adapterError(
+			"multi_edit_cleanup_unavailable",
+			"No exact same-generation applied-creation cleanup authorization matches",
+			false
+		)
+	end
+	local evidence = grant.safe_terminal_evidence
+	if (grant.status == "cleaned" or grant.status == "refused")
+		and evidence ~= nil
+		and evidence.outcome == grant.status
+		and type(evidence.targets) == "table"
+		and #evidence.targets == grant.create_count
+		and type(evidence.receipt_sha256) == "string"
+		and #evidence.receipt_sha256 == 64
+		and string.find(evidence.receipt_sha256, "[^0-9a-f]") == nil
+	then
+		return newMultiEditCleanupReceipt(
+			grant,
+			requestId,
+			grant.status,
+			true,
+			copyMultiEditTargetOutcomes(evidence.targets),
+			"cached_cleanup_terminal",
+			evidence.outcome,
+			evidence.receipt_sha256
+		)
+	end
+	if grant.status ~= "authorized"
+		and grant.status ~= "cleanup_required"
+	then
+		adapterError(
+			"multi_edit_cleanup_unavailable",
+			"Applied-creation cleanup authorization is not active",
+			false
+		)
+	end
+	if grant.settlement_only == true
+		or os.clock() >= grant.expires_at
+	then
+		disconnectMultiEditCreatedTrackers(grant)
+		grant.settlement_only = true
+		adapterError(
+			"multi_edit_cleanup_expired",
+			"Cleanup authorization expired; only prior safe terminal settlement evidence remains admissible",
+			false
+		)
+	end
+	if type(grant.targets) ~= "table"
+		or #grant.targets ~= grant.create_count
+		or grant.create_count < 1
+		or grant.create_count > DURABLE_BOUNDS.MAX_MULTI_EDIT_CREATES
+	then
+		adapterError(
+			"multi_edit_cleanup_unavailable",
+			"Applied-creation cleanup authorization is not active",
+			false
+		)
+	end
+
+	local outcomes = {}
+	local preflightSafe = true
+	local authorizationExpired = false
+	for index, cleanupTarget in ipairs(grant.targets) do
+		assertExpectedDocument()
+		local targetOutcome =
+			newMultiEditCleanupTargetOutcome(cleanupTarget)
+		outcomes[index] = targetOutcome
+		if os.clock() >= grant.expires_at then
+			targetOutcome.status = "cleanup_required"
+			authorizationExpired = true
+		elseif os.clock() > deadline then
+			targetOutcome.status = "preserved_conflict"
+			preflightSafe = false
+		else
+			local state, className, digest =
+				observeMultiEditCreate(cleanupTarget)
+			targetOutcome.observed_before_state = state
+			targetOutcome.observed_after_state = state
+			targetOutcome.observed_after_class_name = className
+			targetOutcome.observed_after_sha256 = digest
+			if state == "created_exact" then
+				targetOutcome.status = "not_deleted"
+			elseif state == "absent"
+				and cleanupTarget.created_instance ~= nil
+				and cleanupTarget.created_instance.Parent == nil
+			then
+				targetOutcome.status = "already_absent"
+			else
+				targetOutcome.status = "preserved_conflict"
+				preflightSafe = false
+			end
+		end
+	end
+	if authorizationExpired then
+		grant.status = "cleanup_required"
+		grant.settlement_only = true
+		for _, targetOutcome in ipairs(outcomes) do
+			if targetOutcome.status == "not_deleted" then
+				targetOutcome.status = "cleanup_required"
+			end
+		end
+		disconnectMultiEditCreatedTrackers(grant)
+		return newMultiEditCleanupReceipt(
+			grant,
+			requestId,
+			"cleanup_required",
+			false,
+			outcomes
+		)
+	end
+	if not preflightSafe then
+		grant.status = "refused"
+		local refused = newMultiEditCleanupReceipt(
+			grant,
+			requestId,
+			"refused",
+			true,
+			outcomes
+		)
+		grant.safe_terminal_evidence = {
+			outcome = "refused",
+			receipt_sha256 = refused.receipt_sha256,
+			targets = copyMultiEditTargetOutcomes(outcomes),
+		}
+		disconnectMultiEditCreatedTrackers(grant)
+		return refused
+	end
+
+	local worstCaseOutcomes = {}
+	for index, cleanupTarget in ipairs(grant.targets) do
+		local worstCase =
+			newMultiEditCleanupTargetOutcome(cleanupTarget)
+		worstCase.status = "cleanup_required"
+		worstCaseOutcomes[index] = worstCase
+	end
+	newMultiEditCleanupReceipt(
+		grant,
+		requestId,
+		"cleanup_required",
+		false,
+		worstCaseOutcomes
+	)
+
+	local cleanupRequired = false
+	local expiredDuringCleanup = false
+	for index = #grant.targets, 1, -1 do
+		local cleanupTarget = grant.targets[index]
+		local targetOutcome = outcomes[index]
+		if targetOutcome.status ~= "already_absent" then
+			if os.clock() >= grant.expires_at
+				or os.clock() > deadline
+			then
+				targetOutcome.status = "cleanup_required"
+				targetOutcome.observed_after_state = "unavailable"
+				targetOutcome.observed_after_class_name = ""
+				targetOutcome.observed_after_sha256 = ""
+				cleanupRequired = true
+				expiredDuringCleanup =
+					os.clock() >= grant.expires_at
+				break
+			end
+			assertExpectedDocument()
+			local deleted,
+				beforeState,
+				afterState,
+				afterClass,
+				afterDigest =
+				compensateMultiEditCreate(
+					cleanupTarget,
+					grant.expires_at
+				)
+			targetOutcome.observed_before_state = beforeState
+			targetOutcome.observed_after_state = afterState
+			targetOutcome.observed_after_class_name = afterClass
+			targetOutcome.observed_after_sha256 = afterDigest
+			if deleted and afterState == "absent" then
+				targetOutcome.status = "deleted"
+			else
+				targetOutcome.status = "cleanup_required"
+				cleanupRequired = true
+				expiredDuringCleanup =
+					expiredDuringCleanup
+					or os.clock() >= grant.expires_at
+				break
+			end
+		end
+	end
+	if cleanupRequired then
+		grant.status = "cleanup_required"
+		if expiredDuringCleanup then
+			grant.settlement_only = true
+			disconnectMultiEditCreatedTrackers(grant)
+		end
+		for _, targetOutcome in ipairs(outcomes) do
+			if targetOutcome.status == "not_deleted" then
+				targetOutcome.status = "cleanup_required"
+			end
+		end
+		return newMultiEditCleanupReceipt(
+			grant,
+			requestId,
+			"cleanup_required",
+			false,
+			outcomes
+		)
+	end
+
+	grant.status = "cleaned"
+	local cleaned = newMultiEditCleanupReceipt(
+		grant,
+		requestId,
+		"cleaned",
+		true,
+		outcomes
+	)
+	grant.safe_terminal_evidence = {
+		outcome = "cleaned",
+		receipt_sha256 = cleaned.receipt_sha256,
+		targets = copyMultiEditTargetOutcomes(outcomes),
+	}
+	disconnectMultiEditCreatedTrackers(grant)
+	return cleaned
+end
+
 local function readScript(args)
 	requireEditMode()
 	local target = requireLuaSourceContainer(args.path)
@@ -6370,6 +7063,12 @@ local function dispatch(request)
 		)
 	elseif request.operation == "studio_recover_multi_edit" then
 		return recoverMultiEdit(
+			request.args,
+			request.request_id,
+			request.deadline_ms
+		)
+	elseif request.operation == "studio_cleanup_multi_edit" then
+		return cleanupMultiEdit(
 			request.args,
 			request.request_id,
 			request.deadline_ms

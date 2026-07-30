@@ -45,7 +45,7 @@ from platform_support import (
 
 PRODUCT = "RobloxStudioMCPv2"
 PRODUCT_DISPLAY_NAME = "Roblox Studio MCP Multisession"
-VERSION = "0.4.0-rc.6"
+VERSION = "0.4.0-rc.7"
 PACKAGE_FORMAT = "roblox-studio-mcp-v2-portable-release"
 PACKAGE_MANIFEST_VERSION = 1
 INSTALL_STATE_FORMAT = "roblox-studio-mcp-v2-install-state"

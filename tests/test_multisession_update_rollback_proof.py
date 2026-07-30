@@ -61,7 +61,7 @@ class MultisessionUpdateRollbackProofTests(unittest.TestCase):
 
     def test_exact_published_rc5_identity_is_pinned(self) -> None:
         self.assertEqual("0.4.0-rc.5", PRIOR_VERSION)
-        self.assertEqual("0.4.0-rc.6", CANDIDATE_VERSION)
+        self.assertEqual("0.4.0-rc.7", CANDIDATE_VERSION)
         self.assertEqual(
             (
                 "d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8b"
@@ -117,7 +117,7 @@ class MultisessionUpdateRollbackProofTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(
-                ProofError, "requires candidate 0.4.0-rc.6"
+                ProofError, "requires candidate 0.4.0-rc.7"
             ):
                 prove_multisession_update_rollback(
                     prior_archive=missing,
@@ -125,7 +125,7 @@ class MultisessionUpdateRollbackProofTests(unittest.TestCase):
                     candidate_archive=missing,
                     candidate_checksum_file=missing,
                     candidate_expected_sha256="0" * 64,
-                    candidate_version="0.4.0-rc.7",
+                    candidate_version="0.4.0-rc.6",
                     source_commit="0" * 40,
                     source_tree="0" * 40,
                 )

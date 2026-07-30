@@ -48,6 +48,7 @@ FAMILY_TO_DURABLE_HANDLER = {
     "script_update": "studio_update_script",
     "multi_edit": "studio_multi_edit",
     "multi_edit_recovery": "studio_recover_multi_edit",
+    "multi_edit_cleanup": "studio_cleanup_multi_edit",
     "attribute_update": "studio_set_attribute",
     "console_read": "studio_get_console",
     "screenshot": "studio_capture_screenshot",
@@ -111,6 +112,13 @@ FAMILY_ALLOWED_ARGUMENTS = {
         {"datamodel_type", "targets", "creates"}
     ),
     "multi_edit_recovery": frozenset({"transaction_id"}),
+    "multi_edit_cleanup": frozenset(
+        {
+            "transaction_id",
+            "apply_receipt_sha256",
+            "cleanup_authorization_sha256",
+        }
+    ),
     "attribute_update": frozenset(
         {
             "path",

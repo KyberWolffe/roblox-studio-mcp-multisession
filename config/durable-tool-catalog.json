@@ -1,6 +1,6 @@
 {
   "format": "studio-mcp-v2-durable-catalog",
-  "catalog_version": "0.4.0-rc.6",
+  "catalog_version": "0.4.0-rc.7",
   "upstream": {
     "version": "production-v1-snapshot-2026-07-26",
     "source_sha256": "96130d76240be565f98417414f86e0776a5b73d880f4fadbc5de0bd1c915535b",
@@ -997,7 +997,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100,
-              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
               },
               "class_name": {
                 "type": "string",
@@ -2865,6 +2865,25 @@
           "recovery_required": {
             "type": "boolean"
           },
+          "cleanup_authorized": {
+            "type": "boolean"
+          },
+          "cleanup_contract": {
+            "type": "string",
+            "enum": [
+              "",
+              "transaction-created-unchanged-only-v1"
+            ]
+          },
+          "cleanup_authorization_sha256": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{64})?$"
+          },
+          "cleanup_expires_in_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 600000
+          },
           "target_count": {
             "type": "integer",
             "minimum": 1,
@@ -2915,13 +2934,67 @@
           "outcome",
           "safe_terminal",
           "recovery_required",
+          "cleanup_authorized",
+          "cleanup_contract",
+          "cleanup_authorization_sha256",
+          "cleanup_expires_in_ms",
           "target_count",
           "edit_count",
           "create_count",
           "targets",
           "receipt_sha256"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "applied"
+                },
+                "create_count": {
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "outcome",
+                "create_count"
+              ]
+            },
+            "then": {
+              "properties": {
+                "cleanup_authorized": {
+                  "const": true
+                },
+                "cleanup_contract": {
+                  "const": "transaction-created-unchanged-only-v1"
+                },
+                "cleanup_authorization_sha256": {
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "cleanup_expires_in_ms": {
+                  "const": 600000
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "cleanup_authorized": {
+                  "const": false
+                },
+                "cleanup_contract": {
+                  "const": ""
+                },
+                "cleanup_authorization_sha256": {
+                  "const": ""
+                },
+                "cleanup_expires_in_ms": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        ]
       },
       "annotations": {
         "title": "Revision-Protected Studio Multi-Edit",
@@ -3264,6 +3337,22 @@
           "recovery_required": {
             "type": "boolean"
           },
+          "cleanup_authorized": {
+            "type": "boolean",
+            "const": false
+          },
+          "cleanup_contract": {
+            "type": "string",
+            "const": ""
+          },
+          "cleanup_authorization_sha256": {
+            "type": "string",
+            "const": ""
+          },
+          "cleanup_expires_in_ms": {
+            "type": "integer",
+            "const": 0
+          },
           "target_count": {
             "type": "integer",
             "minimum": 1,
@@ -3314,6 +3403,10 @@
           "outcome",
           "safe_terminal",
           "recovery_required",
+          "cleanup_authorized",
+          "cleanup_contract",
+          "cleanup_authorization_sha256",
+          "cleanup_expires_in_ms",
           "target_count",
           "edit_count",
           "create_count",
@@ -3362,6 +3455,404 @@
       },
       "annotations": {
         "title": "Recover Studio Multi-Edit",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_cleanup_multi_edit",
+      "description": "Consume one exact, identity-bound, same-generation cleanup authorization returned by a successful applied creation. The caller supplies only the original transaction, apply receipt, and cleanup-authorization digests; paths, classes, sources, and delete targets cannot be supplied or widened. Studio preflights every retained transaction-created Instance before deletion and deletes only exact unchanged scripts that still match their retained instance, parent, path, name, class, source bytes and SHA-256, and zero-child, zero-attribute, zero-tag state. Pre-existing, replaced, moved, renamed, changed, or decorated content is preserved. Partial or unproven cleanup remains quarantined for only the same exact bounded same-generation cleanup; safe terminal results are receipt-hashed and auditable.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Exact transaction UUID from the applied creation receipt for this explicit Studio identity."
+          },
+          "apply_receipt_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Exact applied-creation receipt digest retained by the broker and Studio."
+          },
+          "cleanup_authorization_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Exact bounded cleanup authorization digest returned by that applied creation."
+          }
+        },
+        "required": [
+          "transaction_id",
+          "apply_receipt_sha256",
+          "cleanup_authorization_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "$defs": {
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "cleanupTargetReceipt": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16
+              },
+              "kind": {
+                "type": "string",
+                "const": "create"
+              },
+              "path": {
+                "$ref": "#/$defs/path"
+              },
+              "parent_path": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/path"
+                  },
+                  {
+                    "maxItems": 63
+                  }
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "class_name": {
+                "type": "string",
+                "enum": [
+                  "Script",
+                  "LocalScript",
+                  "ModuleScript"
+                ]
+              },
+              "expected_absent": {
+                "type": "boolean",
+                "const": true
+              },
+              "planned_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "planned_source_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "observed_before_state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "created_exact",
+                  "present_unproven",
+                  "unavailable"
+                ]
+              },
+              "observed_after_state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "created_exact",
+                  "present_unproven",
+                  "unavailable"
+                ]
+              },
+              "observed_after_class_name": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "Script",
+                  "LocalScript",
+                  "ModuleScript"
+                ]
+              },
+              "observed_after_sha256": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})?$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "deleted",
+                  "already_absent",
+                  "not_deleted",
+                  "preserved_conflict",
+                  "cleanup_required"
+                ]
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "path",
+              "parent_path",
+              "name",
+              "class_name",
+              "expected_absent",
+              "planned_sha256",
+              "planned_source_length",
+              "observed_before_state",
+              "observed_after_state",
+              "observed_after_class_name",
+              "observed_after_sha256",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "adapter": {
+            "type": "string",
+            "const": "studio-mcp-v2-durable-plugin"
+          },
+          "v": {
+            "type": "integer",
+            "const": 2
+          },
+          "operation": {
+            "type": "string",
+            "const": "studio_cleanup_multi_edit"
+          },
+          "phase": {
+            "type": "string",
+            "const": "cleanup"
+          },
+          "studio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "transaction_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "prepare_request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "prepare_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "apply_request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "apply_receipt_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "cleanup_authorization_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "cleanup_contract": {
+            "type": "string",
+            "const": "transaction-created-unchanged-only-v1"
+          },
+          "evidence_mode": {
+            "type": "string",
+            "enum": [
+              "cleanup_execution",
+              "cached_cleanup_terminal"
+            ]
+          },
+          "prior_terminal_outcome": {
+            "type": "string",
+            "enum": [
+              "",
+              "cleaned",
+              "refused"
+            ]
+          },
+          "prior_terminal_receipt_sha256": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{64})?$"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "cleaned",
+              "refused",
+              "cleanup_required"
+            ]
+          },
+          "safe_terminal": {
+            "type": "boolean"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "create_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/cleanupTargetReceipt"
+            },
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "receipt_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "adapter",
+          "v",
+          "operation",
+          "phase",
+          "studio_id",
+          "client_instance_id",
+          "document_epoch",
+          "generation",
+          "request_id",
+          "transaction_id",
+          "prepare_request_id",
+          "prepare_sha256",
+          "apply_request_id",
+          "apply_receipt_sha256",
+          "cleanup_authorization_sha256",
+          "cleanup_contract",
+          "evidence_mode",
+          "prior_terminal_outcome",
+          "prior_terminal_receipt_sha256",
+          "outcome",
+          "safe_terminal",
+          "recovery_required",
+          "create_count",
+          "targets",
+          "receipt_sha256"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "cleanup_required"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "properties": {
+                "safe_terminal": {
+                  "const": false
+                },
+                "recovery_required": {
+                  "const": true
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "safe_terminal": {
+                  "const": true
+                },
+                "recovery_required": {
+                  "const": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "evidence_mode": {
+                  "const": "cleanup_execution"
+                }
+              },
+              "required": [
+                "evidence_mode"
+              ]
+            },
+            "then": {
+              "properties": {
+                "prior_terminal_outcome": {
+                  "const": ""
+                },
+                "prior_terminal_receipt_sha256": {
+                  "const": ""
+                }
+              }
+            },
+            "else": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "outcome": {
+                      "const": "cleaned"
+                    },
+                    "prior_terminal_outcome": {
+                      "const": "cleaned"
+                    },
+                    "prior_terminal_receipt_sha256": {
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "outcome": {
+                      "const": "refused"
+                    },
+                    "prior_terminal_outcome": {
+                      "const": "refused"
+                    },
+                    "prior_terminal_receipt_sha256": {
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Clean Up Transaction-Created Studio Scripts",
         "readOnlyHint": false,
         "destructiveHint": true,
         "idempotentHint": true,

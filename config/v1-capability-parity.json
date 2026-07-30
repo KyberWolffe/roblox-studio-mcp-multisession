@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_version": "0.4.0-rc.6",
+  "release_version": "0.4.0-rc.7",
   "baseline": {
     "catalog_path": "config/tool-catalog.json",
     "modern_tool_count": 25,
@@ -154,9 +154,13 @@
         {
           "kind": "durable_tool",
           "name": "studio_recover_multi_edit"
+        },
+        {
+          "kind": "durable_tool",
+          "name": "studio_cleanup_multi_edit"
         }
       ],
-      "gap": "V2 provides bounded, revision-protected ordered edits and expected-absent creation of Script, LocalScript, or ModuleScript instances across 1-16 combined exact paths, with all-target preflight, identity-bound receipts, exact read-back, transaction-proven compensating rollback/deletion, and explicit recovery. The script-creation gap is closed, but V2 does not claim impossible cross-script atomicity and intentionally retains a safer explicit-path/CAS contract rather than the upstream shape.",
+      "gap": "V2 provides bounded, revision-protected ordered edits and expected-absent creation of Script, LocalScript, or ModuleScript instances across 1-16 combined exact paths, with all-target preflight, identity-bound receipts, exact read-back, explicit uncertain-mutation recovery, and a separate same-generation authorization that cleans up only exact unchanged transaction-created scripts. The script-creation and successful-creation cleanup gaps are closed, but V2 does not claim impossible cross-script atomicity and intentionally retains a safer explicit-path/CAS contract rather than the upstream shape.",
       "phase": "phase_2"
     },
     {

@@ -233,6 +233,113 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
             "minItems": 0,
             "maxItems": 64,
         },
+        "cleanupTargetReceipt": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16,
+                },
+                "kind": {"type": "string", "const": "create"},
+                "path": {
+                    "allOf": [
+                        {"$ref": "#/$defs/path"},
+                        {"minItems": 1},
+                    ]
+                },
+                "parent_path": {
+                    "allOf": [
+                        {"$ref": "#/$defs/path"},
+                        {"minItems": 1, "maxItems": 63},
+                    ]
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                },
+                "class_name": {
+                    "type": "string",
+                    "enum": [
+                        "Script",
+                        "LocalScript",
+                        "ModuleScript",
+                    ],
+                },
+                "expected_absent": {
+                    "type": "boolean",
+                    "const": True,
+                },
+                "planned_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "planned_source_length": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 262144,
+                },
+                "observed_before_state": {
+                    "type": "string",
+                    "enum": [
+                        "absent",
+                        "created_exact",
+                        "present_unproven",
+                        "unavailable",
+                    ],
+                },
+                "observed_after_state": {
+                    "type": "string",
+                    "enum": [
+                        "absent",
+                        "created_exact",
+                        "present_unproven",
+                        "unavailable",
+                    ],
+                },
+                "observed_after_class_name": {
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "Script",
+                        "LocalScript",
+                        "ModuleScript",
+                    ],
+                },
+                "observed_after_sha256": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{64})?$",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "deleted",
+                        "already_absent",
+                        "not_deleted",
+                        "preserved_conflict",
+                        "cleanup_required",
+                    ],
+                },
+            },
+            "required": [
+                "index",
+                "kind",
+                "path",
+                "parent_path",
+                "name",
+                "class_name",
+                "expected_absent",
+                "planned_sha256",
+                "planned_source_length",
+                "observed_before_state",
+                "observed_after_state",
+                "observed_after_class_name",
+                "observed_after_sha256",
+                "status",
+            ],
+            "additionalProperties": False,
+        },
         "multiEditEditTarget": {
             "type": "object",
             "properties": {
@@ -400,6 +507,46 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 "ordering_version",
                 "atomicity",
                 "targets",
+            ],
+            "additionalProperties": False,
+        },
+        "multiEditCleanupAdmission": {
+            "type": "object",
+            "properties": {
+                "contract_version": {
+                    "type": "string",
+                    "const": "studio-job-admission-v1",
+                },
+                "operation": {
+                    "type": "string",
+                    "const": "studio_cleanup_multi_edit",
+                },
+                "transaction_id": {
+                    "type": "string",
+                    "format": "uuid",
+                },
+                "apply_receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "cleanup_authorization_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "cleanup_contract": {
+                    "type": "string",
+                    "const": (
+                        "transaction-created-unchanged-only-v1"
+                    ),
+                },
+            },
+            "required": [
+                "contract_version",
+                "operation",
+                "transaction_id",
+                "apply_receipt_sha256",
+                "cleanup_authorization_sha256",
+                "cleanup_contract",
             ],
             "additionalProperties": False,
         },
@@ -589,6 +736,7 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
         "admittedContract": {
             "oneOf": [
                 {"$ref": "#/$defs/multiEditAdmission"},
+                {"$ref": "#/$defs/multiEditCleanupAdmission"},
                 {"$ref": "#/$defs/treeAdmission"},
                 {"$ref": "#/$defs/scriptQueryAdmission"},
                 {"$ref": "#/$defs/inspectionAdmission"},
@@ -602,7 +750,13 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 "generation": {"type": "integer", "minimum": 1},
                 "phase": {
                     "type": "string",
-                    "enum": ["direct", "prepare", "apply", "recover"],
+                    "enum": [
+                        "direct",
+                        "prepare",
+                        "apply",
+                        "recover",
+                        "cleanup",
+                    ],
                 },
                 "success": {"type": "boolean"},
                 "safe_terminal": {"type": "boolean"},
@@ -672,7 +826,7 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
             ],
             "additionalProperties": False,
         },
-        "resolutionReceipt": {
+        "recoveryResolutionReceipt": {
             "type": "object",
             "description": (
                 "External exact-recovery proof linked to an original "
@@ -796,6 +950,325 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 }
             ],
             "additionalProperties": False,
+        },
+        "cleanupResult": {
+            "type": "object",
+            "properties": {
+                "adapter": {
+                    "type": "string",
+                    "const": "studio-mcp-v2-durable-plugin",
+                },
+                "v": {"type": "integer", "const": 2},
+                "operation": {
+                    "type": "string",
+                    "const": "studio_cleanup_multi_edit",
+                },
+                "phase": {"type": "string", "const": "cleanup"},
+                "studio_id": {"type": "string", "format": "uuid"},
+                "client_instance_id": {
+                    "type": "string",
+                    "format": "uuid",
+                },
+                "document_epoch": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": (
+                        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                    ),
+                },
+                "generation": {"type": "integer", "minimum": 1},
+                "request_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+                "transaction_id": {
+                    "type": "string",
+                    "format": "uuid",
+                },
+                "prepare_request_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+                "prepare_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "apply_request_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+                "apply_receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "cleanup_authorization_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "cleanup_contract": {
+                    "type": "string",
+                    "const": (
+                        "transaction-created-unchanged-only-v1"
+                    ),
+                },
+                "evidence_mode": {
+                    "type": "string",
+                    "enum": [
+                        "cleanup_execution",
+                        "cached_cleanup_terminal",
+                    ],
+                },
+                "prior_terminal_outcome": {
+                    "type": "string",
+                    "enum": ["", "cleaned", "refused"],
+                },
+                "prior_terminal_receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{64})?$",
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["cleaned", "refused"],
+                },
+                "safe_terminal": {
+                    "type": "boolean",
+                    "const": True,
+                },
+                "recovery_required": {
+                    "type": "boolean",
+                    "const": False,
+                },
+                "create_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16,
+                },
+                "targets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/cleanupTargetReceipt"
+                    },
+                    "minItems": 1,
+                    "maxItems": 16,
+                },
+                "receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+            },
+            "required": [
+                "adapter",
+                "v",
+                "operation",
+                "phase",
+                "studio_id",
+                "client_instance_id",
+                "document_epoch",
+                "generation",
+                "request_id",
+                "transaction_id",
+                "prepare_request_id",
+                "prepare_sha256",
+                "apply_request_id",
+                "apply_receipt_sha256",
+                "cleanup_authorization_sha256",
+                "cleanup_contract",
+                "evidence_mode",
+                "prior_terminal_outcome",
+                "prior_terminal_receipt_sha256",
+                "outcome",
+                "safe_terminal",
+                "recovery_required",
+                "create_count",
+                "targets",
+                "receipt_sha256",
+            ],
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "evidence_mode": {
+                                "const": "cleanup_execution"
+                            }
+                        },
+                        "required": ["evidence_mode"],
+                    },
+                    "then": {
+                        "properties": {
+                            "prior_terminal_outcome": {"const": ""},
+                            "prior_terminal_receipt_sha256": {
+                                "const": ""
+                            },
+                        }
+                    },
+                    "else": {
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "outcome": {
+                                        "const": "cleaned"
+                                    },
+                                    "prior_terminal_outcome": {
+                                        "const": "cleaned"
+                                    },
+                                    "prior_terminal_receipt_sha256": {
+                                        "pattern": "^[0-9a-f]{64}$"
+                                    },
+                                }
+                            },
+                            {
+                                "properties": {
+                                    "outcome": {
+                                        "const": "refused"
+                                    },
+                                    "prior_terminal_outcome": {
+                                        "const": "refused"
+                                    },
+                                    "prior_terminal_receipt_sha256": {
+                                        "pattern": "^[0-9a-f]{64}$"
+                                    },
+                                }
+                            },
+                        ]
+                    },
+                }
+            ],
+            "additionalProperties": False,
+        },
+        "cleanupResolutionReceipt": {
+            "type": "object",
+            "description": (
+                "External exact-cleanup proof linked to an original "
+                "outcome-unknown cleanup job. The nested result remains "
+                "bound to the same Studio, document, generation, "
+                "transaction, apply receipt, and cleanup authorization."
+            ),
+            "properties": {
+                "format": {
+                    "type": "string",
+                    "const": "studio-mcp-v2-job-resolution",
+                },
+                "schema_version": {"type": "integer", "const": 1},
+                "kind": {
+                    "type": "string",
+                    "const": "exact_multi_edit_cleanup",
+                },
+                "studio_id": {"type": "string", "format": "uuid"},
+                "client_instance_id": {
+                    "type": "string",
+                    "format": "uuid",
+                },
+                "document_epoch": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": (
+                        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                    ),
+                },
+                "generation": {"type": "integer", "minimum": 1},
+                "request_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+                "transaction_id": {
+                    "type": "string",
+                    "format": "uuid",
+                },
+                "operation": {
+                    "type": "string",
+                    "const": "studio_cleanup_multi_edit",
+                },
+                "phase": {"type": "string", "const": "cleanup"},
+                "source": {
+                    "type": "string",
+                    "enum": ["direct", "job"],
+                },
+                "resolver_job_id": {
+                    "type": "string",
+                    "maxLength": 128,
+                },
+                "success": {"type": "boolean", "const": True},
+                "safe_terminal": {
+                    "type": "boolean",
+                    "const": True,
+                },
+                "recovery_required": {
+                    "type": "boolean",
+                    "const": False,
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["cleaned", "refused"],
+                },
+                "receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "result_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "result_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100000,
+                },
+                "result": {"$ref": "#/$defs/cleanupResult"},
+            },
+            "required": [
+                "format",
+                "schema_version",
+                "kind",
+                "studio_id",
+                "client_instance_id",
+                "document_epoch",
+                "generation",
+                "request_id",
+                "transaction_id",
+                "operation",
+                "phase",
+                "source",
+                "resolver_job_id",
+                "success",
+                "safe_terminal",
+                "recovery_required",
+                "outcome",
+                "receipt_sha256",
+                "result_sha256",
+                "result_bytes",
+                "result",
+            ],
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"source": {"const": "direct"}},
+                        "required": ["source"],
+                    },
+                    "then": {
+                        "properties": {
+                            "resolver_job_id": {"const": ""}
+                        }
+                    },
+                    "else": {
+                        "properties": {
+                            "resolver_job_id": {"minLength": 1}
+                        }
+                    },
+                }
+            ],
+            "additionalProperties": False,
+        },
+        "resolutionReceipt": {
+            "oneOf": [
+                {"$ref": "#/$defs/recoveryResolutionReceipt"},
+                {"$ref": "#/$defs/cleanupResolutionReceipt"},
+            ]
         },
         "recoveryEditTargetReceipt": {
             "type": "object",
@@ -1278,7 +1751,13 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
             "type": "array",
             "items": {
                 "type": "string",
-                "enum": ["direct", "prepare", "apply", "recover"],
+                "enum": [
+                    "direct",
+                    "prepare",
+                    "apply",
+                    "recover",
+                    "cleanup",
+                ],
             },
             "maxItems": 2,
         },
@@ -1443,9 +1922,20 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                             "result_present": {"const": False},
                             "resolution_receipts": {"minItems": 1},
                             "terminal_outcome": {
-                                "const": (
-                                    "resolved_by_exact_recovery:recovered"
-                                )
+                                "enum": [
+                                    (
+                                        "resolved_by_exact_recovery:"
+                                        "recovered"
+                                    ),
+                                    (
+                                        "resolved_by_exact_cleanup:"
+                                        "cleaned"
+                                    ),
+                                    (
+                                        "resolved_by_exact_cleanup:"
+                                        "refused"
+                                    ),
+                                ]
                             },
                         }
                     },
@@ -1463,11 +1953,57 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 "properties": {
                     "status": {"const": "completed"},
                     "terminal": {"const": True},
-                    "terminal_outcome": {
-                        "const": "resolved_by_exact_recovery:recovered"
+                },
+                "oneOf": [
+                    {
+                        "properties": {
+                            "terminal_outcome": {
+                                "const": (
+                                    "resolved_by_exact_recovery:"
+                                    "recovered"
+                                )
+                            },
+                            "remote_tool": {
+                                "const": "studio_multi_edit"
+                            },
+                            "resolution_receipts": {
+                                "items": {
+                                    "$ref": (
+                                        "#/$defs/"
+                                        "recoveryResolutionReceipt"
+                                    )
+                                }
+                            },
+                        }
                     },
-                    "remote_tool": {"const": "studio_multi_edit"},
-                }
+                    {
+                        "properties": {
+                            "terminal_outcome": {
+                                "enum": [
+                                    (
+                                        "resolved_by_exact_cleanup:"
+                                        "cleaned"
+                                    ),
+                                    (
+                                        "resolved_by_exact_cleanup:"
+                                        "refused"
+                                    ),
+                                ]
+                            },
+                            "remote_tool": {
+                                "const": "studio_cleanup_multi_edit"
+                            },
+                            "resolution_receipts": {
+                                "items": {
+                                    "$ref": (
+                                        "#/$defs/"
+                                        "cleanupResolutionReceipt"
+                                    )
+                                }
+                            },
+                        }
+                    },
+                ],
             },
         },
         {

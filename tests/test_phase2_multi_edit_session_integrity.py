@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 import unittest
 
 from studio_mcp_v2.catalog import ToolCatalog
@@ -165,6 +166,10 @@ class Phase2MultiEditSessionIntegrityTests(
             "outcome": outcome,
             "safe_terminal": outcome != "recovery_required",
             "recovery_required": outcome == "recovery_required",
+            "cleanup_authorized": False,
+            "cleanup_contract": "",
+            "cleanup_authorization_sha256": "",
+            "cleanup_expires_in_ms": 0,
             "target_count": 1,
             "edit_count": 1,
             "create_count": 0,
@@ -235,6 +240,105 @@ class Phase2MultiEditSessionIntegrityTests(
         )
         self.assertIsNone(self.studio.session.multi_edit_recovery)
         self.assertFalse(self.studio.session.uncertain_requests)
+
+    async def test_available_create_cleanup_grant_allows_exact_edit_only_recovery(
+        self,
+    ) -> None:
+        cleanup_transaction_id = (
+            "00000000-0000-4000-8000-000000000900"
+        )
+        self.studio.session.multi_edit_cleanup = {
+            "transaction_id": cleanup_transaction_id,
+            "generation": self.studio.generation,
+            "prepare_request_id": "create-prepare",
+            "prepare_sha256": "9" * 64,
+            "apply_request_id": "create-apply",
+            "apply_receipt_sha256": "8" * 64,
+            "cleanup_authorization_sha256": "7" * 64,
+            "targets": [
+                {
+                    "index": 1,
+                    "kind": "create",
+                    "path": ["ReplicatedStorage", "Created"],
+                    "parent_path": ["ReplicatedStorage"],
+                    "name": "Created",
+                    "class_name": "ModuleScript",
+                    "expected_absent": True,
+                    "prepared_absent": True,
+                    "planned_sha256": "6" * 64,
+                    "planned_source_length": 0,
+                    "status": "prepared",
+                }
+            ],
+            "create_count": 1,
+            "origin_job_id": "",
+            "issued_at_monotonic": time.monotonic(),
+            "expires_at_monotonic": time.monotonic() + 600,
+            "state": "available",
+            "cleanup_request_id": "",
+        }
+
+        operation = asyncio.create_task(
+            self.service.call_tool(
+                ALLOW_ALL,
+                MULTI_EDIT_PUBLIC,
+                {
+                    "studio_id": self.studio.studio_id,
+                    **copy.deepcopy(self.arguments),
+                },
+            )
+        )
+        prepare_request = await self.studio.next_request()
+        prepared = self.prepare_receipt(prepare_request)
+        self.assertTrue(
+            self.studio.respond(prepare_request, prepared)
+        )
+        apply_request = await self.studio.next_request()
+        uncertain = self.mutation_receipt(
+            apply_request,
+            prepared,
+            outcome="recovery_required",
+        )
+        self.assertTrue(
+            self.studio.respond(apply_request, uncertain)
+        )
+        self.assertEqual(uncertain, await operation)
+        self.assertEqual(
+            "available",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
+
+        recovery_task = asyncio.create_task(
+            self.service.call_tool(
+                ALLOW_ALL,
+                RECOVER_MULTI_EDIT_PUBLIC,
+                {
+                    "studio_id": self.studio.studio_id,
+                    "transaction_id": prepared["transaction_id"],
+                },
+            )
+        )
+        recovery_request = await self.studio.next_request()
+        recovered = self.mutation_receipt(
+            recovery_request,
+            prepared,
+            recovery=True,
+        )
+        self.assertTrue(
+            self.studio.respond(recovery_request, recovered)
+        )
+        self.assertEqual(recovered, await recovery_task)
+        self.assertIsNone(self.studio.session.multi_edit_recovery)
+        self.assertEqual(
+            cleanup_transaction_id,
+            self.studio.session.multi_edit_cleanup[
+                "transaction_id"
+            ],
+        )
+        self.assertEqual(
+            "available",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
 
     async def test_recovery_fence_blocks_every_nonmatching_operation_even_without_uncertain_map(
         self,

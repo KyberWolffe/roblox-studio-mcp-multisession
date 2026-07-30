@@ -31,6 +31,8 @@ MULTI_EDIT_ATOMICITY = (
     "script-atomicity-v2"
 )
 MULTI_EDIT_RECEIPT_CONTRACT = "broker-validated-downstream-ack-v2"
+MULTI_EDIT_CLEANUP_CONTRACT = "transaction-created-unchanged-only-v1"
+MULTI_EDIT_CLEANUP_TTL_MS = 600_000
 
 
 def _utf8(value: Any, label: str, *, maximum: int, allow_empty: bool) -> bytes:
@@ -491,6 +493,10 @@ def mutation_receipt_sha256(receipt: Mapping[str, Any]) -> str:
         receipt["outcome"],
         receipt["safe_terminal"],
         receipt["recovery_required"],
+        receipt["cleanup_authorized"],
+        receipt["cleanup_contract"],
+        receipt["cleanup_authorization_sha256"],
+        receipt["cleanup_expires_in_ms"],
         receipt["target_count"],
         receipt["edit_count"],
         receipt["create_count"],
@@ -534,6 +540,74 @@ def mutation_receipt_sha256(receipt: Mapping[str, Any]) -> str:
             if field_name == "parent_path":
                 _append_path(parts, target[field_name])
                 continue
+            _append_canonical(parts, target[field_name])
+    return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()
+
+
+def cleanup_authorization_sha256(receipt: Mapping[str, Any]) -> str:
+    parts: List[str] = []
+    for value in (
+        "studio-multi-edit-cleanup-authorization-v1",
+        receipt["studio_id"],
+        receipt["client_instance_id"],
+        receipt["document_epoch"],
+        receipt["generation"],
+        receipt["transaction_id"],
+        receipt["prepare_request_id"],
+        receipt["prepare_sha256"],
+        receipt["request_id"],
+        receipt["cleanup_contract"],
+        receipt["cleanup_expires_in_ms"],
+    ):
+        _append_canonical(parts, value)
+    return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()
+
+
+def cleanup_receipt_sha256(receipt: Mapping[str, Any]) -> str:
+    parts: List[str] = []
+    for value in (
+        "studio-multi-edit-cleanup-v1",
+        receipt["phase"],
+        receipt["studio_id"],
+        receipt["client_instance_id"],
+        receipt["document_epoch"],
+        receipt["generation"],
+        receipt["request_id"],
+        receipt["transaction_id"],
+        receipt["prepare_request_id"],
+        receipt["prepare_sha256"],
+        receipt["apply_request_id"],
+        receipt["apply_receipt_sha256"],
+        receipt["cleanup_authorization_sha256"],
+        receipt["cleanup_contract"],
+        receipt["evidence_mode"],
+        receipt["prior_terminal_outcome"],
+        receipt["prior_terminal_receipt_sha256"],
+        receipt["outcome"],
+        receipt["safe_terminal"],
+        receipt["recovery_required"],
+        receipt["create_count"],
+    ):
+        _append_canonical(parts, value)
+    targets = receipt["targets"]
+    _append_canonical(parts, len(targets))
+    for target in targets:
+        _append_canonical(parts, target["index"])
+        _append_canonical(parts, target["kind"])
+        _append_path(parts, target["path"])
+        _append_path(parts, target["parent_path"])
+        for field_name in (
+            "name",
+            "class_name",
+            "expected_absent",
+            "planned_sha256",
+            "planned_source_length",
+            "observed_before_state",
+            "observed_after_state",
+            "observed_after_class_name",
+            "observed_after_sha256",
+            "status",
+        ):
             _append_canonical(parts, target[field_name])
     return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()
 

@@ -1,4 +1,4 @@
-"""Exact isolated Multisession rc.5 -> rc.6 -> rc.5 package proof.
+"""Exact isolated Multisession rc.5 -> rc.7 -> rc.5 package proof.
 
 This proof is deliberately separate from the immutable rc.4 migration proof.
 It executes both real portable installers in a disposable synthetic home while
@@ -33,7 +33,7 @@ from .proof import ProofError, _assert_doctor_healthy
 
 
 PRIOR_VERSION = "0.4.0-rc.5"
-CANDIDATE_VERSION = "0.4.0-rc.6"
+CANDIDATE_VERSION = "0.4.0-rc.7"
 PRIOR_ARCHIVE_SHA256 = (
     "d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d"
 )

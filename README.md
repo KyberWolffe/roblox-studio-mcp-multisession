@@ -11,12 +11,14 @@ name is `Roblox_Studio_Multisession`. Every Studio-bound tool requires an
 explicit, server-assigned `studio_id`. There is no active Studio pointer,
 implicit single-session choice, or default-session fallback.
 
-Version `0.4.0-rc.6` is an isolated, unpublished script-lifecycle candidate
-based on the published and installed `0.4.0-rc.5` state. It extends
-revision-protected multi-edit with expected-absent creation of bounded
-`Script`, `LocalScript`, and `ModuleScript` instances, plus transaction-proven
-compensating deletion. The durable installed rc.5 bytes remain untouched, and
-installed `0.4.0-rc.4` remains rc.5's immutable immediate rollback target.
+Version `0.4.0-rc.7` is an isolated, unpublished correction to the rejected
+rc.6 script-lifecycle candidate, based on the published and installed
+`0.4.0-rc.5` state. It retains expected-absent creation of bounded `Script`,
+`LocalScript`, and `ModuleScript` instances and adds a distinct, identity-bound
+authorization for later cleanup of only exact unchanged
+transaction-created scripts. The durable installed rc.5 bytes remain
+untouched, and installed `0.4.0-rc.4` remains rc.5's immutable immediate
+rollback target.
 The `0.3.0-rc.4` restore artifact remains available as older recovery history.
 Rc.5 transactionally replaced an owned former
 `Roblox_Studio_v2` Codex registration with
@@ -334,7 +336,7 @@ hash-fenced.
 - [Testing and release proof](docs/TESTING.md)
 - [GitHub distribution](docs/GITHUB_DISTRIBUTION.md)
 - [Design provenance and source limits](docs/SOURCE_AUDIT.md)
-- [Current candidate release notes](docs/RELEASE_NOTES_0.4.0-rc.6.md)
+- [Current candidate release notes](docs/RELEASE_NOTES_0.4.0-rc.7.md)
 - [Published rc.5 release notes](docs/RELEASE_NOTES_0.4.0-rc.5.md)
 - [Changelog](CHANGELOG.md)
 - [License status](LICENSE_STATUS.md)

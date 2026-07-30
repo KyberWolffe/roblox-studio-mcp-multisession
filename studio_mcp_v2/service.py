@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from .auth import AuthorizationPolicy, Principal
 from .catalog import ToolCatalog
 from .errors import ValidationError
-from .multi_edit import normalize_multi_edit_arguments
+from .multi_edit import SHA256_RE, normalize_multi_edit_arguments
 from .registry import SessionRegistry
 from .schema_validation import validate_tool_arguments
 from .validation import (
@@ -36,8 +36,41 @@ JOB_APPROVED_REMOTE_TOOLS = frozenset(
         # The only mutations with explicit prepare/apply/recovery receipts.
         "studio_multi_edit",
         "studio_recover_multi_edit",
+        "studio_cleanup_multi_edit",
     }
 )
+
+
+def _normalize_cleanup_arguments(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    required = {
+        "transaction_id",
+        "apply_receipt_sha256",
+        "cleanup_authorization_sha256",
+    }
+    if frozenset(arguments) != frozenset(required):
+        raise ValidationError(
+            "multi-edit cleanup requires exactly transaction_id, "
+            "apply_receipt_sha256, and cleanup_authorization_sha256"
+        )
+    normalized = {
+        "transaction_id": validate_transaction_id(
+            arguments["transaction_id"]
+        )
+    }
+    for field_name in (
+        "apply_receipt_sha256",
+        "cleanup_authorization_sha256",
+    ):
+        value = arguments[field_name]
+        if (
+            not isinstance(value, str)
+            or SHA256_RE.fullmatch(value) is None
+        ):
+            raise ValidationError(
+                field_name + " must be a lowercase SHA-256 digest"
+            )
+        normalized[field_name] = value
+    return normalized
 
 
 class ProxyService:
@@ -95,6 +128,10 @@ class ProxyService:
                 )
             remote_arguments["transaction_id"] = validate_transaction_id(
                 remote_arguments["transaction_id"]
+            )
+        elif definition.remote_name == "studio_cleanup_multi_edit":
+            remote_arguments = _normalize_cleanup_arguments(
+                remote_arguments
             )
         timeout_ms = (
             PLAY_OPERATION_TIMEOUT_MS
@@ -183,6 +220,8 @@ class ProxyService:
                     arguments["transaction_id"]
                 )
             }
+        elif definition.remote_name == "studio_cleanup_multi_edit":
+            arguments = _normalize_cleanup_arguments(arguments)
         timeout_ms = validate_timeout_ms(timeout_ms_value)
 
         def reauthorize_job() -> None:

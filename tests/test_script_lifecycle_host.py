@@ -5,13 +5,21 @@ import copy
 import hashlib
 import unittest
 
-from studio_mcp_v2.errors import RemoteToolError, ValidationError
+from studio_mcp_v2.errors import (
+    RemoteToolError,
+    SessionConflictError,
+    ValidationError,
+)
 from studio_mcp_v2.multi_edit import (
     MAX_MULTI_EDIT_SOURCE_BYTES,
     MAX_MULTI_EDIT_TARGETS,
     MULTI_EDIT_ATOMICITY,
+    MULTI_EDIT_CLEANUP_CONTRACT,
+    MULTI_EDIT_CLEANUP_TTL_MS,
     MULTI_EDIT_ORDERING_VERSION,
     MULTI_EDIT_RECEIPT_CONTRACT,
+    cleanup_authorization_sha256,
+    cleanup_receipt_sha256,
     mutation_receipt_sha256,
     normalize_multi_edit_arguments,
     prepare_receipt_sha256,
@@ -273,11 +281,18 @@ class ScriptLifecycleModelTests(unittest.TestCase):
             "outcome": "applied",
             "safe_terminal": True,
             "recovery_required": False,
+            "cleanup_authorized": True,
+            "cleanup_contract": MULTI_EDIT_CLEANUP_CONTRACT,
+            "cleanup_authorization_sha256": "",
+            "cleanup_expires_in_ms": MULTI_EDIT_CLEANUP_TTL_MS,
             "target_count": 1,
             "edit_count": 0,
             "create_count": 1,
             "targets": [mutation_target],
         }
+        mutation["cleanup_authorization_sha256"] = (
+            cleanup_authorization_sha256(mutation)
+        )
         mutation_hash = mutation_receipt_sha256(mutation)
 
         prepare_fields = (
@@ -323,6 +338,132 @@ class ScriptLifecycleModelTests(unittest.TestCase):
                     mutation_hash, mutation_receipt_sha256(drifted)
                 )
 
+        authorization_hash = mutation[
+            "cleanup_authorization_sha256"
+        ]
+        for field in (
+            "studio_id",
+            "client_instance_id",
+            "document_epoch",
+            "generation",
+            "transaction_id",
+            "prepare_request_id",
+            "prepare_sha256",
+            "request_id",
+            "cleanup_contract",
+            "cleanup_expires_in_ms",
+        ):
+            drifted = copy.deepcopy(mutation)
+            value = drifted[field]
+            drifted[field] = (
+                value + 1 if isinstance(value, int) else value + "-drift"
+            )
+            with self.subTest(
+                receipt="cleanup_authorization", field=field
+            ):
+                self.assertNotEqual(
+                    authorization_hash,
+                    cleanup_authorization_sha256(drifted),
+                )
+
+    def test_cleanup_receipt_hash_binds_identity_and_target_evidence(
+        self,
+    ) -> None:
+        receipt = {
+            "phase": "cleanup",
+            "studio_id": "studio",
+            "client_instance_id": "client",
+            "document_epoch": "document",
+            "generation": 1,
+            "request_id": "cleanup-request",
+            "transaction_id": "transaction",
+            "prepare_request_id": "prepare-request",
+            "prepare_sha256": "1" * 64,
+            "apply_request_id": "apply-request",
+            "apply_receipt_sha256": "2" * 64,
+            "cleanup_authorization_sha256": "3" * 64,
+            "cleanup_contract": MULTI_EDIT_CLEANUP_CONTRACT,
+            "evidence_mode": "cleanup_execution",
+            "prior_terminal_outcome": "",
+            "prior_terminal_receipt_sha256": "",
+            "outcome": "cleaned",
+            "safe_terminal": True,
+            "recovery_required": False,
+            "create_count": 1,
+            "targets": [
+                {
+                    "index": 1,
+                    "kind": "create",
+                    "path": ["ReplicatedStorage", "Created"],
+                    "parent_path": ["ReplicatedStorage"],
+                    "name": "Created",
+                    "class_name": "ModuleScript",
+                    "expected_absent": True,
+                    "planned_sha256": "4" * 64,
+                    "planned_source_length": 12,
+                    "observed_before_state": "created_exact",
+                    "observed_after_state": "absent",
+                    "observed_after_class_name": "",
+                    "observed_after_sha256": "",
+                    "status": "deleted",
+                }
+            ],
+        }
+        receipt_hash = cleanup_receipt_sha256(receipt)
+
+        for field in (
+            "phase",
+            "studio_id",
+            "client_instance_id",
+            "document_epoch",
+            "generation",
+            "request_id",
+            "transaction_id",
+            "prepare_request_id",
+            "prepare_sha256",
+            "apply_request_id",
+            "apply_receipt_sha256",
+            "cleanup_authorization_sha256",
+            "cleanup_contract",
+            "evidence_mode",
+            "prior_terminal_outcome",
+            "prior_terminal_receipt_sha256",
+            "outcome",
+            "safe_terminal",
+            "recovery_required",
+            "create_count",
+        ):
+            drifted = copy.deepcopy(receipt)
+            value = drifted[field]
+            if isinstance(value, bool):
+                drifted[field] = not value
+            elif isinstance(value, int):
+                drifted[field] = value + 1
+            else:
+                drifted[field] = value + "-drift"
+            with self.subTest(receipt="cleanup", field=field):
+                self.assertNotEqual(
+                    receipt_hash, cleanup_receipt_sha256(drifted)
+                )
+
+        for field in receipt["targets"][0]:
+            drifted = copy.deepcopy(receipt)
+            value = drifted["targets"][0][field]
+            if isinstance(value, bool):
+                drifted["targets"][0][field] = not value
+            elif isinstance(value, int):
+                drifted["targets"][0][field] = value + 1
+            elif isinstance(value, list):
+                drifted["targets"][0][field] = value + ["Drift"]
+            else:
+                drifted["targets"][0][field] = value + "-drift"
+            with self.subTest(
+                receipt="cleanup_target", field=field
+            ):
+                self.assertNotEqual(
+                    receipt_hash, cleanup_receipt_sha256(drifted)
+                )
+
     def test_job_admission_hashes_source_without_retaining_it(self) -> None:
         arguments = normalize_multi_edit_arguments(
             {
@@ -358,7 +499,12 @@ class ScriptLifecycleSessionTests(unittest.IsolatedAsyncioTestCase):
         self.studio = await FakeStudio.create(
             self.registry,
             "Lifecycle host",
-            {"studio_multi_edit", "studio_recover_multi_edit"},
+            {
+                "studio_multi_edit",
+                "studio_recover_multi_edit",
+                "studio_cleanup_multi_edit",
+                "studio_get_console",
+            },
         )
         self.source = "return {created = true}\n"
         self.arguments = {
@@ -459,6 +605,20 @@ class ScriptLifecycleSessionTests(unittest.IsolatedAsyncioTestCase):
             "outcome": outcome,
             "safe_terminal": outcome != "recovery_required",
             "recovery_required": outcome == "recovery_required",
+            "cleanup_authorized": (
+                not recovery and outcome == "applied"
+            ),
+            "cleanup_contract": (
+                MULTI_EDIT_CLEANUP_CONTRACT
+                if not recovery and outcome == "applied"
+                else ""
+            ),
+            "cleanup_authorization_sha256": "",
+            "cleanup_expires_in_ms": (
+                MULTI_EDIT_CLEANUP_TTL_MS
+                if not recovery and outcome == "applied"
+                else 0
+            ),
             "target_count": 1,
             "edit_count": 0,
             "create_count": 1,
@@ -489,7 +649,115 @@ class ScriptLifecycleSessionTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         }
+        if receipt["cleanup_authorized"]:
+            receipt["cleanup_authorization_sha256"] = (
+                cleanup_authorization_sha256(receipt)
+            )
         receipt["receipt_sha256"] = mutation_receipt_sha256(receipt)
+        return receipt
+
+    async def _complete_creation(self):
+        operation = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_multi_edit",
+                copy.deepcopy(self.arguments),
+                2_000,
+            )
+        )
+        prepare_request = await self.studio.next_request()
+        prepared = self._prepared(prepare_request)
+        self.assertTrue(self.studio.respond(prepare_request, prepared))
+        apply_request = await self.studio.next_request()
+        applied = self._mutation(apply_request, prepared)
+        self.assertTrue(self.studio.respond(apply_request, applied))
+        self.assertEqual(applied, await operation)
+        return prepared, applied
+
+    @staticmethod
+    def _cleanup_arguments(applied):
+        return {
+            "transaction_id": applied["transaction_id"],
+            "apply_receipt_sha256": applied["receipt_sha256"],
+            "cleanup_authorization_sha256": applied[
+                "cleanup_authorization_sha256"
+            ],
+        }
+
+    def _cleanup(
+        self,
+        request,
+        applied,
+        *,
+        outcome: str = "cleaned",
+        before: str = "created_exact",
+        after: str = "absent",
+        status: str = "deleted",
+        evidence_mode: str = "cleanup_execution",
+        prior_terminal_outcome: str = "",
+        prior_terminal_receipt_sha256: str = "",
+    ):
+        cleanup = self.studio.session.multi_edit_cleanup
+        self.assertIsNotNone(cleanup)
+        expected = cleanup["targets"][0]
+        exact_after = after == "created_exact"
+        receipt = {
+            "adapter": "studio-mcp-v2-durable-plugin",
+            "v": 2,
+            "operation": "studio_cleanup_multi_edit",
+            "phase": "cleanup",
+            "studio_id": self.studio.studio_id,
+            "client_instance_id": self.studio.client_instance_id,
+            "document_epoch": self.studio.registration.document_epoch,
+            "generation": request["generation"],
+            "request_id": request["request_id"],
+            "transaction_id": applied["transaction_id"],
+            "prepare_request_id": applied["prepare_request_id"],
+            "prepare_sha256": applied["prepare_sha256"],
+            "apply_request_id": applied["request_id"],
+            "apply_receipt_sha256": applied["receipt_sha256"],
+            "cleanup_authorization_sha256": applied[
+                "cleanup_authorization_sha256"
+            ],
+            "cleanup_contract": MULTI_EDIT_CLEANUP_CONTRACT,
+            "evidence_mode": evidence_mode,
+            "prior_terminal_outcome": prior_terminal_outcome,
+            "prior_terminal_receipt_sha256": (
+                prior_terminal_receipt_sha256
+            ),
+            "outcome": outcome,
+            "safe_terminal": outcome != "cleanup_required",
+            "recovery_required": outcome == "cleanup_required",
+            "create_count": 1,
+            "targets": [
+                {
+                    "index": expected["index"],
+                    "kind": "create",
+                    "path": copy.deepcopy(expected["path"]),
+                    "parent_path": copy.deepcopy(
+                        expected["parent_path"]
+                    ),
+                    "name": expected["name"],
+                    "class_name": expected["class_name"],
+                    "expected_absent": True,
+                    "planned_sha256": expected["planned_sha256"],
+                    "planned_source_length": expected[
+                        "planned_source_length"
+                    ],
+                    "observed_before_state": before,
+                    "observed_after_state": after,
+                    "observed_after_class_name": (
+                        expected["class_name"] if exact_after else ""
+                    ),
+                    "observed_after_sha256": (
+                        expected["planned_sha256"]
+                        if exact_after
+                        else ""
+                    ),
+                    "status": status,
+                }
+            ],
+        }
+        receipt["receipt_sha256"] = cleanup_receipt_sha256(receipt)
         return receipt
 
     async def test_creation_only_two_phase_receipts_are_identity_bound(
@@ -523,6 +791,544 @@ class ScriptLifecycleSessionTests(unittest.IsolatedAsyncioTestCase):
             self.studio.session.multi_edit_prepared_receipt
         )
         self.assertIsNone(self.studio.session.multi_edit_recovery)
+        cleanup = self.studio.session.multi_edit_cleanup
+        self.assertIsNotNone(cleanup)
+        self.assertEqual("available", cleanup["state"])
+        self.assertEqual(
+            applied["receipt_sha256"],
+            cleanup["apply_receipt_sha256"],
+        )
+        self.assertEqual(
+            applied["cleanup_authorization_sha256"],
+            cleanup["cleanup_authorization_sha256"],
+        )
+
+    async def test_exact_cleanup_deletes_only_authorized_create_and_replay_fails(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+
+        cleanup_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        cleanup_request = await self.studio.next_request()
+        self.assertEqual(arguments, cleanup_request["args"])
+        cleaned = self._cleanup(cleanup_request, applied)
+        self.assertTrue(
+            self.studio.respond(cleanup_request, cleaned)
+        )
+        self.assertEqual(cleaned, await cleanup_task)
+
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertFalse(self.studio.session.uncertain_requests)
+        self.assertEqual(
+            1,
+            self.studio.session.multi_edit_cleanup_retirement_count,
+        )
+        tombstone = (
+            self.studio.session.multi_edit_cleanup_tombstones[-1]
+        )
+        self.assertEqual("cleanup_cleaned", tombstone["reason"])
+        self.assertEqual(
+            cleaned["receipt_sha256"],
+            tombstone["cleanup_receipt_sha256"],
+        )
+
+        with self.assertRaises(SessionConflictError):
+            await self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+
+    async def test_wrong_hash_and_wrong_session_cleanup_fail_before_dispatch(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        peer = await FakeStudio.create(
+            self.registry,
+            "Lifecycle peer",
+            {"studio_cleanup_multi_edit"},
+        )
+
+        variants = []
+        wrong_transaction = copy.deepcopy(arguments)
+        wrong_transaction["transaction_id"] = (
+            "00000000-0000-4000-8000-000000000999"
+        )
+        variants.append(wrong_transaction)
+        for field_name in (
+            "apply_receipt_sha256",
+            "cleanup_authorization_sha256",
+        ):
+            variant = copy.deepcopy(arguments)
+            variant[field_name] = (
+                "f" * 64
+                if variant[field_name] != "f" * 64
+                else "e" * 64
+            )
+            variants.append(variant)
+
+        for variant in variants:
+            with self.subTest(field=variant):
+                with self.assertRaises(SessionConflictError):
+                    await self.studio.session.invoke(
+                        "studio_cleanup_multi_edit",
+                        variant,
+                        2_000,
+                    )
+                self.assertIsNone(
+                    await self.studio.transport.poll(0.01)
+                )
+
+        with self.assertRaises(SessionConflictError):
+            await peer.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        self.assertIsNone(await peer.transport.poll(0.01))
+        self.assertEqual(
+            "available",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
+        with self.assertRaises(SessionConflictError):
+            await self.studio.session.invoke(
+                "studio_multi_edit",
+                copy.deepcopy(self.arguments),
+                2_000,
+            )
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+
+    async def test_expired_and_reconnected_cleanup_authority_cannot_dispatch(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        cleanup = self.studio.session.multi_edit_cleanup
+        cleanup["expires_at_monotonic"] = 0
+
+        with self.assertRaises(SessionConflictError):
+            await self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertEqual(
+            "cleanup_authorization_expired",
+            self.studio.session.multi_edit_cleanup_tombstones[-1][
+                "reason"
+            ],
+        )
+
+        # A fresh transaction's still-available authority is conservatively
+        # retired when its exact Studio generation disconnects.
+        _, reconnect_applied = await self._complete_creation()
+        reconnect_arguments = self._cleanup_arguments(
+            reconnect_applied
+        )
+        generation = self.studio.generation
+        self.assertTrue(self.studio.disconnect())
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertEqual(
+            "connection_lost_before_cleanup",
+            self.studio.session.multi_edit_cleanup_tombstones[-1][
+                "reason"
+            ],
+        )
+        await self.studio.reconnect()
+        self.assertGreater(self.studio.generation, generation)
+        with self.assertRaises(SessionConflictError):
+            await self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                reconnect_arguments,
+                2_000,
+            )
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+
+    async def test_changed_content_is_preserved_and_cleanup_refused(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        cleanup_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        cleanup_request = await self.studio.next_request()
+        refused = self._cleanup(
+            cleanup_request,
+            applied,
+            outcome="refused",
+            before="present_unproven",
+            after="present_unproven",
+            status="preserved_conflict",
+        )
+        self.assertTrue(
+            self.studio.respond(cleanup_request, refused)
+        )
+        self.assertEqual(refused, await cleanup_task)
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertEqual(
+            "cleanup_refused",
+            self.studio.session.multi_edit_cleanup_tombstones[-1][
+                "reason"
+            ],
+        )
+        self.assertEqual(
+            "preserved_conflict",
+            refused["targets"][0]["status"],
+        )
+
+    async def test_cleanup_required_quarantines_to_exact_retry(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        first_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        first_request = await self.studio.next_request()
+        required = self._cleanup(
+            first_request,
+            applied,
+            outcome="cleanup_required",
+            before="created_exact",
+            after="unavailable",
+            status="cleanup_required",
+        )
+        self.assertTrue(
+            self.studio.respond(first_request, required)
+        )
+        self.assertEqual(required, await first_task)
+        self.assertEqual(
+            "cleanup_required",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
+        self.assertIn(
+            first_request["request_id"],
+            self.studio.session.uncertain_requests,
+        )
+
+        with self.assertRaises(SessionConflictError):
+            await self.studio.session.invoke(
+                "studio_get_console", {}, 2_000
+            )
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+
+        retry_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        retry_request = await self.studio.next_request()
+        cleaned = self._cleanup(retry_request, applied)
+        self.assertTrue(self.studio.respond(retry_request, cleaned))
+        self.assertEqual(cleaned, await retry_task)
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertFalse(self.studio.session.uncertain_requests)
+
+    async def test_partial_cleanup_expiry_blocks_new_direct_and_job_dispatch(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        first_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        first_request = await self.studio.next_request()
+        required = self._cleanup(
+            first_request,
+            applied,
+            outcome="cleanup_required",
+            before="created_exact",
+            after="unavailable",
+            status="cleanup_required",
+        )
+        self.assertTrue(
+            self.studio.respond(first_request, required)
+        )
+        self.assertEqual(required, await first_task)
+
+        cleanup = self.studio.session.multi_edit_cleanup
+        cleanup["expires_at_monotonic"] = 0
+        snapshot = self.studio.session.snapshot()
+        self.assertEqual(
+            "cleanup_expired_settlement",
+            snapshot["multi_edit_cleanup"]["state"],
+        )
+        self.assertIn(
+            first_request["request_id"],
+            self.studio.session.uncertain_requests,
+        )
+
+        with self.assertRaises(SessionConflictError):
+            await self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+
+        cleanup_job = self.studio.session.start_job(
+            "studio_cleanup_multi_edit_v2",
+            "studio_cleanup_multi_edit",
+            copy.deepcopy(arguments),
+            2_000,
+        )
+        await cleanup_job.task
+        self.assertEqual("failed", cleanup_job.status)
+        self.assertFalse(cleanup_job.dispatched)
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+        self.assertEqual(
+            "cleanup_expired_settlement",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
+
+        # Settlement for the already-dispatched request remains admissible
+        # after expiry; this does not dispatch another deletion.
+        cleaned = self._cleanup(first_request, applied)
+        self.assertTrue(
+            self.studio.respond(first_request, cleaned)
+        )
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertFalse(self.studio.session.uncertain_requests)
+        self.assertEqual(
+            "cleanup_expired_settlement",
+            self.studio.session.multi_edit_cleanup_tombstones[-1][
+                "prior_state"
+            ],
+        )
+        self.assertIs(
+            self.studio.session.multi_edit_cleanup_tombstones[-1][
+                "authorization_expired_before_settlement"
+            ],
+            True,
+        )
+        self.assertIsInstance(
+            self.studio.session.multi_edit_cleanup_tombstones[-1][
+                "authorization_expired_at"
+            ],
+            float,
+        )
+        self.assertFalse(
+            self.studio.respond(first_request, cleaned)
+        )
+
+    async def test_cleanup_job_dispatched_before_expiry_can_settle_late(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        first_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        first_request = await self.studio.next_request()
+        required = self._cleanup(
+            first_request,
+            applied,
+            outcome="cleanup_required",
+            before="created_exact",
+            after="unavailable",
+            status="cleanup_required",
+        )
+        self.assertTrue(
+            self.studio.respond(first_request, required)
+        )
+        self.assertEqual(required, await first_task)
+
+        cleanup_job = self.studio.session.start_job(
+            "studio_cleanup_multi_edit_v2",
+            "studio_cleanup_multi_edit",
+            copy.deepcopy(arguments),
+            2_000,
+        )
+        retry_request = await self.studio.next_request()
+        self.assertTrue(cleanup_job.dispatched)
+        self.studio.session.multi_edit_cleanup[
+            "expires_at_monotonic"
+        ] = 0
+        self.assertEqual(
+            "cleanup_expired_settlement",
+            self.studio.session.snapshot()[
+                "multi_edit_cleanup"
+            ]["state"],
+        )
+        self.studio.session._set_multi_edit_cleanup_required(
+            retry_request["request_id"],
+            retry_request["generation"],
+            "late_timeout_after_expiry",
+        )
+        self.assertEqual(
+            "cleanup_expired_settlement",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
+
+        cleaned = self._cleanup(retry_request, applied)
+        self.assertTrue(
+            self.studio.respond(retry_request, cleaned)
+        )
+        await cleanup_job.task
+        self.assertEqual("completed", cleanup_job.status)
+        self.assertEqual("cleaned", cleanup_job.terminal_outcome)
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertFalse(self.studio.session.uncertain_requests)
+
+    async def test_cached_cleanup_terminal_outcomes_must_match(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        cleanup_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        cleanup_request = await self.studio.next_request()
+        mismatched = self._cleanup(
+            cleanup_request,
+            applied,
+            outcome="cleaned",
+            evidence_mode="cached_cleanup_terminal",
+            prior_terminal_outcome="refused",
+            prior_terminal_receipt_sha256="a" * 64,
+        )
+        self.assertTrue(
+            self.studio.respond(cleanup_request, mismatched)
+        )
+        with self.assertRaises(RemoteToolError):
+            await cleanup_task
+        self.assertEqual(
+            "cleanup_required",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
+        self.assertIn(
+            cleanup_request["request_id"],
+            self.studio.session.uncertain_requests,
+        )
+
+    async def test_tampered_cleanup_receipt_is_quarantined_before_retry(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+        first_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        first_request = await self.studio.next_request()
+        tampered = self._cleanup(first_request, applied)
+        tampered["document_epoch"] = "wrong-document"
+        tampered["receipt_sha256"] = cleanup_receipt_sha256(
+            tampered
+        )
+        self.assertTrue(
+            self.studio.respond(first_request, tampered)
+        )
+        with self.assertRaises(RemoteToolError):
+            await first_task
+        self.assertEqual(
+            "cleanup_required",
+            self.studio.session.multi_edit_cleanup["state"],
+        )
+        self.assertIn(
+            first_request["request_id"],
+            self.studio.session.uncertain_requests,
+        )
+
+        retry_task = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_cleanup_multi_edit",
+                copy.deepcopy(arguments),
+                2_000,
+            )
+        )
+        retry_request = await self.studio.next_request()
+        cleaned = self._cleanup(retry_request, applied)
+        self.assertTrue(self.studio.respond(retry_request, cleaned))
+        self.assertEqual(cleaned, await retry_task)
+        self.assertIsNone(self.studio.session.multi_edit_cleanup)
+        self.assertFalse(self.studio.session.uncertain_requests)
+
+    async def test_cleanup_job_preserves_admission_identity_and_fifo(
+        self,
+    ) -> None:
+        _, applied = await self._complete_creation()
+        arguments = self._cleanup_arguments(applied)
+
+        held_read = asyncio.create_task(
+            self.studio.session.invoke(
+                "studio_get_console", {}, 2_000
+            )
+        )
+        read_request = await self.studio.next_request()
+        cleanup_job = self.studio.session.start_job(
+            "studio_cleanup_multi_edit_v2",
+            "studio_cleanup_multi_edit",
+            copy.deepcopy(arguments),
+            2_000,
+        )
+        await asyncio.sleep(0)
+        self.assertIsNone(await self.studio.transport.poll(0.01))
+        self.assertTrue(
+            self.studio.respond(
+                read_request,
+                {"entries": []},
+            )
+        )
+        self.assertEqual({"entries": []}, await held_read)
+
+        cleanup_request = await self.studio.next_request()
+        cleaned = self._cleanup(cleanup_request, applied)
+        self.assertTrue(
+            self.studio.respond(cleanup_request, cleaned)
+        )
+        await cleanup_job.task
+        self.assertEqual("completed", cleanup_job.status)
+        self.assertEqual("cleaned", cleanup_job.terminal_outcome)
+        self.assertEqual(["cleanup"], cleanup_job.dispatched_phases)
+        self.assertEqual(
+            arguments["transaction_id"],
+            cleanup_job.admitted_contract["transaction_id"],
+        )
+        self.assertEqual(
+            arguments["cleanup_authorization_sha256"],
+            cleanup_job.admitted_contract[
+                "cleanup_authorization_sha256"
+            ],
+        )
+        self.assertEqual(cleaned, cleanup_job.result)
 
     async def test_changed_creation_requires_exact_same_generation_recovery(
         self,

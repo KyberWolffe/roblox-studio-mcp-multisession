@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -179,7 +180,7 @@ class LifecycleConfigurationTests(unittest.TestCase):
         self.assertEqual(
             "studio-mcp-v2-durable-catalog", report["format"]
         )
-        self.assertEqual("0.4.0-rc.6", report["catalog_version"])
+        self.assertEqual("0.4.0-rc.7", report["catalog_version"])
         self.assertEqual(
             "production-v1-snapshot-2026-07-26",
             report["upstream"]["version"],
@@ -374,6 +375,52 @@ class LifecycleSafetySummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "play_transition_active",
             summary["stop_blockers"][0]["reasons"],
+        )
+
+    async def test_retained_creation_cleanup_is_an_auditable_stop_blocker(
+        self,
+    ):
+        registry = SessionRegistry()
+        session, _ = await registry.register(
+            client_instance_id=str(uuid.uuid4()),
+            registration_secret="c" * 48,
+            document_epoch="cleanup-lifecycle-document",
+            metadata={"name": "cleanup-place", "mode": "edit"},
+            capabilities=[],
+        )
+        session.multi_edit_cleanup = {
+            "state": "available",
+            "expires_at_monotonic": time.monotonic() + 60,
+        }
+
+        summary = registry.lifecycle_summary()
+
+        self.assertFalse(summary["stop_safe"])
+        self.assertEqual(
+            "available",
+            summary["sessions"][0]["multi_edit_cleanup_state"],
+        )
+        self.assertIn(
+            "multi_edit_cleanup_authorization",
+            summary["stop_blockers"][0]["reasons"],
+        )
+        rendered = json.dumps(summary, sort_keys=True)
+        self.assertNotIn("transaction_id", rendered)
+        self.assertNotIn("cleanup_authorization_sha256", rendered)
+
+        session.multi_edit_cleanup["state"] = "cleanup_required"
+        session.multi_edit_cleanup["expires_at_monotonic"] = 0
+        expired_summary = registry.lifecycle_summary()
+        self.assertFalse(expired_summary["stop_safe"])
+        self.assertEqual(
+            "cleanup_expired_settlement",
+            expired_summary["sessions"][0][
+                "multi_edit_cleanup_state"
+            ],
+        )
+        self.assertIn(
+            "multi_edit_cleanup_expired_settlement",
+            expired_summary["stop_blockers"][0]["reasons"],
         )
 
     async def test_terminal_disconnected_session_is_safe_then_audited_and_retired(

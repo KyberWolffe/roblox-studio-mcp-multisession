@@ -14,7 +14,7 @@ resume credential, generation, and authorization policy remain separate checks.
 
 ## Durable operation surface
 
-The isolated 0.4.0-rc.6 candidate catalog exposes exactly these Studio-side
+The isolated 0.4.0-rc.7 candidate catalog exposes exactly these Studio-side
 handlers. The live-installed `0.4.0-rc.5` catalog remains unchanged, with
 `0.4.0-rc.4` retained as its immediate rollback:
 
@@ -27,6 +27,7 @@ handlers. The live-installed `0.4.0-rc.5` catalog remains unchanged, with
 - `studio_update_script`
 - `studio_multi_edit`
 - `studio_recover_multi_edit`
+- `studio_cleanup_multi_edit`
 - `studio_set_attribute`
 - `studio_get_console`
 - `studio_capture_screenshot`
@@ -117,6 +118,31 @@ a same-generation safe `aborted_preflight`, `rolled_back`, or `recovered`
 receipt and binds the prior outcome plus exact prior receipt SHA-256; it never
 replays an `applied` or `recovery_required` receipt.
 
+A proven successful apply that created scripts returns a distinct cleanup
+authorization rather than keeping normal recovery open. The authorization is
+bound to the exact Studio/client/document/generation, transaction, prepare
+receipt, apply request, and apply receipt, and expires after ten minutes.
+`studio_cleanup_multi_edit` accepts only that transaction UUID, apply-receipt
+SHA-256, and cleanup-authorization SHA-256; callers cannot submit target paths
+or source.
+
+The cleanup grant is retained separately from the normal multi-edit plan, so a
+bounded edit-only transaction can restore an existing script while the
+creation cleanup remains available. Before any deletion, every created target
+must still match its retained Instance, parent, exact path, name, class, source
+bytes/SHA-256, bounded mutable-property fingerprint, post-exposure change
+latch, and zero-child, zero-attribute, zero-tag state. Any drift produces a
+non-deleting `refused` receipt. A partial or unproven dispatch produces
+`cleanup_required` and quarantines the session for only the same exact cleanup
+in the same generation, which can prove already-absent targets and remove only
+remaining unchanged targets. Safe `cleaned` or `refused` evidence is
+cached only for bounded response-loss replay. The original absolute ten-minute
+deadline never renews: after it passes, no new cleanup execution or deletion
+is admitted. Dispatched or partial cleanup remains settlement-only quarantine
+so a safe terminal receipt from a request sent before expiry can still close
+the audit fence; cached evidence is accepted only when its current and prior
+terminal outcomes are equal.
+
 State reads keep lifecycle state and controller execution predicates separate.
 The bound plugin controller is an Edit DataModel request channel, so connected
 state reports `available_datamodel_types: ["Edit"]`. Raw `IsServer()` or
@@ -183,7 +209,8 @@ operator-owned mapping is
 operation is compatible only when:
 
 1. its exact upstream name is present in the operator mapping;
-2. the mapping resolves to one of the fourteen existing durable handlers;
+2. the mapping resolves to one of the fifteen existing durable handlers,
+   including the separate exact transaction-created cleanup handler;
 3. its input schema and declared-or-absent output schema exactly match that
    handler's current locally pinned contracts; and
 4. the generated catalog still passes the explicit-`studio_id`, handler-source,

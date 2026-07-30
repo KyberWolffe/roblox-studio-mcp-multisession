@@ -12,8 +12,8 @@ from studio_mcp_v2 import __version__
 
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.4.0-rc.6"
-PEP440_VERSION = "0.4.0rc6"
+VERSION = "0.4.0-rc.7"
+PEP440_VERSION = "0.4.0rc7"
 PRERELEASE_MARKERS = (
     "<!-- experimental-prerelease: true -->",
     "<!-- capability-parity: incomplete -->",
@@ -64,7 +64,7 @@ class ReleaseVersionCoherenceTests(unittest.TestCase):
             (ROOT / "README.md").read_text(encoding="utf-8"),
         )
         self.assertIn(
-            "## " + VERSION + " — 2026-07-29",
+            "## " + VERSION + " — 2026-07-30",
             (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
         )
 

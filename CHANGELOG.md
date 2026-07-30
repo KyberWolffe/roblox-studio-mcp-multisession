@@ -4,6 +4,35 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.4.0-rc.7 — 2026-07-30
+
+Corrected the live cleanup-admission defect that rejected rc.6. Successful
+creation now retains a separate, bounded cleanup authorization after normal
+apply recovery closes. Rc.6 remains immutable and rejected; installed rc.5 and
+its rc.4 rollback remain unchanged.
+
+### Transaction-scoped cleanup
+
+- Added `studio_cleanup_multi_edit_v2`, which accepts only the original
+  transaction, apply-receipt, and cleanup-authorization identities. Callers
+  cannot supply paths, sources, classes, or delete targets.
+- Apply receipts with successful creates bind a ten-minute, same-generation
+  cleanup grant to the exact Studio/client/document/generation and original
+  prepare/apply receipts. All other apply/recovery receipts carry an explicit
+  empty cleanup authorization.
+- Studio preflights every retained created Instance before deletion. Only exact
+  unchanged transaction-created scripts with their retained parent/path/name,
+  class, source bytes/SHA-256, bounded mutable-property fingerprint,
+  post-exposure property-change latch, zero children, zero attributes, and zero
+  tags are eligible. Drift is preserved, never deleted.
+- Partial or unproven cleanup quarantines the session for only the same exact
+  cleanup before the original absolute deadline. After expiry it becomes
+  settlement-only: no new deletion is admitted, while safe evidence from an
+  already-dispatched request can still close the audit fence.
+- Direct/job result parity, late-result resolution receipts, FIFO,
+  cross-session isolation, reconnect/expiry/replay fencing, and auditable
+  lifecycle stop blockers cover the new cleanup phase.
+
 ## 0.4.0-rc.6 — 2026-07-29
 
 Extended revision-protected multi-edit with bounded, expected-absent script
