@@ -233,13 +233,17 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
             "minItems": 0,
             "maxItems": 64,
         },
-        "multiEditTarget": {
+        "multiEditEditTarget": {
             "type": "object",
             "properties": {
                 "index": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 16,
+                },
+                "kind": {
+                    "type": "string",
+                    "const": "edit",
                 },
                 "path": {
                     "allOf": [
@@ -259,18 +263,89 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
             },
             "required": [
                 "index",
+                "kind",
                 "path",
                 "expected_sha256",
                 "edit_count",
             ],
             "additionalProperties": False,
         },
+        "multiEditCreateTarget": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16,
+                },
+                "kind": {
+                    "type": "string",
+                    "const": "create",
+                },
+                "path": {
+                    "allOf": [
+                        {"$ref": "#/$defs/path"},
+                        {"minItems": 1},
+                    ]
+                },
+                "parent_path": {
+                    "allOf": [
+                        {"$ref": "#/$defs/path"},
+                        {"minItems": 1, "maxItems": 63},
+                    ]
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                },
+                "class_name": {
+                    "type": "string",
+                    "enum": [
+                        "Script",
+                        "LocalScript",
+                        "ModuleScript",
+                    ],
+                },
+                "expected_absent": {
+                    "type": "boolean",
+                    "const": True,
+                },
+                "source_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "source_length": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 262144,
+                },
+            },
+            "required": [
+                "index",
+                "kind",
+                "path",
+                "parent_path",
+                "name",
+                "class_name",
+                "expected_absent",
+                "source_sha256",
+                "source_length",
+            ],
+            "additionalProperties": False,
+        },
+        "multiEditTarget": {
+            "oneOf": [
+                {"$ref": "#/$defs/multiEditEditTarget"},
+                {"$ref": "#/$defs/multiEditCreateTarget"},
+            ]
+        },
         "multiEditAdmission": {
             "type": "object",
             "properties": {
                 "contract_version": {
                     "type": "string",
-                    "const": "studio-job-admission-v1",
+                    "const": "studio-job-admission-v2",
                 },
                 "operation": {
                     "type": "string",
@@ -287,18 +362,25 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 },
                 "edit_count": {
                     "type": "integer",
-                    "minimum": 1,
+                    "minimum": 0,
                     "maximum": 128,
+                },
+                "create_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 16,
                 },
                 "ordering_version": {
                     "type": "string",
-                    "const": "target-input-edit-input-v1",
+                    "const": (
+                        "edit-target-input-then-create-input-v2"
+                    ),
                 },
                 "atomicity": {
                     "type": "string",
                     "const": (
-                        "preflight-all-per-target-cas-compensating-no-"
-                        "cross-script-atomicity-v1"
+                        "preflight-all-per-target-cas-created-script-"
+                        "compensation-no-cross-script-atomicity-v2"
                     ),
                 },
                 "targets": {
@@ -314,6 +396,7 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 "datamodel_type",
                 "target_count",
                 "edit_count",
+                "create_count",
                 "ordering_version",
                 "atomicity",
                 "targets",
@@ -714,19 +797,24 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
             ],
             "additionalProperties": False,
         },
-        "recoveryTargetReceipt": {
+        "recoveryEditTargetReceipt": {
             "type": "object",
             "description": (
-                "A recovered target. The broker validates that "
-                "observed_before_sha256 equals prepared_sha256 or "
-                "planned_sha256 and observed_after_sha256 equals "
-                "prepared_sha256."
+                "A recovered existing edit target. The broker validates that "
+                "live recovery rolls a changed target back to its prepared "
+                "revision. A same-generation cached safe-terminal replay may "
+                "also carry an unchanged not_applied target from an earlier "
+                "aborted preflight."
             ),
             "properties": {
                 "index": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 16,
+                },
+                "kind": {
+                    "type": "string",
+                    "const": "edit",
                 },
                 "path": {
                     "allOf": [
@@ -748,11 +836,11 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 },
                 "observed_before_sha256": {
                     "type": "string",
-                    "pattern": "^[0-9a-f]{64}$",
+                    "pattern": "^(?:[0-9a-f]{64})?$",
                 },
                 "observed_after_sha256": {
                     "type": "string",
-                    "pattern": "^[0-9a-f]{64}$",
+                    "pattern": "^(?:[0-9a-f]{64})?$",
                 },
                 "source_length": {
                     "type": "integer",
@@ -776,11 +864,12 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 },
                 "status": {
                     "type": "string",
-                    "const": "rolled_back",
+                    "enum": ["rolled_back", "not_applied"],
                 },
             },
             "required": [
                 "index",
+                "kind",
                 "path",
                 "expected_sha256",
                 "prepared_sha256",
@@ -795,6 +884,123 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
             ],
             "additionalProperties": False,
         },
+        "recoveryCreateTargetReceipt": {
+            "type": "object",
+            "description": (
+                "A live recovered create target is proven absent after any "
+                "transaction-owned exact-instance compensation. A "
+                "same-generation cached safe-terminal replay may also carry "
+                "an unchanged not_created target from an earlier aborted "
+                "preflight."
+            ),
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16,
+                },
+                "kind": {
+                    "type": "string",
+                    "const": "create",
+                },
+                "path": {
+                    "allOf": [
+                        {"$ref": "#/$defs/path"},
+                        {"minItems": 1},
+                    ]
+                },
+                "parent_path": {
+                    "allOf": [
+                        {"$ref": "#/$defs/path"},
+                        {"minItems": 1, "maxItems": 63},
+                    ]
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                },
+                "class_name": {
+                    "type": "string",
+                    "enum": [
+                        "Script",
+                        "LocalScript",
+                        "ModuleScript",
+                    ],
+                },
+                "expected_absent": {
+                    "type": "boolean",
+                    "const": True,
+                },
+                "planned_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "planned_source_length": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 262144,
+                },
+                "observed_before_state": {
+                    "type": "string",
+                    "enum": [
+                        "absent",
+                        "created_exact",
+                        "present_unproven",
+                        "unavailable",
+                    ],
+                },
+                "observed_after_state": {
+                    "type": "string",
+                    "enum": [
+                        "absent",
+                        "created_exact",
+                        "present_unproven",
+                        "unavailable",
+                    ],
+                },
+                "observed_after_class_name": {
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "Script",
+                        "LocalScript",
+                        "ModuleScript",
+                    ],
+                },
+                "observed_after_sha256": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{64})?$",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["rolled_back", "not_created"],
+                },
+            },
+            "required": [
+                "index",
+                "kind",
+                "path",
+                "parent_path",
+                "name",
+                "class_name",
+                "expected_absent",
+                "planned_sha256",
+                "planned_source_length",
+                "observed_before_state",
+                "observed_after_state",
+                "observed_after_class_name",
+                "observed_after_sha256",
+                "status",
+            ],
+            "additionalProperties": False,
+        },
+        "recoveryTargetReceipt": {
+            "oneOf": [
+                {"$ref": "#/$defs/recoveryEditTargetReceipt"},
+                {"$ref": "#/$defs/recoveryCreateTargetReceipt"},
+            ]
+        },
         "recoveryResult": {
             "type": "object",
             "properties": {
@@ -802,7 +1008,7 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                     "type": "string",
                     "const": "studio-mcp-v2-durable-plugin",
                 },
-                "v": {"type": "integer", "const": 1},
+                "v": {"type": "integer", "const": 2},
                 "operation": {
                     "type": "string",
                     "const": "studio_recover_multi_edit",
@@ -842,18 +1048,40 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 },
                 "ordering_version": {
                     "type": "string",
-                    "const": "target-input-edit-input-v1",
+                    "const": (
+                        "edit-target-input-then-create-input-v2"
+                    ),
                 },
                 "atomicity": {
                     "type": "string",
                     "const": (
-                        "preflight-all-per-target-cas-compensating-no-"
-                        "cross-script-atomicity-v1"
+                        "preflight-all-per-target-cas-created-script-"
+                        "compensation-no-cross-script-atomicity-v2"
                     ),
                 },
                 "receipt_contract": {
                     "type": "string",
-                    "const": "broker-validated-downstream-ack-v1",
+                    "const": "broker-validated-downstream-ack-v2",
+                },
+                "evidence_mode": {
+                    "type": "string",
+                    "enum": [
+                        "live_recovery",
+                        "cached_safe_terminal",
+                    ],
+                },
+                "prior_terminal_outcome": {
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "aborted_preflight",
+                        "rolled_back",
+                        "recovered",
+                    ],
+                },
+                "prior_terminal_receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{64})?$",
                 },
                 "outcome": {"type": "string", "const": "recovered"},
                 "safe_terminal": {
@@ -871,8 +1099,13 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 },
                 "edit_count": {
                     "type": "integer",
-                    "minimum": 1,
+                    "minimum": 0,
                     "maximum": 128,
+                },
+                "create_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 16,
                 },
                 "targets": {
                     "type": "array",
@@ -903,13 +1136,53 @@ JOB_RECEIPT_OUTPUT_SCHEMA: Dict[str, Any] = {
                 "ordering_version",
                 "atomicity",
                 "receipt_contract",
+                "evidence_mode",
+                "prior_terminal_outcome",
+                "prior_terminal_receipt_sha256",
                 "outcome",
                 "safe_terminal",
                 "recovery_required",
                 "target_count",
                 "edit_count",
+                "create_count",
                 "targets",
                 "receipt_sha256",
+            ],
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "evidence_mode": {
+                                "const": "live_recovery"
+                            }
+                        },
+                        "required": ["evidence_mode"],
+                    },
+                    "then": {
+                        "properties": {
+                            "prior_terminal_outcome": {
+                                "const": ""
+                            },
+                            "prior_terminal_receipt_sha256": {
+                                "const": ""
+                            },
+                        }
+                    },
+                    "else": {
+                        "properties": {
+                            "prior_terminal_outcome": {
+                                "enum": [
+                                    "aborted_preflight",
+                                    "rolled_back",
+                                    "recovered",
+                                ]
+                            },
+                            "prior_terminal_receipt_sha256": {
+                                "pattern": "^[0-9a-f]{64}$"
+                            },
+                        }
+                    },
+                }
             ],
             "additionalProperties": False,
         },

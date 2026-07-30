@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_version": "0.4.0-rc.5",
+  "release_version": "0.4.0-rc.6",
   "baseline": {
     "catalog_path": "config/tool-catalog.json",
     "modern_tool_count": 25,
@@ -156,7 +156,7 @@
           "name": "studio_recover_multi_edit"
         }
       ],
-      "gap": "V2 provides bounded, revision-protected ordered edits across 1-16 existing exact script paths with all-target preflight, per-target compare-and-swap, identity-bound receipts, compensating rollback, and explicit recovery. It intentionally does not create scripts and does not claim impossible cross-script atomicity, so the upstream creation and atomic-operation claims remain incomplete.",
+      "gap": "V2 provides bounded, revision-protected ordered edits and expected-absent creation of Script, LocalScript, or ModuleScript instances across 1-16 combined exact paths, with all-target preflight, identity-bound receipts, exact read-back, transaction-proven compensating rollback/deletion, and explicit recovery. The script-creation gap is closed, but V2 does not claim impossible cross-script atomicity and intentionally retains a safer explicit-path/CAS contract rather than the upstream shape.",
       "phase": "phase_2"
     },
     {

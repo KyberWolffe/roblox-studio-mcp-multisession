@@ -14,8 +14,9 @@ resume credential, generation, and authorization policy remain separate checks.
 
 ## Durable operation surface
 
-The isolated 0.4.0-rc.5 candidate catalog exposes exactly these Studio-side
-handlers. The live-installed `0.4.0-rc.4` catalog remains unchanged:
+The isolated 0.4.0-rc.6 candidate catalog exposes exactly these Studio-side
+handlers. The live-installed `0.4.0-rc.5` catalog remains unchanged, with
+`0.4.0-rc.4` retained as its immediate rollback:
 
 - `studio_get_state`
 - `studio_list_tree`
@@ -72,31 +73,49 @@ Script updates use `ScriptEditorService:UpdateSourceAsync` with a required
 SHA-256 compare-and-swap revision. Primitive attribute updates require an exact
 expected prior state and confirm the result.
 
-Multi-edit extends that revision boundary to 1-16 existing exact script paths
-without weakening it. Every target carries an expected SHA-256, and every
-ordered edit is pre-expanded against a bounded intermediate source before the
-first mutation. Targets execute in input order; edits within a target execute
-in input order. Optional offsets are paired zero-based half-open UTF-8 byte
-ranges. Creation, empty search strings, duplicate paths, ambiguous paths,
-overlapping matches, invalid UTF-8, stale revisions, and out-of-bound plans
-fail closed.
+Multi-edit extends that revision boundary to 1-16 combined exact edit/create
+paths without weakening it. Every existing edit target carries an expected
+SHA-256, and every ordered edit is pre-expanded against a bounded intermediate
+source before the first mutation. Each create carries an existing exact
+parent, exact new name, allowlisted script class, initial source, and mandatory
+`expected_absent: true`. Existing targets execute in input order, followed by
+creates in input order; edits within a target execute in input order. Optional
+offsets are paired zero-based half-open UTF-8 byte ranges. Empty searches,
+duplicate or ambiguous paths, missing/ambiguous create parents, non-absent
+create paths, overlapping matches, invalid UTF-8, stale revisions, invalid
+classes, and out-of-bound plans fail closed.
 
 The public `studio_multi_edit` handler returns only a final apply receipt.
 Prepare is an internal broker-owned phase that records exact
-Studio/client/document/generation identity, target order, expected/prepared/
-planned revisions, expanded replacement counts, and a canonical receipt
-digest before any source update. Apply rechecks all targets before writing and
-read-backs every update. A later failure attempts per-target compensating
-rollback only under an exact planned-revision CAS. Because Studio provides no
-transaction spanning multiple scripts, this is deliberately not advertised as
-cross-script atomicity.
+Studio/client/document/generation identity, edit-then-create target order,
+expected/prepared/planned revisions or absent states, expanded replacement
+counts, and a canonical receipt digest before any source update. Apply
+rechecks all targets before writing and reads back every update or creation. A
+later failure attempts per-target compensating rollback only under exact
+transaction-proven state. It may destroy a created script only when the
+retained same-generation Instance remains uniquely at its exact path and its
+class and source revision still match and it has zero children, zero
+attributes, and zero tags. Changed, decorated, or replaced content is never
+deleted. Because Studio provides no transaction spanning multiple scripts,
+this is deliberately not advertised as cross-script atomicity.
+
+Edit mode, document identity, and the exact prepared path/Instance binding are
+rechecked at each yielding source-update commit callback, immediately before a
+new script is parented, and immediately before a compensating restore or
+transaction-owned destruction. A mode, document, path, pointer, parent-path,
+or content drift stops further mutation and requires recovery.
 
 An unprovable dispatch returns `recovery_required`, retains the exact
 transaction evidence, and quarantines further mutation. The separate
 `studio_recover_multi_edit` handler accepts only that transaction UUID under
 the same explicit session identity; it cannot accept source, edits, paths, or
 a replacement target. Recovery reports success only after every target
-revision is positively terminal.
+revision or create-state is positively terminal. No public general deletion
+operation is exposed. Recovery receipts explicitly distinguish
+`live_recovery` from `cached_safe_terminal`. The latter is permitted only for
+a same-generation safe `aborted_preflight`, `rolled_back`, or `recovered`
+receipt and binds the prior outcome plus exact prior receipt SHA-256; it never
+replays an `applied` or `recovery_required` receipt.
 
 State reads keep lifecycle state and controller execution predicates separate.
 The bound plugin controller is an Edit DataModel request channel, so connected
@@ -171,10 +190,10 @@ operation is compatible only when:
    provenance, and fixed-allowlist contract checks.
 
 The upstream `multi_edit` name is recognized as the multi-edit family, but its
-current dot-path, optional-creation, and revision-free schema is not identical
-to the safer durable handler and therefore is not an exact compatible
-candidate. The mapping is family review metadata, not permission to copy that
-schema or auto-enable creation.
+current dot-path and revision-free schema is not identical to the safer
+explicit-path, expected-revision/expected-absent durable handler and therefore
+is not an exact compatible candidate. The mapping is family review metadata,
+not permission to copy or auto-enable the upstream schema.
 
 Unknown names and changed shapes are quarantined and fail closed. A compatible
 addition remains review-only until explicit approval. The fixture workflow is

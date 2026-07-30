@@ -11,10 +11,14 @@ name is `Roblox_Studio_Multisession`. Every Studio-bound tool requires an
 explicit, server-assigned `studio_id`. There is no active Studio pointer,
 implicit single-session choice, or default-session fallback.
 
-Version `0.4.0-rc.5` is the public-name migration candidate based on the
-durable installed `0.4.0-rc.4` release, which remains its immutable immediate
-rollback target. The `0.3.0-rc.4` restore artifact remains available as older
-recovery history. Rc.5 transactionally replaces an owned former
+Version `0.4.0-rc.6` is an isolated, unpublished script-lifecycle candidate
+based on the published and installed `0.4.0-rc.5` state. It extends
+revision-protected multi-edit with expected-absent creation of bounded
+`Script`, `LocalScript`, and `ModuleScript` instances, plus transaction-proven
+compensating deletion. The durable installed rc.5 bytes remain untouched, and
+installed `0.4.0-rc.4` remains rc.5's immutable immediate rollback target.
+The `0.3.0-rc.4` restore artifact remains available as older recovery history.
+Rc.5 transactionally replaced an owned former
 `Roblox_Studio_v2` Codex registration with
 `Roblox_Studio_Multisession`; the two names must never remain active together.
 The public `_v2` tool names, authenticated `/v2` routes, Python/internal
@@ -153,7 +157,7 @@ rc.5 activates, use `roblox-studio-mcp-multisession-manage`. Direct
 cross-version replacement is refused unless it is the exact candidate inside
 that live, nonce-fenced update transaction.
 
-### Current `0.4.0-rc.5` prerelease
+### Published `0.4.0-rc.5` prerelease
 
 The exact public release files are:
 
@@ -330,6 +334,7 @@ hash-fenced.
 - [Testing and release proof](docs/TESTING.md)
 - [GitHub distribution](docs/GITHUB_DISTRIBUTION.md)
 - [Design provenance and source limits](docs/SOURCE_AUDIT.md)
-- [Release notes](docs/RELEASE_NOTES_0.4.0-rc.5.md)
+- [Current candidate release notes](docs/RELEASE_NOTES_0.4.0-rc.6.md)
+- [Published rc.5 release notes](docs/RELEASE_NOTES_0.4.0-rc.5.md)
 - [Changelog](CHANGELOG.md)
 - [License status](LICENSE_STATUS.md)

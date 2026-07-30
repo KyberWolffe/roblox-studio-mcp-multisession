@@ -63,6 +63,7 @@ class Phase2MultiEditSessionIntegrityTests(
     def prepare_receipt(self, request):
         target = {
             "index": 1,
+            "kind": "edit",
             "path": copy.deepcopy(
                 request["args"]["targets"][0]["path"]
             ),
@@ -77,7 +78,7 @@ class Phase2MultiEditSessionIntegrityTests(
         }
         receipt = {
             "adapter": "studio-mcp-v2-durable-plugin",
-            "v": 1,
+            "v": 2,
             "operation": "studio_multi_edit",
             "phase": "prepare",
             "studio_id": self.studio.studio_id,
@@ -90,6 +91,7 @@ class Phase2MultiEditSessionIntegrityTests(
             "atomicity": MULTI_EDIT_ATOMICITY,
             "target_count": 1,
             "edit_count": 1,
+            "create_count": 0,
             "aggregate_source_bytes": 3,
             "aggregate_planned_source_bytes": 3,
             "targets": [target],
@@ -107,6 +109,9 @@ class Phase2MultiEditSessionIntegrityTests(
         *,
         recovery=False,
         outcome=None,
+        evidence_mode=None,
+        prior_terminal_outcome="",
+        prior_terminal_receipt_sha256="",
     ):
         if outcome is None:
             outcome = "recovered" if recovery else "applied"
@@ -126,7 +131,7 @@ class Phase2MultiEditSessionIntegrityTests(
             raise AssertionError("unsupported test outcome")
         receipt = {
             "adapter": "studio-mcp-v2-durable-plugin",
-            "v": 1,
+            "v": 2,
             "operation": (
                 "studio_recover_multi_edit"
                 if recovery
@@ -144,14 +149,29 @@ class Phase2MultiEditSessionIntegrityTests(
             "ordering_version": MULTI_EDIT_ORDERING_VERSION,
             "atomicity": MULTI_EDIT_ATOMICITY,
             "receipt_contract": MULTI_EDIT_RECEIPT_CONTRACT,
+            "evidence_mode": (
+                evidence_mode
+                if evidence_mode is not None
+                else (
+                    "live_recovery"
+                    if recovery
+                    else "apply_execution"
+                )
+            ),
+            "prior_terminal_outcome": prior_terminal_outcome,
+            "prior_terminal_receipt_sha256": (
+                prior_terminal_receipt_sha256
+            ),
             "outcome": outcome,
             "safe_terminal": outcome != "recovery_required",
             "recovery_required": outcome == "recovery_required",
             "target_count": 1,
             "edit_count": 1,
+            "create_count": 0,
             "targets": [
                 {
                     "index": 1,
+                    "kind": "edit",
                     "path": copy.deepcopy(
                         prepared["targets"][0]["path"]
                     ),
@@ -547,6 +567,50 @@ class Phase2MultiEditSessionIntegrityTests(
                 recovery_pending, recovered
             )
         )
+        cached = copy.deepcopy(recovered)
+        cached["evidence_mode"] = "cached_safe_terminal"
+        cached["prior_terminal_outcome"] = "aborted_preflight"
+        cached["prior_terminal_receipt_sha256"] = "a" * 64
+        cached["targets"][0]["status"] = "not_applied"
+        cached["targets"][0][
+            "observed_before_sha256"
+        ] = "f" * 64
+        cached["targets"][0][
+            "observed_after_sha256"
+        ] = "f" * 64
+        cached["receipt_sha256"] = mutation_receipt_sha256(cached)
+        self.assertTrue(
+            self.studio.session._valid_multi_edit_mutation_result(
+                recovery_pending, cached
+            )
+        )
+        cached_empty = copy.deepcopy(cached)
+        cached_empty["targets"][0][
+            "observed_before_sha256"
+        ] = ""
+        cached_empty["targets"][0][
+            "observed_after_sha256"
+        ] = ""
+        cached_empty["receipt_sha256"] = mutation_receipt_sha256(
+            cached_empty
+        )
+        self.assertTrue(
+            self.studio.session._valid_multi_edit_mutation_result(
+                recovery_pending, cached_empty
+            )
+        )
+        live_conflict = copy.deepcopy(cached)
+        live_conflict["evidence_mode"] = "live_recovery"
+        live_conflict["prior_terminal_outcome"] = ""
+        live_conflict["prior_terminal_receipt_sha256"] = ""
+        live_conflict["receipt_sha256"] = mutation_receipt_sha256(
+            live_conflict
+        )
+        self.assertFalse(
+            self.studio.session._valid_multi_edit_mutation_result(
+                recovery_pending, live_conflict
+            )
+        )
         recovery_pending.arguments["_phase"] = "apply"
         self.assertFalse(
             self.studio.session._valid_multi_edit_mutation_result(
@@ -663,6 +727,122 @@ class Phase2MultiEditSessionIntegrityTests(
         )
         self.assertIsNone(self.studio.session.multi_edit_recovery)
         self.assertFalse(self.studio.session.uncertain_requests)
+
+    async def test_dispatched_recovery_remains_authoritative_over_late_safe_apply(
+        self,
+    ) -> None:
+        initial = self.service.start_job(
+            ALLOW_ALL,
+            self.studio.studio_id,
+            MULTI_EDIT_PUBLIC,
+            copy.deepcopy(self.arguments),
+            40,
+        )
+        job = self.studio.session.jobs[initial["job_id"]]
+        prepare_request = await self.studio.next_request()
+        prepared = self.prepare_receipt(prepare_request)
+        self.assertTrue(
+            self.studio.respond(prepare_request, prepared)
+        )
+        apply_request = await self.studio.next_request()
+        await job.task
+        timed_out = self.service.get_job(
+            ALLOW_ALL,
+            self.studio.studio_id,
+            job.job_id,
+        )
+        self.assertEqual("outcome_unknown", timed_out["status"])
+        self.assertIsNotNone(
+            self.studio.session.multi_edit_prepared_receipt
+        )
+        self.assertEqual(
+            apply_request["request_id"],
+            self.studio.session.multi_edit_recovery["request_id"],
+        )
+
+        recovery_task = asyncio.create_task(
+            self.service.call_tool(
+                ALLOW_ALL,
+                RECOVER_MULTI_EDIT_PUBLIC,
+                {
+                    "studio_id": self.studio.studio_id,
+                    "transaction_id": prepared[
+                        "transaction_id"
+                    ],
+                },
+            )
+        )
+        recovery_request = await self.studio.next_request()
+        self.assertEqual(
+            recovery_request["request_id"],
+            self.studio.session.multi_edit_recovery[
+                "recovery_request_id"
+            ],
+        )
+
+        late_apply = self.mutation_receipt(
+            apply_request, prepared
+        )
+        self.assertTrue(
+            self.studio.respond(apply_request, late_apply)
+        )
+        after_late_apply = self.service.get_job(
+            ALLOW_ALL,
+            self.studio.studio_id,
+            job.job_id,
+        )
+        self.assertEqual(
+            "outcome_unknown", after_late_apply["status"]
+        )
+        self.assertNotIn("result", after_late_apply)
+        self.assertEqual(
+            prepared["transaction_id"],
+            self.studio.session.multi_edit_recovery[
+                "transaction_id"
+            ],
+        )
+        self.assertEqual(
+            recovery_request["request_id"],
+            self.studio.session.multi_edit_recovery[
+                "recovery_request_id"
+            ],
+        )
+        self.assertEqual(
+            prepared["prepare_sha256"],
+            self.studio.session.multi_edit_prepared_receipt[
+                "prepare_sha256"
+            ],
+        )
+
+        recovered = self.mutation_receipt(
+            recovery_request,
+            prepared,
+            recovery=True,
+        )
+        self.assertTrue(
+            self.studio.respond(recovery_request, recovered)
+        )
+        self.assertEqual(recovered, await recovery_task)
+        resolved = self.service.get_job(
+            ALLOW_ALL,
+            self.studio.studio_id,
+            job.job_id,
+        )
+        self.assertEqual("completed", resolved["status"])
+        self.assertNotIn("result", resolved)
+        self.assertEqual(
+            "resolved_by_exact_recovery:recovered",
+            resolved["terminal_outcome"],
+        )
+        self.assertEqual(1, len(resolved["resolution_receipts"]))
+        self.assertEqual(
+            recovery_request["request_id"],
+            resolved["resolution_receipts"][0]["request_id"],
+        )
+        self.assertIsNone(self.studio.session.multi_edit_recovery)
+        self.assertIsNone(
+            self.studio.session.multi_edit_prepared_receipt
+        )
 
 
 if __name__ == "__main__":

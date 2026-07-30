@@ -1,6 +1,6 @@
 {
   "format": "studio-mcp-v2-durable-catalog",
-  "catalog_version": "0.4.0-rc.5",
+  "catalog_version": "0.4.0-rc.6",
   "upstream": {
     "version": "production-v1-snapshot-2026-07-26",
     "source_sha256": "96130d76240be565f98417414f86e0776a5b73d880f4fadbc5de0bd1c915535b",
@@ -997,7 +997,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100,
-                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
               },
               "class_name": {
                 "type": "string",
@@ -2396,7 +2396,7 @@
     },
     {
       "name": "studio_multi_edit",
-      "description": "Apply one closed, revision-protected multi-script edit plan in Edit mode through an internal prepare/apply transaction. Every target is an existing exact, unambiguous LuaSourceContainer path with a required lowercase SHA-256 revision. The plugin preflights every target and every ordered edit before mutation. Targets execute in input order and each target's edits execute in input order against the preceding edit's result. Creation is not supported. The operation provides per-target compare-and-swap and compensating rollback, not cross-script atomicity. A dispatched mutation that cannot be proven applied or rolled back returns recovery_required and quarantines further mutation until explicit recovery proves a safe terminal outcome. Bounds enforced independently by the host and Studio include 1-16 unique targets, 1-64 edits per target, 128 edits total, 1024 expanded replacement spans total, 8192 aggregate UTF-8 path bytes, 262144 aggregate UTF-8 literal bytes, 350000 canonical public argument bytes, 262144 source bytes per target, 1048576 aggregate original and planned source bytes, and 100000 encoded receipt bytes.",
+      "description": "Apply one closed, revision-protected edit/create plan in Edit mode through an internal prepare/apply transaction. Existing edit targets use exact unambiguous LuaSourceContainer paths and required lowercase SHA-256 revisions. Create entries name a new Script, LocalScript, or ModuleScript beneath an existing exact parent and require expected_absent=true at the full new path. The plugin preflights every target, parent, absence check, and ordered edit before mutation. Existing edits execute in input order, followed by creates in input order. The operation provides per-target compare-and-swap and transaction-proven compensating rollback, not cross-script atomicity. Compensation may destroy only a script created by this exact transaction while its retained instance, path, class, source revision, zero-child state, zero-attribute state, and zero-tag state still match; changed, decorated, or replaced content fails closed. A dispatched mutation that cannot be proven applied or rolled back returns recovery_required and quarantines further mutation until explicit same-generation recovery proves a safe terminal outcome. Bounds enforced independently by the host and Studio include 1-16 combined unique edit/create targets, 0-16 existing edit targets, 0-16 creates, 1-64 edits per existing target, 128 edits total, 1024 expanded replacement spans total, 8192 aggregate UTF-8 full-path bytes, 262144 aggregate UTF-8 edit-literal bytes, 350000 canonical public argument bytes, 262144 source bytes per target or create, 1048576 aggregate original and planned source bytes, and 100000 encoded receipt bytes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2407,9 +2407,9 @@
           },
           "targets": {
             "type": "array",
-            "minItems": 1,
+            "minItems": 0,
             "maxItems": 16,
-            "description": "Existing scripts in deterministic input order. Paths must be unique. Across all targets there may be at most 128 edits, 1024 expanded replacement spans, 8192 UTF-8 path bytes, 262144 UTF-8 bytes of old_string plus new_string literals, 350000 canonical public argument bytes, and 1048576 bytes each of original and planned source.",
+            "description": "Existing scripts in deterministic input order. This array may be empty only when creates is nonempty. Existing and created full paths must be unique. Across the combined transaction there may be at most 16 edit/create targets, 128 edits, 1024 expanded replacement spans, 8192 UTF-8 full-path bytes, 262144 UTF-8 bytes of old_string plus new_string literals, 350000 canonical public argument bytes, and 1048576 bytes each of original and planned source.",
             "items": {
               "type": "object",
               "properties": {
@@ -2419,7 +2419,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100,
-                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                    "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
                   },
                   "minItems": 1,
                   "maxItems": 64,
@@ -2434,7 +2434,7 @@
                   "type": "array",
                   "minItems": 1,
                   "maxItems": 64,
-                  "description": "Ordered edits applied sequentially to this target's preflight source. Every old_string must match the current intermediate source exactly; creation and an empty old_string are rejected.",
+                  "description": "Ordered edits applied sequentially to this target's preflight source. Every old_string must match the current intermediate source exactly; an empty old_string is rejected.",
                   "items": {
                     "type": "object",
                     "properties": {
@@ -2489,6 +2489,62 @@
               ],
               "additionalProperties": false
             }
+          },
+          "creates": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "description": "Optional scripts to create after all existing edit targets, in deterministic input order. When present this array is nonempty. Combined targets plus creates must contain 1-16 entries. Each full new path must be unique across the transaction and absent at prepare and apply. A parent must already exist and cannot itself be created by this transaction.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parent_path": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 63,
+                  "description": "Exact child-name segments to an existing unambiguous parent. Each segment is also limited to 100 UTF-8 bytes."
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+                  "description": "Exact new child name, limited to 100 UTF-8 bytes by host validation. The resulting parent_path plus name is the expected-absent CAS path."
+                },
+                "class_name": {
+                  "type": "string",
+                  "enum": [
+                    "Script",
+                    "LocalScript",
+                    "ModuleScript"
+                  ]
+                },
+                "expected_absent": {
+                  "type": "boolean",
+                  "const": true,
+                  "description": "Mandatory absent-state compare-and-swap assertion. No overwrite mode exists."
+                },
+                "source": {
+                  "type": "string",
+                  "maxLength": 262144,
+                  "description": "Initial valid UTF-8 source, independently limited to 262144 encoded bytes."
+                }
+              },
+              "required": [
+                "parent_path",
+                "name",
+                "class_name",
+                "expected_absent",
+                "source"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -2510,13 +2566,17 @@
             "minItems": 1,
             "maxItems": 64
           },
-          "targetReceipt": {
+          "editTargetReceipt": {
             "type": "object",
             "properties": {
               "index": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 16
+              },
+              "kind": {
+                "type": "string",
+                "const": "edit"
               },
               "path": {
                 "$ref": "#/$defs/path"
@@ -2575,6 +2635,7 @@
             },
             "required": [
               "index",
+              "kind",
               "path",
               "expected_sha256",
               "prepared_sha256",
@@ -2588,6 +2649,126 @@
               "status"
             ],
             "additionalProperties": false
+          },
+          "createTargetReceipt": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16
+              },
+              "kind": {
+                "type": "string",
+                "const": "create"
+              },
+              "path": {
+                "$ref": "#/$defs/path"
+              },
+              "parent_path": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/path"
+                  },
+                  {
+                    "maxItems": 63
+                  }
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "class_name": {
+                "type": "string",
+                "enum": [
+                  "Script",
+                  "LocalScript",
+                  "ModuleScript"
+                ]
+              },
+              "expected_absent": {
+                "type": "boolean",
+                "const": true
+              },
+              "planned_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "planned_source_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "observed_before_state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "created_exact",
+                  "present_unproven",
+                  "unavailable"
+                ]
+              },
+              "observed_after_state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "created_exact",
+                  "present_unproven",
+                  "unavailable"
+                ]
+              },
+              "observed_after_class_name": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "Script",
+                  "LocalScript",
+                  "ModuleScript"
+                ]
+              },
+              "observed_after_sha256": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})?$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "created",
+                  "rolled_back",
+                  "not_created",
+                  "recovery_required"
+                ]
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "path",
+              "parent_path",
+              "name",
+              "class_name",
+              "expected_absent",
+              "planned_sha256",
+              "planned_source_length",
+              "observed_before_state",
+              "observed_after_state",
+              "observed_after_class_name",
+              "observed_after_sha256",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "targetReceipt": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/editTargetReceipt"
+              },
+              {
+                "$ref": "#/$defs/createTargetReceipt"
+              }
+            ]
           }
         },
         "properties": {
@@ -2597,7 +2778,7 @@
           },
           "v": {
             "type": "integer",
-            "const": 1
+            "const": 2
           },
           "operation": {
             "type": "string",
@@ -2644,15 +2825,30 @@
           },
           "ordering_version": {
             "type": "string",
-            "const": "target-input-edit-input-v1"
+            "const": "edit-target-input-then-create-input-v2"
           },
           "atomicity": {
             "type": "string",
-            "const": "preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1"
+            "const": "preflight-all-per-target-cas-created-script-compensation-no-cross-script-atomicity-v2"
           },
           "receipt_contract": {
             "type": "string",
-            "const": "broker-validated-downstream-ack-v1"
+            "const": "broker-validated-downstream-ack-v2"
+          },
+          "evidence_mode": {
+            "type": "string",
+            "const": "apply_execution",
+            "description": "This receipt is direct evidence from the exact apply execution."
+          },
+          "prior_terminal_outcome": {
+            "type": "string",
+            "const": "",
+            "description": "Apply execution does not replay earlier terminal evidence."
+          },
+          "prior_terminal_receipt_sha256": {
+            "type": "string",
+            "const": "",
+            "description": "Apply execution does not replay an earlier terminal receipt."
           },
           "outcome": {
             "type": "string",
@@ -2676,8 +2872,13 @@
           },
           "edit_count": {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "maximum": 128
+          },
+          "create_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16
           },
           "targets": {
             "type": "array",
@@ -2708,11 +2909,15 @@
           "ordering_version",
           "atomicity",
           "receipt_contract",
+          "evidence_mode",
+          "prior_terminal_outcome",
+          "prior_terminal_receipt_sha256",
           "outcome",
           "safe_terminal",
           "recovery_required",
           "target_count",
           "edit_count",
+          "create_count",
           "targets",
           "receipt_sha256"
         ],
@@ -2728,7 +2933,7 @@
     },
     {
       "name": "studio_recover_multi_edit",
-      "description": "Recover one exact, previously accepted multi-edit transaction for the explicitly targeted Studio session. The original studio_id, client_instance_id, document_epoch, transaction ID, prepare generation, prepare request, revisions, and prepare receipt remain immutable. Recovery is admitted only while that exact generation remains current; any reconnect changes the generation and therefore leaves the mutation quarantined and fails closed rather than rebinding the transaction. Recovery never guesses success: it proves the current revision of every target, performs only the transaction's pre-authorized compensating action when safe, and otherwise returns recovery_required while mutation remains quarantined.",
+      "description": "Recover one exact, previously accepted multi-edit transaction for the explicitly targeted Studio session. The original studio_id, client_instance_id, document_epoch, transaction ID, prepare generation, prepare request, edit revisions, create absence/class/source plan, and prepare receipt remain immutable. Recovery is admitted only while that exact generation remains current; any reconnect changes the generation and therefore leaves the mutation quarantined and fails closed rather than rebinding the transaction. Recovery never guesses success: it proves the current revision or create-state of every target and performs only the transaction's pre-authorized compensating action when safe. It may destroy only the retained Instance proven created by this exact transaction while the unique exact path, name, class, source bytes, SHA-256, zero children, zero attributes, and zero tags still match; it never deletes a pre-existing, replaced, moved, renamed, changed, or decorated object. Otherwise it returns recovery_required while mutation remains quarantined.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2756,13 +2961,17 @@
             "minItems": 1,
             "maxItems": 64
           },
-          "targetReceipt": {
+          "editTargetReceipt": {
             "type": "object",
             "properties": {
               "index": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 16
+              },
+              "kind": {
+                "type": "string",
+                "const": "edit"
               },
               "path": {
                 "$ref": "#/$defs/path"
@@ -2821,6 +3030,7 @@
             },
             "required": [
               "index",
+              "kind",
               "path",
               "expected_sha256",
               "prepared_sha256",
@@ -2834,6 +3044,126 @@
               "status"
             ],
             "additionalProperties": false
+          },
+          "createTargetReceipt": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16
+              },
+              "kind": {
+                "type": "string",
+                "const": "create"
+              },
+              "path": {
+                "$ref": "#/$defs/path"
+              },
+              "parent_path": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/path"
+                  },
+                  {
+                    "maxItems": 63
+                  }
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "class_name": {
+                "type": "string",
+                "enum": [
+                  "Script",
+                  "LocalScript",
+                  "ModuleScript"
+                ]
+              },
+              "expected_absent": {
+                "type": "boolean",
+                "const": true
+              },
+              "planned_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "planned_source_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 262144
+              },
+              "observed_before_state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "created_exact",
+                  "present_unproven",
+                  "unavailable"
+                ]
+              },
+              "observed_after_state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "created_exact",
+                  "present_unproven",
+                  "unavailable"
+                ]
+              },
+              "observed_after_class_name": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "Script",
+                  "LocalScript",
+                  "ModuleScript"
+                ]
+              },
+              "observed_after_sha256": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})?$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "created",
+                  "rolled_back",
+                  "not_created",
+                  "recovery_required"
+                ]
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "path",
+              "parent_path",
+              "name",
+              "class_name",
+              "expected_absent",
+              "planned_sha256",
+              "planned_source_length",
+              "observed_before_state",
+              "observed_after_state",
+              "observed_after_class_name",
+              "observed_after_sha256",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "targetReceipt": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/editTargetReceipt"
+              },
+              {
+                "$ref": "#/$defs/createTargetReceipt"
+              }
+            ]
           }
         },
         "properties": {
@@ -2843,7 +3173,7 @@
           },
           "v": {
             "type": "integer",
-            "const": 1
+            "const": 2
           },
           "operation": {
             "type": "string",
@@ -2890,15 +3220,36 @@
           },
           "ordering_version": {
             "type": "string",
-            "const": "target-input-edit-input-v1"
+            "const": "edit-target-input-then-create-input-v2"
           },
           "atomicity": {
             "type": "string",
-            "const": "preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1"
+            "const": "preflight-all-per-target-cas-created-script-compensation-no-cross-script-atomicity-v2"
           },
           "receipt_contract": {
             "type": "string",
-            "const": "broker-validated-downstream-ack-v1"
+            "const": "broker-validated-downstream-ack-v2"
+          },
+          "evidence_mode": {
+            "type": "string",
+            "enum": [
+              "live_recovery",
+              "cached_safe_terminal"
+            ],
+            "description": "Live recovery re-observes the exact transaction. Cached safe terminal replay is permitted only for a same-generation safe aborted_preflight, rolled_back, or recovered receipt whose exact SHA-256 is carried below."
+          },
+          "prior_terminal_outcome": {
+            "type": "string",
+            "enum": [
+              "",
+              "aborted_preflight",
+              "rolled_back",
+              "recovered"
+            ]
+          },
+          "prior_terminal_receipt_sha256": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{64})?$"
           },
           "outcome": {
             "type": "string",
@@ -2920,8 +3271,13 @@
           },
           "edit_count": {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "maximum": 128
+          },
+          "create_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16
           },
           "targets": {
             "type": "array",
@@ -2952,13 +3308,55 @@
           "ordering_version",
           "atomicity",
           "receipt_contract",
+          "evidence_mode",
+          "prior_terminal_outcome",
+          "prior_terminal_receipt_sha256",
           "outcome",
           "safe_terminal",
           "recovery_required",
           "target_count",
           "edit_count",
+          "create_count",
           "targets",
           "receipt_sha256"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "evidence_mode": {
+                  "const": "live_recovery"
+                }
+              },
+              "required": [
+                "evidence_mode"
+              ]
+            },
+            "then": {
+              "properties": {
+                "prior_terminal_outcome": {
+                  "const": ""
+                },
+                "prior_terminal_receipt_sha256": {
+                  "const": ""
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "prior_terminal_outcome": {
+                  "enum": [
+                    "aborted_preflight",
+                    "rolled_back",
+                    "recovered"
+                  ]
+                },
+                "prior_terminal_receipt_sha256": {
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
         ],
         "additionalProperties": false
       },

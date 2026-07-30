@@ -12,8 +12,8 @@ from studio_mcp_v2 import __version__
 
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.4.0-rc.5"
-PEP440_VERSION = "0.4.0rc5"
+VERSION = "0.4.0-rc.6"
+PEP440_VERSION = "0.4.0rc6"
 PRERELEASE_MARKERS = (
     "<!-- experimental-prerelease: true -->",
     "<!-- capability-parity: incomplete -->",

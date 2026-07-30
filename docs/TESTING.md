@@ -1,20 +1,22 @@
 # Roblox Studio MCP Multisession testing and release proof
 
-## Current rc.5 migration checks
+## Current rc.6 script-lifecycle checks
 
-Version `0.4.0-rc.5` changes the public product and Codex server name while
-retaining legacy physical and wire identities. Qualification must prove that
-an exactly owned `[mcp_servers.Roblox_Studio_v2]` table migrates to exactly one
-`[mcp_servers.Roblox_Studio_Multisession]` table; unowned drift and dual-active
-configurations must fail closed. Doctor, repair, rollback, and uninstall must
-preserve or restore the complete pre-migration Codex bytes as their contracts
-require.
+Version `0.4.0-rc.6` adds only bounded expected-absent script creation and
+transaction-proven compensating deletion to the existing revision-protected
+multi-edit path. Qualification focuses on all-target preflight, deterministic
+edit-then-create ordering, exact identity/revision/absence receipts, no
+overwrite, changed-created-content deletion refusal, same-generation recovery,
+same-session FIFO, cross-session isolation, direct/job parity, mutation-boundary
+Edit/document/path fencing, and explicit live-versus-cached terminal evidence.
 
+Rc.6 remains isolated and unpublished during qualification. The installed
+`0.4.0-rc.5` integration and retained `0.4.0-rc.4` rollback are not touched.
 Archive/bootstrap, launcher, plugin, support-root, manifest, `_v2` tool, and
-`/v2` route names remain unchanged by design. Active candidate commands below
-use `0.4.0-rc.5` while retaining the `roblox-studio-mcp-v2-*` physical
-artifact basename. Explicitly labeled historical acceptance evidence remains
-unchanged.
+`/v2` route names remain unchanged by design. Active build/proof commands
+below use `0.4.0-rc.6` while retaining the
+`roblox-studio-mcp-v2-*` physical artifact basename. The rc.4→rc.5 rename
+migration and live-read-only evidence remain historical and unchanged.
 
 ## Complete local check
 
@@ -50,14 +52,18 @@ plugin, or installed v1/Multisession files.
 Individual stages:
 
 ```bash
+rc6_output="../candidate-artifacts/0.4.0-rc.6-manual"
+test ! -e "$rc6_output"
 python3 -B scripts/audit_release.py --repo .
-python3 -B scripts/build_durable_release.py --output-dir dist
+python3 -B scripts/build_durable_release.py --output-dir "$rc6_output"
 python3 -B scripts/audit_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz
+  --archive "$rc6_output/roblox-studio-mcp-v2-0.4.0-rc.6-macos-arm64.tar.gz"
 python3 -B scripts/prove_release.py \
-  --archive dist/roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz \
-  --checksum-file dist/roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz.sha256
+  --archive "$rc6_output/roblox-studio-mcp-v2-0.4.0-rc.6-macos-arm64.tar.gz" \
+  --checksum-file "$rc6_output/roblox-studio-mcp-v2-0.4.0-rc.6-macos-arm64.tar.gz.sha256"
 ```
+
+The output directory must be fresh and outside the repository.
 
 The generic proof's update fixture is deliberately synthetic. The historical
 `prove_cross_version_rollback.py` gate remains pinned to the immutable
@@ -103,6 +109,14 @@ The proof compares that disposable rc.4 state to its own post-rollback bytes;
 the live installation and its generated plugin remain deliberately outside
 the proof scope.
 
+Rc.6 adds a separate real-package gate that does not rewrite either historical
+proof. Run `scripts/prove_multisession_update_rollback.py` with the exact
+published rc.5 archive and exact checkpointed rc.6 archive after the final
+candidate build. It installs rc.5 into a disposable home, updates to rc.6,
+proves rc.5 is the immediate rollback target, restores every active byte and
+mode plus the canonical registration, and runs the restored rc.5 doctor. See
+`RC5_TO_RC6_ROLLBACK_PROOF.md` for the exact pinned identity and invocation.
+
 ## Mandatory native rendered-plugin compilation
 
 Before any live candidate validation, render and hash the exact candidate
@@ -132,7 +146,10 @@ registration and clean candidate logs, then run bounded read-only checks
 against explicitly targeted Studio sessions. Those checks retain explicit
 `studio_id` routing and never use an active/default target or v1 fallback.
 
-The isolated read-only harness makes this proof mechanical. `prepare` must
+### Historical rc.5 read-only harness
+
+The following retained rc.5 harness documents the earlier read-only
+qualification; it is not the rc.6 mutation gate. `prepare` must
 run in a fresh private work root containing one exact extracted candidate
 release. It binds the complete release manifest and extracted tree, every
 runtime/config/secret file, the rendered package and sole `Main` source, the
@@ -209,10 +226,10 @@ bundle bytes and historical restore instructions remain immutable.
 | Phase 2 script-name search and cross-script literal grep schemas, cursor domains, deterministic pagination, traversal/source/output bounds, upstream quarantine, and malicious connected-result rejection | `test_phase2_script_catalog_contract.py`, `test_phase2_script_luau.py`, `test_phase2_script_pagination_model.py`, `test_phase2_script_response_validation.py` |
 | Script search/grep same-session serialization, cross-session isolation, reconnect fencing, and explicit-target stripping | `test_phase2_script_isolation.py` |
 | Phase 2 detailed instance inspection schema, fixed value codec, bounded tree summaries, malicious-result rejection, same-session FIFO, cross-session overlap/isolation, and reconnect-generation fencing | `test_phase2_instance_inspect_contract.py`, `test_phase2_inspect_luau.py`, `test_phase2_inspect_response_validation.py`, `test_phase2_inspect_isolation.py` |
-| Revision-protected multi-edit normalization, deterministic edit order, UTF-8/range/overlap rejection, target/source/receipt bounds, all-target prepare, CAS apply, compensation, exact recovery, and no cross-script atomicity claim | `test_phase2_multi_edit_model.py`, `test_phase2_multi_edit_luau.py`, `test_phase2_multi_edit_session_integrity.py` |
+| Revision-protected mixed edit/create normalization, deterministic edit-then-create order, expected-absent CAS, class/name/UTF-8/range/overlap rejection, combined target/source/path/receipt bounds, all-target prepare, exact read-back, transaction-proven create deletion, changed-created-content refusal, recovery, and no cross-script atomicity claim | `test_phase2_multi_edit_model.py`, `test_script_lifecycle_host.py`, `test_phase2_multi_edit_luau.py`, `test_phase2_multi_edit_session_integrity.py` |
 | Closed direct/nested-job input validation, frozen admitted arguments, exact job allowlist, handler output validation, and identity/schema/result receipts | `test_phase2_input_schema_enforcement.py`, `test_phase2_output_schema_parity.py`, `test_phase2_job_state_parity.py` |
 | Same-session direct/job FIFO, cross-session overlap/isolation, reconnect-generation fencing, bounded job/result retention, and hash-chained terminal tombstones | `test_phase2_job_fifo_isolation.py`, `test_phase2_job_retention_audit.py`, `test_phase2_multi_edit_session_integrity.py` |
-| Cross-file/package release-version coherence and exact real 0.4.0-rc.4→rc.5→0.4.0-rc.4 registration/active-byte/mode proof boundaries | `test_release_version_coherence.py`, `test_cross_version_rollback_proof.py`, external `prove_multisession_migration_rollback.py` evidence |
+| Cross-file/package rc.6 release-version coherence; preserved exact real 0.4.0-rc.4→rc.5→0.4.0-rc.4 migration proof; exact real rc.5→rc.6→rc.5 active-byte/mode/registration rollback proof | `test_release_version_coherence.py`, `test_cross_version_rollback_proof.py`, `test_multisession_update_rollback_proof.py`, external real-package proof evidence |
 
 ## Explicit-targeting contract
 

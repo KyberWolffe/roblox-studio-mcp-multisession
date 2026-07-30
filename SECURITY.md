@@ -104,9 +104,10 @@ retired.
 Multi-edit is never automatically replayed. Its internal prepare phase is
 read-only and becomes apply-authoritative only after the broker validates its
 exact Studio/client/document/generation identity, normalized argument digest,
-target order, source revisions, bounds, and receipt digest. Apply rechecks
-every target before its first write and records a read-back acknowledgement
-for each dispatched target.
+edit-then-create target order, existing source revisions, create-parent and
+expected-absent assertions, bounds, and receipt digest. Apply rechecks every
+target before its first write and records a read-back acknowledgement for each
+dispatched edit or creation.
 
 There is no cross-script transaction primitive. If a later target fails, an
 earlier target is compensatingly restored only while its current SHA-256 still
@@ -117,6 +118,16 @@ transaction UUID under its original `studio_id`, client identity, document
 epoch, and generation; it cannot accept caller-supplied edits, paths, source,
 or replacement revisions. A reconnect never rebinds or silently replays that
 transaction.
+
+Creation has a narrower deletion boundary than ordinary rollback. The plugin
+may destroy only the retained same-generation Instance created by that exact
+transaction, while it remains the unique child at the exact path and its name,
+allowlisted script class, source bytes, and SHA-256 still match the prepared
+plan, and only while it has zero children, zero attributes, and zero tags.
+Any move, rename, edit, added child/attribute/tag, replacement, ambiguity, or
+unavailable state prevents deletion and leaves recovery quarantined. There is
+no public general script or Instance deletion operation, and no pre-existing
+instance is replaced or removed.
 
 An incomplete Play transition enters recovery-only state after disconnect or
 generation replacement. Bounded host and server watchdogs can request or
@@ -139,13 +150,15 @@ Script updates are bounded compare-and-swap edits to an exact
 expected prior state. Input can only fire an existing Scriptable
 `InputBinding`. Studio paths are arrays of exact child-name segments, not code.
 
-Multi-edit permits only existing exact `LuaSourceContainer` paths and requires
-a lowercase expected source SHA-256 for each target. It cannot create an
-Instance or script, choose a class, evaluate Luau, or reflect arbitrary
-properties. Its target/edit/span/source/argument bounds are independently
-enforced by the host and Studio before mutation. Invalid UTF-8, duplicate or
-ambiguous paths, overlapping matches, stale revisions, and unbounded plans fail
-closed.
+Multi-edit permits existing exact `LuaSourceContainer` edits with a lowercase
+expected source SHA-256 and expected-absent creation of only `Script`,
+`LocalScript`, or `ModuleScript` beneath an existing exact parent. It cannot
+overwrite a present path, delete a caller-selected Instance, choose another
+class, evaluate Luau, or reflect arbitrary properties. Its combined target,
+edit, span, source, path, and argument bounds are independently enforced by
+the host and Studio before mutation. Invalid UTF-8, duplicate or ambiguous
+paths, missing parents, overlapping matches, stale revisions, non-absent
+create paths, and unbounded plans fail closed.
 
 The plugin's loopback origin, endpoint allowlist, Play bridge source, and
 Studio handlers are fixed. Enabling Studio's HTTP requests allows the plugin
@@ -191,5 +204,11 @@ to reach that fixed local broker; it does not permit caller-controlled URLs.
 - Screenshot and Scriptable `InputBinding` behavior remains subject to Roblox
   permissions and API availability.
 - Multi-edit provides all-target preflight, deterministic ordered per-target
-  CAS, and bounded compensating recovery; it does not provide or claim
-  cross-script atomicity, and script creation remains deferred.
+  CAS, expected-absent script creation, exact read-back, and bounded
+  transaction-proven compensating recovery; it does not provide or claim
+  cross-script atomicity or expose general instance deletion.
+- Every source-update, create-parenting, compensating restore, and
+  transaction-owned destruction boundary revalidates Edit/document identity
+  plus the exact prepared path and Instance binding. Same-generation cached
+  recovery evidence is explicitly labeled and hash-bound; applied,
+  uncertain, or cross-generation outcomes are never replayed as safe.

@@ -84,6 +84,7 @@ local DURABLE_BOUNDS = table.freeze({
 	MAX_INSPECT_RESULT_BYTES = 500_000,
 	INSPECT_COOPERATIVE_YIELD_INTERVAL = 100,
 	MAX_MULTI_EDIT_TARGETS = 16,
+	MAX_MULTI_EDIT_CREATES = 16,
 	MAX_MULTI_EDIT_EDITS_PER_TARGET = 64,
 	MAX_MULTI_EDIT_EDITS = 128,
 	MAX_MULTI_EDIT_LITERAL_BYTES = 262_144,
@@ -103,11 +104,11 @@ local PROTOCOL_METADATA = table.freeze({
 	SCRIPT_SEARCH_MATCH_SEMANTICS =
 		"all_keywords_ascii_case_insensitive_literal_subsequence",
 	MULTI_EDIT_ORDERING_VERSION =
-		"target-input-edit-input-v1",
+		"edit-target-input-then-create-input-v2",
 	MULTI_EDIT_ATOMICITY =
-		"preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1",
+		"preflight-all-per-target-cas-created-script-compensation-no-cross-script-atomicity-v2",
 	MULTI_EDIT_RECEIPT_CONTRACT =
-		"broker-validated-downstream-ack-v1",
+		"broker-validated-downstream-ack-v2",
 	INSPECT_SNAPSHOT_CONTRACT =
 		"path-edit-generation-fenced-observational-v1",
 	INSPECT_PROPERTY_ALLOWLIST_VERSION =
@@ -170,6 +171,7 @@ local OPERATION_ARG_KEYS = table.freeze({
 		transaction_id = true,
 		datamodel_type = true,
 		targets = true,
+		creates = true,
 		prepare_request_id = true,
 		prepare_sha256 = true,
 		prepared_targets = true,
@@ -222,6 +224,23 @@ local function validateIntegerRange(value, minimum, maximum, label)
 	return value
 end
 
+local function validPathSegmentCodepoints(value)
+	if type(value) ~= "string" then
+		return false
+	end
+	local decoded, noControls = pcall(function()
+		for _, codepoint in utf8.codes(value) do
+			if codepoint <= 0x1f
+				or (codepoint >= 0x7f and codepoint <= 0x9f)
+			then
+				return false
+			end
+		end
+		return true
+	end)
+	return decoded and noControls
+end
+
 local function validatePath(path, allowEmpty, label)
 	if type(path) ~= "table" then
 		adapterError("invalid_args", label .. " must be a path array", false)
@@ -241,11 +260,11 @@ local function validatePath(path, allowEmpty, label)
 	end
 	for index = 1, count do
 		local segment = path[index]
-		if type(segment) ~= "string"
-			or #segment < 1
-			or #segment > DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES
-			or string.find(segment, "[%c]") ~= nil
-		then
+			if type(segment) ~= "string"
+				or #segment < 1
+				or #segment > DURABLE_BOUNDS.MAX_PATH_SEGMENT_BYTES
+				or not validPathSegmentCodepoints(segment)
+			then
 			adapterError(
 				"invalid_args",
 				label .. " contains an invalid child-name segment",
@@ -567,6 +586,13 @@ local MULTI_EDIT_TARGET_KEYS = table.freeze({
 	expected_sha256 = true,
 	edits = true,
 })
+local MULTI_EDIT_CREATE_KEYS = table.freeze({
+	parent_path = true,
+	name = true,
+	class_name = true,
+	source = true,
+	expected_absent = true,
+})
 local MULTI_EDIT_EDIT_KEYS = table.freeze({
 	old_string = true,
 	new_string = true,
@@ -574,8 +600,9 @@ local MULTI_EDIT_EDIT_KEYS = table.freeze({
 	start_byte = true,
 	end_byte = true,
 })
-local MULTI_EDIT_PREPARED_TARGET_KEYS = table.freeze({
+local MULTI_EDIT_PREPARED_EDIT_TARGET_KEYS = table.freeze({
 	index = true,
+	kind = true,
 	path = true,
 	expected_sha256 = true,
 	prepared_sha256 = true,
@@ -586,11 +613,25 @@ local MULTI_EDIT_PREPARED_TARGET_KEYS = table.freeze({
 	replacement_count = true,
 	status = true,
 })
+local MULTI_EDIT_PREPARED_CREATE_TARGET_KEYS = table.freeze({
+	index = true,
+	kind = true,
+	path = true,
+	parent_path = true,
+	name = true,
+	class_name = true,
+	expected_absent = true,
+	prepared_absent = true,
+	planned_sha256 = true,
+	planned_source_length = true,
+	status = true,
+})
 local MULTI_EDIT_PREPARE_ARGS_KEYS = table.freeze({
 	_phase = true,
 	transaction_id = true,
 	datamodel_type = true,
 	targets = true,
+	creates = true,
 })
 local MULTI_EDIT_APPLY_ARGS_KEYS = table.freeze({
 	_phase = true,
@@ -622,26 +663,71 @@ local function validateSha256(value, label)
 	return value
 end
 
-local function validateMultiEditTargets(targets)
-	if type(targets) ~= "table"
-		or #targets < 1
-		or #targets > DURABLE_BOUNDS.MAX_MULTI_EDIT_TARGETS
+local function validateDenseArray(value, label)
+	if type(value) ~= "table" then
+		adapterError("invalid_args", label .. " must be a dense array", false)
+	end
+	local count = #value
+	for key in pairs(value) do
+		if not isInteger(key) or key < 1 or key > count then
+			adapterError("invalid_args", label .. " must be a dense array", false)
+		end
+	end
+	return count
+end
+
+local function multiEditPathSignature(path)
+	local parts = {}
+	for _, segment in ipairs(path) do
+		table.insert(parts, tostring(#segment))
+		table.insert(parts, ":")
+		table.insert(parts, segment)
+		table.insert(parts, ";")
+	end
+	return table.concat(parts)
+end
+
+local function pathsEqual(left, right)
+	if #left ~= #right then
+		return false
+	end
+	for index, segment in ipairs(left) do
+		if right[index] ~= segment then
+			return false
+		end
+	end
+	return true
+end
+
+local function validateCreateClass(className, label)
+	if className ~= "Script"
+		and className ~= "LocalScript"
+		and className ~= "ModuleScript"
 	then
 		adapterError(
 			"invalid_args",
-			"targets must contain 1 to 16 entries",
+			label .. " must be Script, LocalScript, or ModuleScript",
 			false
 		)
 	end
-	local targetCount = #targets
-	for key in pairs(targets) do
-		if not isInteger(key) or key < 1 or key > targetCount then
-			adapterError(
-				"invalid_args",
-				"targets must be a dense array",
-				false
-			)
-		end
+	return className
+end
+
+local function validateMultiEditTargets(targets, creates)
+	local targetCount = validateDenseArray(targets, "targets")
+	local createCount = creates == nil
+		and 0
+		or validateDenseArray(creates, "creates")
+	if targetCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_TARGETS
+		or createCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_CREATES
+		or targetCount + createCount < 1
+		or targetCount + createCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_TARGETS
+	then
+		adapterError(
+			"invalid_args",
+			"targets plus creates must contain 1 to 16 entries",
+			false
+		)
 	end
 	local seenPaths = {}
 	local totalEdits = 0
@@ -657,13 +743,8 @@ local function validateMultiEditTargets(targets)
 			false,
 			"targets[" .. tostring(targetIndex) .. "].path"
 		)
-		local pathSignatureParts = {}
 		for _, segment in ipairs(path) do
 			aggregatePathBytes = aggregatePathBytes + #segment
-			table.insert(pathSignatureParts, tostring(#segment))
-			table.insert(pathSignatureParts, ":")
-			table.insert(pathSignatureParts, segment)
-			table.insert(pathSignatureParts, ";")
 		end
 		if aggregatePathBytes > DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES then
 			adapterError(
@@ -672,7 +753,7 @@ local function validateMultiEditTargets(targets)
 				false
 			)
 		end
-		local pathSignature = table.concat(pathSignatureParts)
+		local pathSignature = multiEditPathSignature(path)
 		if seenPaths[pathSignature] == true then
 			adapterError(
 				"invalid_args",
@@ -771,41 +852,93 @@ local function validateMultiEditTargets(targets)
 			end
 		end
 	end
-	return totalEdits
+	for createIndex, create in ipairs(creates or {}) do
+		if type(create) ~= "table" then
+			adapterError("invalid_args", "Each create must be an object", false)
+		end
+		assertExactKeys(create, MULTI_EDIT_CREATE_KEYS, "multi_edit_create")
+		local parentPath = validatePath(
+			create.parent_path,
+			false,
+			"creates[" .. tostring(createIndex) .. "].parent_path"
+		)
+		if #parentPath >= DURABLE_BOUNDS.MAX_PATH_SEGMENTS then
+			adapterError(
+				"invalid_args",
+				"Create parent path leaves no bounded child segment",
+				false
+			)
+		end
+		validatePath(
+			{ create.name },
+			false,
+			"creates[" .. tostring(createIndex) .. "].name"
+		)
+		if not validUtf8(create.name) then
+			adapterError(
+				"invalid_args",
+				"Create name must be valid UTF-8",
+				false
+			)
+		end
+		validateCreateClass(
+			create.class_name,
+			"creates[" .. tostring(createIndex) .. "].class_name"
+		)
+		if create.expected_absent ~= true then
+			adapterError(
+				"invalid_args",
+				"Every script create must require expected_absent=true",
+				false
+			)
+		end
+		if not validUtf8(create.source)
+			or #create.source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+		then
+			adapterError(
+				"invalid_args",
+				"Create source must be bounded valid UTF-8",
+				false
+			)
+		end
+		local path = appendPath(parentPath, create.name)
+		for _, segment in ipairs(path) do
+			aggregatePathBytes = aggregatePathBytes + #segment
+		end
+		if aggregatePathBytes > DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES then
+			adapterError(
+				"invalid_args",
+				"Aggregate multi-edit target paths exceed 8192 UTF-8 bytes",
+				false
+			)
+		end
+		local pathSignature = multiEditPathSignature(path)
+		if seenPaths[pathSignature] == true then
+			adapterError(
+				"invalid_args",
+				"Edit and create exact target paths must be unique",
+				false
+			)
+		end
+		seenPaths[pathSignature] = true
+	end
+	return totalEdits, createCount
 end
 
 local function validatePreparedTargets(targets)
-	if type(targets) ~= "table"
-		or #targets < 1
-		or #targets > DURABLE_BOUNDS.MAX_MULTI_EDIT_TARGETS
-	then
+	local targetCount = validateDenseArray(targets, "prepared_targets")
+	if targetCount < 1 or targetCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_TARGETS then
 		adapterError("invalid_args", "prepared_targets is invalid", false)
 	end
 	local aggregatePathBytes = 0
+	local seenPaths = {}
+	local sawCreate = false
+	local createCount = 0
 	for index, target in ipairs(targets) do
 		if type(target) ~= "table" then
 			adapterError("invalid_args", "prepared target is invalid", false)
 		end
-		assertExactKeys(
-			target,
-			MULTI_EDIT_PREPARED_TARGET_KEYS,
-			"prepared_target"
-		)
-		if target.index ~= index
-			or target.status ~= "prepared"
-			or not isInteger(target.source_length)
-			or target.source_length < 0
-			or target.source_length > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
-			or not isInteger(target.planned_source_length)
-			or target.planned_source_length < 0
-			or target.planned_source_length > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
-			or not isInteger(target.edit_count)
-			or target.edit_count < 1
-			or target.edit_count > DURABLE_BOUNDS.MAX_MULTI_EDIT_EDITS_PER_TARGET
-			or not isInteger(target.replacement_count)
-			or target.replacement_count < target.edit_count
-			or target.replacement_count > DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS
-		then
+		if target.index ~= index or target.status ~= "prepared" then
 			adapterError("invalid_args", "prepared target fields are invalid", false)
 		end
 		local path = validatePath(
@@ -823,9 +956,87 @@ local function validatePreparedTargets(targets)
 				false
 			)
 		end
-		validateSha256(target.expected_sha256, "prepared expected_sha256")
-		validateSha256(target.prepared_sha256, "prepared prepared_sha256")
-		validateSha256(target.planned_sha256, "prepared planned_sha256")
+		local pathSignature = multiEditPathSignature(path)
+		if seenPaths[pathSignature] == true then
+			adapterError("invalid_args", "prepared target paths must be unique", false)
+		end
+		seenPaths[pathSignature] = true
+		if target.kind == "edit" then
+			if sawCreate then
+				adapterError(
+					"invalid_args",
+					"Prepared edits must precede prepared creates",
+					false
+				)
+			end
+			assertExactKeys(
+				target,
+				MULTI_EDIT_PREPARED_EDIT_TARGET_KEYS,
+				"prepared_edit_target"
+			)
+			if not isInteger(target.source_length)
+				or target.source_length < 0
+				or target.source_length > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+				or not isInteger(target.planned_source_length)
+				or target.planned_source_length < 0
+				or target.planned_source_length > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+				or not isInteger(target.edit_count)
+				or target.edit_count < 1
+				or target.edit_count > DURABLE_BOUNDS.MAX_MULTI_EDIT_EDITS_PER_TARGET
+				or not isInteger(target.replacement_count)
+				or target.replacement_count < target.edit_count
+				or target.replacement_count > DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS
+			then
+				adapterError("invalid_args", "prepared edit fields are invalid", false)
+			end
+			validateSha256(target.expected_sha256, "prepared expected_sha256")
+			validateSha256(target.prepared_sha256, "prepared prepared_sha256")
+			validateSha256(target.planned_sha256, "prepared planned_sha256")
+		elseif target.kind == "create" then
+			sawCreate = true
+			createCount = createCount + 1
+			assertExactKeys(
+				target,
+				MULTI_EDIT_PREPARED_CREATE_TARGET_KEYS,
+				"prepared_create_target"
+			)
+			local parentPath = validatePath(
+				target.parent_path,
+				false,
+				"prepared_create_target.parent_path"
+			)
+			if target.expected_absent ~= true
+				or target.prepared_absent ~= true
+				or not validUtf8(target.name)
+				or target.name ~= path[#path]
+				or #parentPath + 1 ~= #path
+				or not isInteger(target.planned_source_length)
+				or target.planned_source_length < 0
+				or target.planned_source_length > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+			then
+				adapterError("invalid_args", "prepared create fields are invalid", false)
+			end
+			for parentIndex, segment in ipairs(parentPath) do
+				if path[parentIndex] ~= segment then
+					adapterError(
+						"invalid_args",
+						"prepared create path does not match its parent and name",
+						false
+					)
+				end
+			end
+			validateCreateClass(target.class_name, "prepared create class_name")
+			validateSha256(target.planned_sha256, "prepared planned_sha256")
+		else
+			adapterError(
+				"invalid_args",
+				"prepared target kind must be edit or create",
+				false
+			)
+		end
+	end
+	if createCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_CREATES then
+		adapterError("invalid_args", "prepared creates exceed their bound", false)
 	end
 end
 
@@ -1039,7 +1250,7 @@ local function validateDurableArgs(operation, args, deadlineMs)
 					false
 				)
 			end
-			validateMultiEditTargets(args.targets)
+			validateMultiEditTargets(args.targets, args.creates)
 		elseif args._phase == "apply" then
 			assertExactKeys(
 				args,
@@ -4118,7 +4329,7 @@ end
 local function multiEditPrepareSha256(receipt)
 	local parts = {}
 	for _, value in ipairs({
-		"studio-multi-edit-prepare-v1",
+		"studio-multi-edit-prepare-v2",
 		receipt.studio_id,
 		receipt.client_instance_id,
 		receipt.document_epoch,
@@ -4129,6 +4340,7 @@ local function multiEditPrepareSha256(receipt)
 		receipt.atomicity,
 		receipt.target_count,
 		receipt.edit_count,
+		receipt.create_count,
 		receipt.aggregate_source_bytes,
 		receipt.aggregate_planned_source_bytes,
 	}) do
@@ -4137,18 +4349,34 @@ local function multiEditPrepareSha256(receipt)
 	appendCanonicalMultiEditValue(parts, #receipt.targets)
 	for _, target in ipairs(receipt.targets) do
 		appendCanonicalMultiEditValue(parts, target.index)
+		appendCanonicalMultiEditValue(parts, target.kind)
 		appendCanonicalMultiEditPath(parts, target.path)
-		for _, fieldName in ipairs({
-			"expected_sha256",
-			"prepared_sha256",
-			"planned_sha256",
-			"source_length",
-			"planned_source_length",
-			"edit_count",
-			"replacement_count",
-			"status",
-		}) do
-			appendCanonicalMultiEditValue(parts, target[fieldName])
+		if target.kind == "edit" then
+			for _, fieldName in ipairs({
+				"expected_sha256",
+				"prepared_sha256",
+				"planned_sha256",
+				"source_length",
+				"planned_source_length",
+				"edit_count",
+				"replacement_count",
+				"status",
+			}) do
+				appendCanonicalMultiEditValue(parts, target[fieldName])
+			end
+		else
+			appendCanonicalMultiEditPath(parts, target.parent_path)
+			for _, fieldName in ipairs({
+				"name",
+				"class_name",
+				"expected_absent",
+				"prepared_absent",
+				"planned_sha256",
+				"planned_source_length",
+				"status",
+			}) do
+				appendCanonicalMultiEditValue(parts, target[fieldName])
+			end
 		end
 	end
 	return sourceSha256(table.concat(parts))
@@ -4157,7 +4385,7 @@ end
 local function multiEditMutationSha256(receipt)
 	local parts = {}
 	for _, value in ipairs({
-		"studio-multi-edit-mutation-v1",
+		"studio-multi-edit-mutation-v2",
 		receipt.phase,
 		receipt.studio_id,
 		receipt.client_instance_id,
@@ -4170,39 +4398,78 @@ local function multiEditMutationSha256(receipt)
 		receipt.ordering_version,
 		receipt.atomicity,
 		receipt.receipt_contract,
+		receipt.evidence_mode,
+		receipt.prior_terminal_outcome,
+		receipt.prior_terminal_receipt_sha256,
 		receipt.outcome,
 		receipt.safe_terminal,
 		receipt.recovery_required,
 		receipt.target_count,
 		receipt.edit_count,
+		receipt.create_count,
 	}) do
 		appendCanonicalMultiEditValue(parts, value)
 	end
 	appendCanonicalMultiEditValue(parts, #receipt.targets)
 	for _, target in ipairs(receipt.targets) do
 		appendCanonicalMultiEditValue(parts, target.index)
+		appendCanonicalMultiEditValue(parts, target.kind)
 		appendCanonicalMultiEditPath(parts, target.path)
-		for _, fieldName in ipairs({
-			"expected_sha256",
-			"prepared_sha256",
-			"planned_sha256",
-			"observed_before_sha256",
-			"observed_after_sha256",
-			"source_length",
-			"planned_source_length",
-			"edit_count",
-			"replacement_count",
-			"status",
-		}) do
-			appendCanonicalMultiEditValue(parts, target[fieldName])
+		if target.kind == "edit" then
+			for _, fieldName in ipairs({
+				"expected_sha256",
+				"prepared_sha256",
+				"planned_sha256",
+				"observed_before_sha256",
+				"observed_after_sha256",
+				"source_length",
+				"planned_source_length",
+				"edit_count",
+				"replacement_count",
+				"status",
+			}) do
+				appendCanonicalMultiEditValue(parts, target[fieldName])
+			end
+		else
+			appendCanonicalMultiEditPath(parts, target.parent_path)
+			for _, fieldName in ipairs({
+				"name",
+				"class_name",
+				"expected_absent",
+				"planned_sha256",
+				"planned_source_length",
+				"observed_before_state",
+				"observed_after_state",
+				"observed_after_class_name",
+				"observed_after_sha256",
+				"status",
+			}) do
+				appendCanonicalMultiEditValue(parts, target[fieldName])
+			end
 		end
 	end
 	return sourceSha256(table.concat(parts))
 end
 
 local function copyPreparedMultiEditTarget(target)
+	if target.kind == "create" then
+		return {
+			index = target.index,
+			kind = "create",
+			path = copyPath(target.path),
+			parent_path = copyPath(target.parent_path),
+			name = target.name,
+			class_name = target.class_name,
+			expected_absent = true,
+			prepared_absent = true,
+			planned_sha256 = target.planned_sha256,
+			planned_source_length = target.planned_source_length,
+			status = "prepared",
+		}
+	end
 	return {
 		index = target.index,
+		kind = "edit",
 		path = copyPath(target.path),
 		expected_sha256 = target.expected_sha256,
 		prepared_sha256 = target.prepared_sha256,
@@ -4409,12 +4676,127 @@ local function planMultiEditSource(source, edits, deadline)
 	return planned, replacementCount
 end
 
+local function exactNamedChild(parent, name)
+	local children = parent:GetChildren()
+	if #children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE then
+		adapterError(
+			"tree_width_unsupported",
+			"Exact create-path resolution exceeds the bounded child width",
+			false
+		)
+	end
+	local match = nil
+	local count = 0
+	for _, child in ipairs(children) do
+		if child.Name == name then
+			count = count + 1
+			match = child
+		end
+	end
+	return match, count
+end
+
+local function prepareMultiEditExistingTarget(
+	requested,
+	targetIndex,
+	deadline,
+	seenInstances
+)
+	requireMultiEditTime(deadline)
+	assertExpectedDocument()
+	local target = requireLuaSourceContainer(requested.path)
+	if seenInstances[target] == true then
+		adapterError(
+			"multi_edit_duplicate_target",
+			"Two paths resolved to the same target Instance",
+			false
+		)
+	end
+	seenInstances[target] = true
+	local source = readEditorSource(target)
+	if requireLuaSourceContainer(requested.path) ~= target then
+		adapterError(
+			"multi_edit_target_moved",
+			"Exact target identity changed during source read",
+			false
+		)
+	end
+	if not validUtf8(source) or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES then
+		adapterError(
+			"multi_edit_source_invalid",
+			"Target source is invalid UTF-8 or exceeds the source bound",
+			false
+		)
+	end
+	local preparedSha256 = sourceSha256(source)
+	if preparedSha256 ~= requested.expected_sha256 then
+		adapterError(
+			"multi_edit_revision_conflict",
+			"One target no longer matches its expected revision",
+			false
+		)
+	end
+	local planned, replacementCount = planMultiEditSource(
+		source,
+		requested.edits,
+		deadline
+	)
+	return {
+		index = targetIndex,
+		kind = "edit",
+		path = copyPath(requested.path),
+		target = target,
+		expected_sha256 = requested.expected_sha256,
+		prepared_sha256 = preparedSha256,
+		planned_sha256 = sourceSha256(planned),
+		source_length = #source,
+		planned_source_length = #planned,
+		edit_count = #requested.edits,
+		replacement_count = replacementCount,
+		original_source = source,
+		planned_source = planned,
+	}, #source, #planned, replacementCount
+end
+
+local function prepareMultiEditCreateTarget(requested, targetIndex, deadline)
+	requireMultiEditTime(deadline)
+	assertExpectedDocument()
+	local parent = resolveExactPath(requested.parent_path, false)
+	local existing, matchCount = exactNamedChild(parent, requested.name)
+	if existing ~= nil or matchCount ~= 0 then
+		adapterError(
+			"multi_edit_create_revision_conflict",
+			"Create target is no longer absent beneath its exact parent",
+			false
+		)
+	end
+	local plannedSha256 = sourceSha256(requested.source)
+	return {
+		index = targetIndex,
+		kind = "create",
+		path = appendPath(requested.parent_path, requested.name),
+		parent_path = copyPath(requested.parent_path),
+		parent = parent,
+		name = requested.name,
+		class_name = requested.class_name,
+		expected_absent = true,
+		prepared_absent = true,
+		planned_sha256 = plannedSha256,
+		planned_source_length = #requested.source,
+		planned_source = requested.source,
+		created_instance = nil,
+	}, #requested.source
+end
+
 local function prepareMultiEdit(args, requestId, deadlineMs)
 	requireEditMode()
 	local deadline = os.clock() + (deadlineMs / 1_000)
 	local existing = peer.multi_edit_plan
 	if existing ~= nil
-		and existing.status == "recovery_required"
+		and (
+			existing.status == "applying"
+			or existing.status == "recovery_required"
+		)
 	then
 		adapterError(
 			"multi_edit_recovery_required",
@@ -4422,7 +4804,10 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 			false
 		)
 	end
-	local totalEditCount = validateMultiEditTargets(args.targets)
+	local totalEditCount, createCount = validateMultiEditTargets(
+		args.targets,
+		args.creates
+	)
 	local planTargets = {}
 	local receiptTargets = {}
 	local seenInstances = {}
@@ -4430,38 +4815,15 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 	local aggregatePlannedSourceBytes = 0
 	local aggregateReplacementCount = 0
 	for targetIndex, requested in ipairs(args.targets) do
-		requireMultiEditTime(deadline)
-		assertExpectedDocument()
-		local target = requireLuaSourceContainer(requested.path)
-		if seenInstances[target] == true then
-			adapterError(
-				"multi_edit_duplicate_target",
-				"Two paths resolved to the same target Instance",
-				false
+		local planTarget,
+			sourceBytes,
+			plannedBytes,
+			replacementCount = prepareMultiEditExistingTarget(
+				requested,
+				targetIndex,
+				deadline,
+				seenInstances
 			)
-		end
-		seenInstances[target] = true
-		local source = readEditorSource(target)
-		if not validUtf8(source) or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES then
-			adapterError(
-				"multi_edit_source_invalid",
-				"Target source is invalid UTF-8 or exceeds the source bound",
-				false
-			)
-		end
-		local preparedSha256 = sourceSha256(source)
-		if preparedSha256 ~= requested.expected_sha256 then
-			adapterError(
-				"multi_edit_revision_conflict",
-				"One target no longer matches its expected revision",
-				false
-			)
-		end
-		local planned, replacementCount = planMultiEditSource(
-			source,
-			requested.edits,
-			deadline
-		)
 		aggregateReplacementCount =
 			aggregateReplacementCount + replacementCount
 		if aggregateReplacementCount > DURABLE_BOUNDS.MAX_MULTI_EDIT_REPLACEMENT_SPANS then
@@ -4471,9 +4833,9 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 				false
 			)
 		end
-		aggregateSourceBytes = aggregateSourceBytes + #source
+		aggregateSourceBytes = aggregateSourceBytes + sourceBytes
 		aggregatePlannedSourceBytes =
-			aggregatePlannedSourceBytes + #planned
+			aggregatePlannedSourceBytes + plannedBytes
 		if aggregateSourceBytes > DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
 			or aggregatePlannedSourceBytes
 				> DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
@@ -4484,20 +4846,30 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 				false
 			)
 		end
-		local planTarget = {
-			index = targetIndex,
-			path = copyPath(requested.path),
-			target = target,
-			expected_sha256 = requested.expected_sha256,
-			prepared_sha256 = preparedSha256,
-			planned_sha256 = sourceSha256(planned),
-			source_length = #source,
-			planned_source_length = #planned,
-			edit_count = #requested.edits,
-			replacement_count = replacementCount,
-			original_source = source,
-			planned_source = planned,
-		}
+		table.insert(planTargets, planTarget)
+		table.insert(
+			receiptTargets,
+			copyPreparedMultiEditTarget(planTarget)
+		)
+	end
+	for createIndex, requested in ipairs(args.creates or {}) do
+		local targetIndex = #args.targets + createIndex
+		local planTarget, plannedBytes = prepareMultiEditCreateTarget(
+			requested,
+			targetIndex,
+			deadline
+		)
+		aggregatePlannedSourceBytes =
+			aggregatePlannedSourceBytes + plannedBytes
+		if aggregatePlannedSourceBytes
+			> DURABLE_BOUNDS.MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
+		then
+			adapterError(
+				"multi_edit_aggregate_source_limit",
+				"Aggregate staged source exceeds the durable bound",
+				false
+			)
+		end
 		table.insert(planTargets, planTarget)
 		table.insert(
 			receiptTargets,
@@ -4507,7 +4879,7 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 	assertExpectedDocument()
 	local receipt = {
 		adapter = "studio-mcp-v2-durable-plugin",
-		v = 1,
+		v = 2,
 		operation = "studio_multi_edit",
 		phase = "prepare",
 		studio_id = peer.studio_id,
@@ -4520,6 +4892,7 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		atomicity = PROTOCOL_METADATA.MULTI_EDIT_ATOMICITY,
 		target_count = #planTargets,
 		edit_count = totalEditCount,
+		create_count = createCount,
 		aggregate_source_bytes = aggregateSourceBytes,
 		aggregate_planned_source_bytes = aggregatePlannedSourceBytes,
 		targets = receiptTargets,
@@ -4549,12 +4922,14 @@ local function prepareMultiEdit(args, requestId, deadlineMs)
 		status = "prepared",
 		targets = planTargets,
 		edit_count = totalEditCount,
+		create_count = createCount,
 	}
 	return receipt
 end
 
 local function multiEditCasReplace(
 	target,
+	path,
 	expectedSha256,
 	replacement,
 	allowAlreadyReplacement
@@ -4563,6 +4938,17 @@ local function multiEditCasReplace(
 	local callbackInvoked = false
 	local sawExpected = false
 	local conflictingRevision = false
+	local mutationFenceFailed = false
+	local dispatchFenceOk = pcall(function()
+		requireEditMode()
+		assertExpectedDocument()
+		if requireLuaSourceContainer(path) ~= target then
+			error("exact multi-edit target identity changed")
+		end
+	end)
+	if not dispatchFenceOk then
+		return false, "", true
+	end
 	local updateOk = pcall(function()
 		OPTIONAL_SERVICES.ScriptEditorService:UpdateSourceAsync(target, function(currentSource)
 			callbackInvoked = true
@@ -4574,7 +4960,18 @@ local function multiEditCasReplace(
 				return currentSource
 			end
 			local currentSha256 = sourceSha256(currentSource)
-			if currentSha256 == expectedSha256 then
+				if currentSha256 == expectedSha256 then
+					local commitFenceOk = pcall(function()
+						requireEditMode()
+						assertExpectedDocument()
+						if requireLuaSourceContainer(path) ~= target then
+							error("exact multi-edit target identity changed")
+						end
+					end)
+				if not commitFenceOk then
+					mutationFenceFailed = true
+					return currentSource
+				end
 				sawExpected = true
 				return replacement
 			end
@@ -4597,9 +4994,18 @@ local function multiEditCasReplace(
 	then
 		return false, "", true
 	end
+	local identityConfirmed = pcall(function()
+		if requireLuaSourceContainer(path) ~= target then
+			error("exact multi-edit target identity changed")
+		end
+	end)
+	if not identityConfirmed then
+		return false, "", true
+	end
 	local confirmedSha256 = sourceSha256(confirmedSource)
 	if updateOk
 		and callbackInvoked
+		and not mutationFenceFailed
 		and not conflictingRevision
 		and (
 			sawExpected
@@ -4614,13 +5020,348 @@ local function multiEditCasReplace(
 		return true, confirmedSha256, false
 	end
 	return false,
-		confirmedSha256,
-		confirmedSha256 ~= expectedSha256
+			confirmedSha256,
+			mutationFenceFailed or confirmedSha256 ~= expectedSha256
+end
+
+local function multiEditCreatedContentState(created)
+	local inspectOk, changed = pcall(function()
+		local children = created:GetChildren()
+		if type(children) ~= "table"
+			or #children > DURABLE_BOUNDS.MAX_TREE_CHILDREN_PER_INSTANCE
+		then
+			error("created child state is unavailable or unbounded")
+		end
+		if #children > 0 then
+			return true
+		end
+		local attributes = created:GetAttributes()
+		if type(attributes) ~= "table" then
+			error("created attribute state is unavailable")
+		end
+		local attributeCount = 0
+		for _ in pairs(attributes) do
+			attributeCount = attributeCount + 1
+			if attributeCount > DURABLE_BOUNDS.MAX_INSPECT_ATTRIBUTES_RAW then
+				error("created attribute state is unbounded")
+			end
+		end
+		if attributeCount > 0 then
+			return true
+		end
+		local tags = created:GetTags()
+		if type(tags) ~= "table"
+			or #tags > DURABLE_BOUNDS.MAX_INSPECT_TAGS_RAW
+		then
+			error("created tag state is unavailable or unbounded")
+		end
+		return #tags > 0
+	end)
+	if not inspectOk then
+		return "unavailable"
+	end
+	return changed and "present_unproven" or "empty"
+end
+
+local function observeMultiEditCreate(planTarget)
+	local parentOk, parent = pcall(function()
+		return resolveExactPath(planTarget.parent_path, false)
+	end)
+	if not parentOk or parent ~= planTarget.parent then
+		return "unavailable", "", ""
+	end
+	local childOk, child, matchCount = pcall(function()
+		local match, count = exactNamedChild(parent, planTarget.name)
+		return match, count
+	end)
+	if not childOk then
+		return "unavailable", "", ""
+	end
+	if matchCount == 0 then
+		if planTarget.created_instance ~= nil
+			and planTarget.created_instance.Parent ~= nil
+		then
+			return "present_unproven", "", ""
+		end
+		return "absent", "", ""
+	end
+	if matchCount ~= 1
+		or planTarget.created_instance == nil
+		or child ~= planTarget.created_instance
+		or child.Parent ~= parent
+		or child.Name ~= planTarget.name
+		or child.ClassName ~= planTarget.class_name
+	then
+		return "present_unproven", "", ""
+	end
+	local contentState = multiEditCreatedContentState(child)
+	if contentState ~= "empty" then
+		return contentState, "", ""
+	end
+	local sourceOk, source = pcall(function()
+		return readEditorSource(child)
+	end)
+	if not sourceOk
+		or type(source) ~= "string"
+		or not validUtf8(source)
+		or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+	then
+		return "unavailable", "", ""
+	end
+	local reboundOk, reboundParent, reboundChild, reboundCount =
+		pcall(function()
+			local exactParent =
+				resolveExactPath(planTarget.parent_path, false)
+			local exactChild, count =
+				exactNamedChild(exactParent, planTarget.name)
+			return exactParent, exactChild, count
+		end)
+	if not reboundOk
+		or reboundParent ~= planTarget.parent
+		or reboundCount ~= 1
+		or reboundChild ~= child
+	then
+		return "present_unproven", "", ""
+	end
+	local digest = sourceSha256(source)
+	if source ~= planTarget.planned_source
+		or digest ~= planTarget.planned_sha256
+	then
+		return "present_unproven", "", ""
+	end
+	return "created_exact", planTarget.class_name, digest
+end
+
+local function discardUnparentedMultiEditCreate(created)
+	if created == nil or created.Parent ~= nil then
+		return false
+	end
+	local mutationFenceOk = pcall(function()
+		requireEditMode()
+		assertExpectedDocument()
+	end)
+	if not mutationFenceOk then
+		return false
+	end
+	pcall(function()
+		created:Destroy()
+	end)
+	return created.Parent == nil
+end
+
+local function applyMultiEditCreate(planTarget)
+	local beforeState = observeMultiEditCreate(planTarget)
+	if beforeState ~= "absent" then
+		return false, false, beforeState, "", ""
+	end
+	local created = nil
+	local constructOk = pcall(function()
+		created = Instance.new(planTarget.class_name)
+		created.Name = planTarget.name
+		created.Source = planTarget.planned_source
+	end)
+	if not constructOk
+		or created == nil
+		or created.Parent ~= nil
+		or created.Name ~= planTarget.name
+		or created.ClassName ~= planTarget.class_name
+	then
+		discardUnparentedMultiEditCreate(created)
+		local state = observeMultiEditCreate(planTarget)
+		return false, false, state, "", ""
+	end
+	local stagedSourceOk, stagedSource = pcall(function()
+		return created.Source
+	end)
+	if not stagedSourceOk
+		or stagedSource ~= planTarget.planned_source
+		or sourceSha256(stagedSource) ~= planTarget.planned_sha256
+	then
+		discardUnparentedMultiEditCreate(created)
+		local state = observeMultiEditCreate(planTarget)
+		return false, false, state, "", ""
+	end
+	assertExpectedDocument()
+	local parentOk, parent = pcall(function()
+		return resolveExactPath(planTarget.parent_path, false)
+	end)
+	if not parentOk or parent ~= planTarget.parent then
+		discardUnparentedMultiEditCreate(created)
+		local state = observeMultiEditCreate(planTarget)
+		return false, false, state, "", ""
+	end
+	local childOk, existing, matchCount = pcall(function()
+		local match, count = exactNamedChild(parent, planTarget.name)
+		return match, count
+	end)
+	if not childOk
+		or existing ~= nil
+		or matchCount ~= 0
+	then
+		discardUnparentedMultiEditCreate(created)
+		local state = observeMultiEditCreate(planTarget)
+		return false, false, state, "", ""
+	end
+	local mutationFenceFailed = false
+	local parentedOk = pcall(function()
+		local reboundParent =
+			resolveExactPath(planTarget.parent_path, false)
+		if reboundParent ~= parent then
+			error("exact create parent identity changed")
+		end
+		local finalExisting, finalMatchCount =
+			exactNamedChild(parent, planTarget.name)
+		if finalExisting ~= nil or finalMatchCount ~= 0 then
+			error("exact create path is no longer absent")
+		end
+		local commitFenceOk = pcall(function()
+			requireEditMode()
+			assertExpectedDocument()
+		end)
+		if not commitFenceOk then
+			mutationFenceFailed = true
+			error("multi-edit create mutation fence failed")
+		end
+		created.Parent = parent
+	end)
+	if not parentedOk then
+		discardUnparentedMultiEditCreate(created)
+		local state, className, digest =
+			observeMultiEditCreate(planTarget)
+		if mutationFenceFailed and state == "absent" then
+			state = "unavailable"
+			className = ""
+			digest = ""
+		end
+		return false, false, state, className, digest
+	end
+	local mutated = created.Parent ~= nil
+	if mutated then
+		planTarget.created_instance = created
+	end
+	local state, className, digest = observeMultiEditCreate(planTarget)
+	return state == "created_exact", mutated, state, className, digest
+end
+
+local function compensateMultiEditCreate(planTarget)
+	local beforeState, beforeClass, beforeDigest =
+		observeMultiEditCreate(planTarget)
+	if beforeState == "absent"
+		and planTarget.created_instance ~= nil
+		and planTarget.created_instance.Parent == nil
+	then
+		return true, beforeState, beforeState, "", ""
+	end
+	if beforeState ~= "created_exact"
+		or beforeClass ~= planTarget.class_name
+		or beforeDigest ~= planTarget.planned_sha256
+	then
+		return false, beforeState, beforeState, beforeClass, beforeDigest
+	end
+	local created = planTarget.created_instance
+	local contentState = multiEditCreatedContentState(created)
+	if contentState ~= "empty" then
+		return false, contentState, contentState, "", ""
+	end
+	local finalState, finalClass, finalDigest =
+		observeMultiEditCreate(planTarget)
+	if finalState ~= "created_exact"
+		or finalClass ~= planTarget.class_name
+		or finalDigest ~= planTarget.planned_sha256
+	then
+		return false, finalState, finalState, finalClass, finalDigest
+	end
+	local destroyedOk = pcall(function()
+		local commitFenceOk = pcall(function()
+			requireEditMode()
+			assertExpectedDocument()
+		end)
+		if not commitFenceOk then
+			error("multi-edit compensation mutation fence failed")
+		end
+		local reboundParent =
+			resolveExactPath(planTarget.parent_path, false)
+		if reboundParent ~= planTarget.parent then
+			error("exact create parent identity changed")
+		end
+		local exact, matchCount =
+			exactNamedChild(planTarget.parent, planTarget.name)
+		if matchCount ~= 1
+			or exact ~= created
+			or multiEditCreatedContentState(created) ~= "empty"
+		then
+			error("created script identity changed before compensation")
+		end
+		created:Destroy()
+	end)
+	if not destroyedOk then
+		local retainedState, retainedClass, retainedDigest =
+			observeMultiEditCreate(planTarget)
+		return false,
+			retainedState,
+			retainedState,
+			retainedClass,
+			retainedDigest
+	end
+	local afterState, afterClass, afterDigest =
+		observeMultiEditCreate(planTarget)
+	if created.Parent == nil
+		and afterState == "absent"
+	then
+		return true, beforeState, afterState, "", ""
+	end
+	return false, beforeState, afterState, afterClass, afterDigest
+end
+
+local function preparedMultiEditTargetMatches(supplied, expected)
+	if supplied.index ~= expected.index
+		or supplied.kind ~= expected.kind
+		or supplied.status ~= expected.status
+		or not pathsEqual(supplied.path, expected.path)
+	then
+		return false
+	end
+	if expected.kind == "create" then
+		return pathsEqual(supplied.parent_path, expected.parent_path)
+			and supplied.name == expected.name
+			and supplied.class_name == expected.class_name
+			and supplied.expected_absent == expected.expected_absent
+			and supplied.prepared_absent == expected.prepared_absent
+			and supplied.planned_sha256 == expected.planned_sha256
+			and supplied.planned_source_length
+				== expected.planned_source_length
+	end
+	return supplied.expected_sha256 == expected.expected_sha256
+		and supplied.prepared_sha256 == expected.prepared_sha256
+		and supplied.planned_sha256 == expected.planned_sha256
+		and supplied.source_length == expected.source_length
+		and supplied.planned_source_length == expected.planned_source_length
+		and supplied.edit_count == expected.edit_count
+		and supplied.replacement_count == expected.replacement_count
 end
 
 local function newMultiEditTargetOutcome(planTarget)
+	if planTarget.kind == "create" then
+		return {
+			index = planTarget.index,
+			kind = "create",
+			path = copyPath(planTarget.path),
+			parent_path = copyPath(planTarget.parent_path),
+			name = planTarget.name,
+			class_name = planTarget.class_name,
+			expected_absent = true,
+			planned_sha256 = planTarget.planned_sha256,
+			planned_source_length = planTarget.planned_source_length,
+			observed_before_state = "absent",
+			observed_after_state = "absent",
+			observed_after_class_name = "",
+			observed_after_sha256 = "",
+			status = "not_created",
+		}
+	end
 	return {
 		index = planTarget.index,
+		kind = "edit",
 		path = copyPath(planTarget.path),
 		expected_sha256 = planTarget.expected_sha256,
 		prepared_sha256 = planTarget.prepared_sha256,
@@ -4635,17 +5376,38 @@ local function newMultiEditTargetOutcome(planTarget)
 	}
 end
 
+local function copyMultiEditTargetOutcomes(targetOutcomes)
+	local copied = {}
+	for index, outcome in ipairs(targetOutcomes) do
+		local targetCopy = {}
+		for key, value in pairs(outcome) do
+			if key == "path" or key == "parent_path" then
+				targetCopy[key] = copyPath(value)
+			else
+				targetCopy[key] = value
+			end
+		end
+		copied[index] = targetCopy
+	end
+	return copied
+end
+
 local function newMultiEditMutationReceipt(
 	plan,
 	requestId,
 	phase,
 	outcome,
 	safeTerminal,
-	targetOutcomes
+	targetOutcomes,
+	evidenceMode,
+	priorTerminalOutcome,
+	priorTerminalReceiptSha256
 )
+	local effectiveEvidenceMode = evidenceMode
+		or (phase == "apply" and "apply_execution" or "live_recovery")
 	local receipt = {
 		adapter = "studio-mcp-v2-durable-plugin",
-		v = 1,
+		v = 2,
 		operation = phase == "recover"
 			and "studio_recover_multi_edit"
 			or "studio_multi_edit",
@@ -4661,11 +5423,16 @@ local function newMultiEditMutationReceipt(
 		ordering_version = PROTOCOL_METADATA.MULTI_EDIT_ORDERING_VERSION,
 		atomicity = PROTOCOL_METADATA.MULTI_EDIT_ATOMICITY,
 		receipt_contract = PROTOCOL_METADATA.MULTI_EDIT_RECEIPT_CONTRACT,
+		evidence_mode = effectiveEvidenceMode,
+		prior_terminal_outcome = priorTerminalOutcome or "",
+		prior_terminal_receipt_sha256 =
+			priorTerminalReceiptSha256 or "",
 		outcome = outcome,
 		safe_terminal = safeTerminal,
 		recovery_required = not safeTerminal,
 		target_count = #plan.targets,
 		edit_count = plan.edit_count,
+		create_count = plan.create_count,
 		targets = targetOutcomes,
 	}
 	receipt.receipt_sha256 = multiEditMutationSha256(receipt)
@@ -4682,6 +5449,23 @@ local function newMultiEditMutationReceipt(
 			false
 		)
 	end
+	if safeTerminal
+		and (
+			(phase == "apply"
+				and (
+					outcome == "aborted_preflight"
+					or outcome == "rolled_back"
+				))
+			or (phase == "recover" and outcome == "recovered")
+		)
+	then
+		plan.safe_terminal_evidence = {
+			status = plan.status,
+			outcome = outcome,
+			receipt_sha256 = receipt.receipt_sha256,
+			targets = copyMultiEditTargetOutcomes(targetOutcomes),
+		}
+	end
 	return receipt
 end
 
@@ -4689,8 +5473,15 @@ local function assertMultiEditMutationReceiptBound(plan, requestId, phase)
 	local worstCaseOutcomes = {}
 	for index, planTarget in ipairs(plan.targets) do
 		local outcome = newMultiEditTargetOutcome(planTarget)
-		outcome.observed_before_sha256 = planTarget.prepared_sha256
-		outcome.observed_after_sha256 = planTarget.planned_sha256
+		if planTarget.kind == "create" then
+			outcome.observed_before_state = "present_unproven"
+			outcome.observed_after_state = "present_unproven"
+			outcome.observed_after_class_name = planTarget.class_name
+			outcome.observed_after_sha256 = planTarget.planned_sha256
+		else
+			outcome.observed_before_sha256 = planTarget.prepared_sha256
+			outcome.observed_after_sha256 = planTarget.planned_sha256
+		end
 		outcome.status = "recovery_required"
 		worstCaseOutcomes[index] = outcome
 	end
@@ -4700,7 +5491,10 @@ local function assertMultiEditMutationReceiptBound(plan, requestId, phase)
 		phase,
 		"recovery_required",
 		false,
-		worstCaseOutcomes
+		worstCaseOutcomes,
+		"cached_safe_terminal",
+		"aborted_preflight",
+		string.rep("0", 64)
 	)
 end
 
@@ -4733,26 +5527,7 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 	for index, planTarget in ipairs(plan.targets) do
 		local supplied = args.prepared_targets[index]
 		local expected = copyPreparedMultiEditTarget(planTarget)
-		local same = supplied.index == expected.index
-			and supplied.expected_sha256 == expected.expected_sha256
-			and supplied.prepared_sha256 == expected.prepared_sha256
-			and supplied.planned_sha256 == expected.planned_sha256
-			and supplied.source_length == expected.source_length
-			and supplied.planned_source_length
-				== expected.planned_source_length
-			and supplied.edit_count == expected.edit_count
-			and supplied.replacement_count == expected.replacement_count
-			and supplied.status == expected.status
-			and #supplied.path == #expected.path
-		if same then
-			for pathIndex, segment in ipairs(expected.path) do
-				if supplied.path[pathIndex] ~= segment then
-					same = false
-					break
-				end
-			end
-		end
-		if not same then
+		if not preparedMultiEditTargetMatches(supplied, expected) then
 			adapterError(
 				"multi_edit_prepare_mismatch",
 				"Prepared target receipt changed before apply",
@@ -4761,6 +5536,7 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 		end
 	end
 	assertMultiEditMutationReceiptBound(plan, requestId, "apply")
+	plan.status = "applying"
 
 	local outcomes = {}
 	local preflightSafe = true
@@ -4769,41 +5545,67 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 		outcomes[index] = outcome
 		if os.clock() > deadline then
 			preflightSafe = false
-			outcome.observed_before_sha256 = ""
-			outcome.observed_after_sha256 = ""
+			if planTarget.kind == "create" then
+				outcome.observed_before_state = "unavailable"
+				outcome.observed_after_state = "unavailable"
+			else
+				outcome.observed_before_sha256 = ""
+				outcome.observed_after_sha256 = ""
+			end
 			for remaining = index + 1, #plan.targets do
 				local remainingOutcome = newMultiEditTargetOutcome(
 					plan.targets[remaining]
 				)
-				remainingOutcome.observed_before_sha256 = ""
-				remainingOutcome.observed_after_sha256 = ""
+				if plan.targets[remaining].kind == "create" then
+					remainingOutcome.observed_before_state = "unavailable"
+					remainingOutcome.observed_after_state = "unavailable"
+				else
+					remainingOutcome.observed_before_sha256 = ""
+					remainingOutcome.observed_after_sha256 = ""
+				end
 				outcomes[remaining] = remainingOutcome
 			end
 			break
 		end
-		local resolvedOk, resolved = pcall(function()
-			return requireLuaSourceContainer(planTarget.path)
-		end)
-		local sourceOk, source = pcall(function()
-			if not resolvedOk or resolved ~= planTarget.target then
-				return nil
-			end
-			return readEditorSource(resolved)
-		end)
-		if not sourceOk
-			or type(source) ~= "string"
-			or not validUtf8(source)
-			or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
-		then
-			preflightSafe = false
-			outcome.observed_before_sha256 = ""
-			outcome.observed_after_sha256 = ""
-		else
-			local observed = sourceSha256(source)
-			outcome.observed_before_sha256 = observed
-			outcome.observed_after_sha256 = observed
-			if observed ~= planTarget.prepared_sha256 then
+		if planTarget.kind == "create" then
+			local state, className, digest =
+				observeMultiEditCreate(planTarget)
+			outcome.observed_before_state = state
+			outcome.observed_after_state = state
+			outcome.observed_after_class_name = className
+			outcome.observed_after_sha256 = digest
+			if state ~= "absent" then
 				preflightSafe = false
+			end
+		else
+			local resolvedOk, resolved = pcall(function()
+				return requireLuaSourceContainer(planTarget.path)
+			end)
+				local sourceOk, source = pcall(function()
+					if not resolvedOk or resolved ~= planTarget.target then
+						return nil
+					end
+					local currentSource = readEditorSource(resolved)
+					if requireLuaSourceContainer(planTarget.path) ~= resolved then
+						return nil
+					end
+					return currentSource
+				end)
+			if not sourceOk
+				or type(source) ~= "string"
+				or not validUtf8(source)
+				or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+			then
+				preflightSafe = false
+				outcome.observed_before_sha256 = ""
+				outcome.observed_after_sha256 = ""
+			else
+				local observed = sourceSha256(source)
+				outcome.observed_before_sha256 = observed
+				outcome.observed_after_sha256 = observed
+				if observed ~= planTarget.prepared_sha256 then
+					preflightSafe = false
+				end
 			end
 		end
 	end
@@ -4838,32 +5640,59 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 			break
 		end
 		assertExpectedDocument()
-		local resolvedOk, resolved = pcall(function()
-			return requireLuaSourceContainer(planTarget.path)
-		end)
-		if not resolvedOk or resolved ~= planTarget.target then
-			failureIndex = index
-			outcomes[index].observed_before_sha256 = ""
-			outcomes[index].observed_after_sha256 = ""
-			outcomes[index].status = "recovery_required"
-			break
-		end
-		local applied, observedAfter, uncertain = multiEditCasReplace(
-			resolved,
-			planTarget.prepared_sha256,
-			planTarget.planned_source,
-			false
-		)
-		outcomes[index].observed_after_sha256 = observedAfter
-		if applied then
-			outcomes[index].status = "applied"
-			table.insert(appliedIndexes, index)
-		else
-			failureIndex = index
-			if uncertain then
-				outcomes[index].status = "recovery_required"
+		if planTarget.kind == "create" then
+			local created,
+				mutated,
+				state,
+				className,
+				digest = applyMultiEditCreate(planTarget)
+			outcomes[index].observed_after_state = state
+			outcomes[index].observed_after_class_name = className
+			outcomes[index].observed_after_sha256 = digest
+			if created then
+				outcomes[index].status = "created"
+				table.insert(appliedIndexes, index)
+			else
+				failureIndex = index
+				if mutated or state ~= "absent" then
+					outcomes[index].status = "recovery_required"
+					if mutated then
+						table.insert(appliedIndexes, index)
+					end
+				else
+					outcomes[index].status = "not_created"
+				end
+				break
 			end
-			break
+		else
+			local resolvedOk, resolved = pcall(function()
+				return requireLuaSourceContainer(planTarget.path)
+			end)
+			if not resolvedOk or resolved ~= planTarget.target then
+				failureIndex = index
+				outcomes[index].observed_before_sha256 = ""
+				outcomes[index].observed_after_sha256 = ""
+				outcomes[index].status = "recovery_required"
+				break
+			end
+			local applied, observedAfter, uncertain = multiEditCasReplace(
+				resolved,
+				planTarget.path,
+				planTarget.prepared_sha256,
+				planTarget.planned_source,
+				false
+			)
+			outcomes[index].observed_after_sha256 = observedAfter
+			if applied then
+				outcomes[index].status = "applied"
+				table.insert(appliedIndexes, index)
+			else
+				failureIndex = index
+				if uncertain then
+					outcomes[index].status = "recovery_required"
+				end
+				break
+			end
 		end
 	end
 	if failureIndex == nil then
@@ -4883,17 +5712,16 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 	for appliedIndex = #appliedIndexes, 1, -1 do
 		local index = appliedIndexes[appliedIndex]
 		local planTarget = plan.targets[index]
-		local resolvedOk, resolved = pcall(function()
-			return requireLuaSourceContainer(planTarget.path)
-		end)
-		if resolvedOk and resolved == planTarget.target then
-			local restored, observedAfter = multiEditCasReplace(
-				resolved,
-				planTarget.planned_sha256,
-				planTarget.original_source,
-				true
-			)
-			outcomes[index].observed_after_sha256 = observedAfter
+		if planTarget.kind == "create" then
+			local restored,
+				beforeState,
+				afterState,
+				afterClass,
+				afterDigest = compensateMultiEditCreate(planTarget)
+			outcomes[index].observed_before_state = beforeState
+			outcomes[index].observed_after_state = afterState
+			outcomes[index].observed_after_class_name = afterClass
+			outcomes[index].observed_after_sha256 = afterDigest
 			if restored then
 				outcomes[index].status = "rolled_back"
 			else
@@ -4901,33 +5729,80 @@ local function applyMultiEdit(args, requestId, deadlineMs)
 				recoveryRequired = true
 			end
 		else
-			outcomes[index].observed_after_sha256 = ""
-			outcomes[index].status = "recovery_required"
-			recoveryRequired = true
+			local resolvedOk, resolved = pcall(function()
+				return requireLuaSourceContainer(planTarget.path)
+			end)
+			if resolvedOk and resolved == planTarget.target then
+				local restored, observedAfter = multiEditCasReplace(
+					resolved,
+					planTarget.path,
+					planTarget.planned_sha256,
+					planTarget.original_source,
+					true
+				)
+				outcomes[index].observed_after_sha256 = observedAfter
+				if restored then
+					outcomes[index].status = "rolled_back"
+				else
+					outcomes[index].status = "recovery_required"
+					recoveryRequired = true
+				end
+			else
+				outcomes[index].observed_after_sha256 = ""
+				outcomes[index].status = "recovery_required"
+				recoveryRequired = true
+			end
 		end
 	end
 	for index, planTarget in ipairs(plan.targets) do
-		local checkOk, source = pcall(function()
-			local resolved = requireLuaSourceContainer(planTarget.path)
-			if resolved ~= planTarget.target then
-				return nil
+		if planTarget.kind == "create" then
+			if planTarget.created_instance ~= nil then
+				local state, className, digest =
+					observeMultiEditCreate(planTarget)
+				outcomes[index].observed_after_state = state
+				outcomes[index].observed_after_class_name = className
+				outcomes[index].observed_after_sha256 = digest
+				if state ~= "absent"
+					or planTarget.created_instance.Parent ~= nil
+				then
+					outcomes[index].status = "recovery_required"
+					recoveryRequired = true
+				end
 			end
-			return readEditorSource(resolved)
-		end)
-		if not checkOk
-			or type(source) ~= "string"
-			or not validUtf8(source)
-			or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
-			or sourceSha256(source) ~= planTarget.prepared_sha256
-		then
-			outcomes[index].status = "recovery_required"
-			if checkOk and type(source) == "string" then
-				outcomes[index].observed_after_sha256 =
-					sourceSha256(source)
-			else
-				outcomes[index].observed_after_sha256 = ""
+		else
+			local checkOk, source = pcall(function()
+				local resolved = requireLuaSourceContainer(planTarget.path)
+				if resolved ~= planTarget.target then
+					return nil
+				end
+				local currentSource = readEditorSource(resolved)
+				if requireLuaSourceContainer(planTarget.path) ~= resolved then
+					return nil
+				end
+				return currentSource
+			end)
+			if not checkOk
+				or type(source) ~= "string"
+				or not validUtf8(source)
+				or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+				or sourceSha256(source) ~= planTarget.prepared_sha256
+			then
+				outcomes[index].status = "recovery_required"
+				if checkOk and type(source) == "string" then
+					outcomes[index].observed_after_sha256 =
+						sourceSha256(source)
+				else
+					outcomes[index].observed_after_sha256 = ""
+				end
+				recoveryRequired = true
 			end
+		end
+	end
+	recoveryRequired = false
+	for _, targetOutcome in ipairs(outcomes) do
+		if targetOutcome.status == "recovery_required" then
 			recoveryRequired = true
+			break
 		end
 	end
 	plan.status = recoveryRequired
@@ -4947,18 +5822,61 @@ local function recoverMultiEdit(args, requestId, deadlineMs)
 	requireEditMode()
 	local deadline = os.clock() + (deadlineMs / 1_000)
 	local plan = peer.multi_edit_plan
+	local planStatus = plan ~= nil and plan.status or ""
+	local recoverableStatus = planStatus == "prepared"
+		or planStatus == "applying"
+		or planStatus == "applied"
+		or planStatus == "rolled_back"
+		or planStatus == "aborted_preflight"
+		or planStatus == "recovery_required"
+		or planStatus == "recovered"
 	if plan == nil
 		or plan.transaction_id ~= args.transaction_id
 		or plan.document_epoch ~= DOCUMENT_EPOCH
 		or plan.generation ~= peer.generation
+		or not recoverableStatus
 	then
 		adapterError(
 			"multi_edit_recovery_unavailable",
-			"No exact recovery-required multi-edit plan is available",
+			"No exact same-generation multi-edit plan is recoverable",
 			false
 		)
 	end
 	assertMultiEditMutationReceiptBound(plan, requestId, "recover")
+	local evidence = plan.safe_terminal_evidence
+	if evidence ~= nil
+		and evidence.status == planStatus
+		and (
+			planStatus == "aborted_preflight"
+			or planStatus == "rolled_back"
+			or planStatus == "recovered"
+		)
+		and type(evidence.targets) == "table"
+		and #evidence.targets == #plan.targets
+		and (
+			evidence.outcome == "aborted_preflight"
+			or evidence.outcome == "rolled_back"
+			or evidence.outcome == "recovered"
+		)
+		and type(evidence.receipt_sha256) == "string"
+		and #evidence.receipt_sha256 == 64
+		and string.find(evidence.receipt_sha256, "[^0-9a-f]") == nil
+	then
+		local evidenceTargets =
+			copyMultiEditTargetOutcomes(evidence.targets)
+		plan.status = "recovered"
+		return newMultiEditMutationReceipt(
+			plan,
+			requestId,
+			"recover",
+			"recovered",
+			true,
+			evidenceTargets,
+			"cached_safe_terminal",
+			evidence.outcome,
+			evidence.receipt_sha256
+		)
+	end
 	local outcomes = {}
 	local recoveryRequired = false
 	for index = #plan.targets, 1, -1 do
@@ -4967,43 +5885,45 @@ local function recoverMultiEdit(args, requestId, deadlineMs)
 		local outcome = newMultiEditTargetOutcome(planTarget)
 		outcomes[index] = outcome
 		if os.clock() > deadline then
-			outcome.observed_before_sha256 = ""
-			outcome.observed_after_sha256 = ""
+			if planTarget.kind == "create" then
+				outcome.observed_before_state = "unavailable"
+				outcome.observed_after_state = "unavailable"
+			else
+				outcome.observed_before_sha256 = ""
+				outcome.observed_after_sha256 = ""
+			end
 			outcome.status = "recovery_required"
 			recoveryRequired = true
 			continue
 		end
-		local readOk, source, resolved = pcall(function()
-			local exact = requireLuaSourceContainer(planTarget.path)
-			if exact ~= planTarget.target then
-				return nil, nil
-			end
-			return readEditorSource(exact), exact
-		end)
-		if not readOk
-			or type(source) ~= "string"
-			or resolved ~= planTarget.target
-			or not validUtf8(source)
-			or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
-		then
-			outcome.observed_before_sha256 = ""
-			outcome.observed_after_sha256 = ""
-			outcome.status = "recovery_required"
-			recoveryRequired = true
-		else
-			local currentSha256 = sourceSha256(source)
-			outcome.observed_before_sha256 = currentSha256
-			outcome.observed_after_sha256 = currentSha256
-			if currentSha256 == planTarget.prepared_sha256 then
+		if planTarget.kind == "create" then
+			local state, className, digest =
+				observeMultiEditCreate(planTarget)
+			outcome.observed_before_state = state
+			outcome.observed_after_state = state
+			outcome.observed_after_class_name = className
+			outcome.observed_after_sha256 = digest
+			if planTarget.created_instance == nil then
+				if state == "absent" then
+					outcome.status = "rolled_back"
+				else
+					outcome.status = "recovery_required"
+					recoveryRequired = true
+				end
+			elseif state == "absent"
+				and planTarget.created_instance.Parent == nil
+			then
 				outcome.status = "rolled_back"
-			elseif currentSha256 == planTarget.planned_sha256 then
-				local restored, observedAfter = multiEditCasReplace(
-					resolved,
-					planTarget.planned_sha256,
-					planTarget.original_source,
-					true
-				)
-				outcome.observed_after_sha256 = observedAfter
+			elseif state == "created_exact" then
+				local restored,
+					beforeState,
+					afterState,
+					afterClass,
+					afterDigest = compensateMultiEditCreate(planTarget)
+				outcome.observed_before_state = beforeState
+				outcome.observed_after_state = afterState
+				outcome.observed_after_class_name = afterClass
+				outcome.observed_after_sha256 = afterDigest
 				if restored then
 					outcome.status = "rolled_back"
 				else
@@ -5013,6 +5933,54 @@ local function recoverMultiEdit(args, requestId, deadlineMs)
 			else
 				outcome.status = "recovery_required"
 				recoveryRequired = true
+			end
+		else
+			local readOk, source, resolved = pcall(function()
+				local exact = requireLuaSourceContainer(planTarget.path)
+				if exact ~= planTarget.target then
+					return nil, nil
+				end
+				local currentSource = readEditorSource(exact)
+				if requireLuaSourceContainer(planTarget.path) ~= exact then
+					return nil, nil
+				end
+				return currentSource, exact
+			end)
+			if not readOk
+				or type(source) ~= "string"
+				or resolved ~= planTarget.target
+				or not validUtf8(source)
+				or #source > DURABLE_BOUNDS.MAX_MULTI_EDIT_SOURCE_BYTES
+			then
+				outcome.observed_before_sha256 = ""
+				outcome.observed_after_sha256 = ""
+				outcome.status = "recovery_required"
+				recoveryRequired = true
+			else
+				local currentSha256 = sourceSha256(source)
+				outcome.observed_before_sha256 = currentSha256
+				outcome.observed_after_sha256 = currentSha256
+				if currentSha256 == planTarget.prepared_sha256 then
+					outcome.status = "rolled_back"
+				elseif currentSha256 == planTarget.planned_sha256 then
+					local restored, observedAfter = multiEditCasReplace(
+						resolved,
+						planTarget.path,
+						planTarget.planned_sha256,
+						planTarget.original_source,
+						true
+					)
+					outcome.observed_after_sha256 = observedAfter
+					if restored then
+						outcome.status = "rolled_back"
+					else
+						outcome.status = "recovery_required"
+						recoveryRequired = true
+					end
+				else
+					outcome.status = "recovery_required"
+					recoveryRequired = true
+				end
 			end
 		end
 	end

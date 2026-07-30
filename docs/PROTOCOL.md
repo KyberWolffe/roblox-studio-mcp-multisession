@@ -167,9 +167,10 @@ compacted.
 
 `studio_multi_edit_v2` is an Edit-only mutation addressed to one explicit
 `studio_id`. Its public arguments contain exactly `studio_id`,
-`datamodel_type: "Edit"`, and `targets`; transaction phase and credentials are
-broker-owned and cannot be supplied by the caller. Each of the 1-16 targets
-contains:
+`datamodel_type: "Edit"`, `targets`, and optional `creates`; transaction phase
+and credentials are broker-owned and cannot be supplied by the caller.
+`targets` may be empty only when `creates` is nonempty, and their combined
+count is 1-16. Each existing edit target contains:
 
 ```json
 {
@@ -185,53 +186,87 @@ contains:
 }
 ```
 
-Paths are nonempty arrays of exact child-name segments and must be unique
-within the transaction. Targets execute in input order. Each target's 1-64
-edits executes in input order against the result of its preceding edit.
+Each create entry contains:
+
+```json
+{
+  "parent_path": ["ServerScriptService"],
+  "name": "RoundMetrics",
+  "class_name": "ModuleScript",
+  "expected_absent": true,
+  "source": "return {}"
+}
+```
+
+Paths are nonempty arrays of exact child-name segments. Every edit path and
+every full create path (`parent_path` plus `name`) must be unique across the
+transaction. A create parent must already exist as one exact unambiguous
+Instance and cannot itself be created by the transaction. Only `Script`,
+`LocalScript`, and `ModuleScript` are accepted. `expected_absent` must be
+exactly true; there is no overwrite form. Existing targets execute in input
+order, followed by creates in input order. Each existing target's 1-64 edits
+executes in input order against the result of its preceding edit.
 `old_string` is nonempty and must differ from `new_string`. Optional
 `start_byte` and `end_byte` are a paired, zero-based, half-open UTF-8 byte
 range that must contain exactly `old_string`; a ranged edit cannot set
-`replace_all: true`. Overlapping expanded matches, ambiguity, stale revisions,
-invalid UTF-8, creation, and out-of-range offsets fail before mutation.
+`replace_all: true`. Overlapping expanded matches, duplicate or ambiguous
+paths, missing/ambiguous parents, stale revisions, a present create path,
+invalid UTF-8/name/class, and out-of-range offsets fail before mutation.
 
-Both host and Studio independently enforce 16 targets, 64 edits per target,
-128 edits total, 1024 expanded replacement spans, 8192 aggregate UTF-8 path
-bytes, 262144 aggregate literal bytes, 350000 canonical public argument bytes,
-262144 source bytes per target, 1048576 aggregate bytes each for original and
-planned source, and 100000 encoded receipt bytes. The private phase envelope
-allows 351000 bytes so host-added transaction fields cannot invalidate a
-maximally bounded public request.
+Both host and Studio independently enforce 16 combined targets/creates, 16
+creates, 64 edits per existing target, 128 edits total, 1024 expanded
+replacement spans, 8192 aggregate UTF-8 full-path bytes, 262144 aggregate edit
+literal bytes, 350000 canonical public argument bytes, 262144 source bytes per
+existing target or create, 1048576 aggregate bytes each for original and
+planned source, and 100000 encoded receipt bytes. A create parent has at most
+63 segments so the full new path remains within the 64-segment bound. The
+private phase envelope allows 351000 bytes so host-added transaction fields
+cannot invalidate a maximally bounded public request.
 
 The mutation is a broker-owned two-phase transaction:
 
 1. The broker normalizes the entire plan, binds a fresh `transaction_id` to
    `(studio_id, client_instance_id, document_epoch, generation)`, and dispatches
    an internal prepare request.
-2. Studio resolves every exact path, reads every source, checks every expected
-   SHA-256, expands every edit deterministically, and returns a closed prepare
-   receipt. It has not mutated source at this point.
-3. The broker validates the complete identity, target order, paths, revisions,
-   counts, planned revisions, and canonical `prepare_sha256`; any drift aborts.
+2. Studio resolves every exact edit path and create parent, reads every
+   existing source, checks every expected SHA-256 and expected-absent full
+   create path, expands every edit deterministically, and returns a closed
+   prepare receipt. It has not mutated source or parentage at this point.
+3. The broker validates the complete identity, edit-then-create target order,
+   paths, classes, revisions/absence states, counts, planned revisions, and
+   canonical `prepare_sha256`; any drift aborts.
 4. An apply request carries only the broker-owned prepared transaction. Studio
-   rechecks every target before the first write, then applies per-target
-   compare-and-swap updates in input order.
-5. Every downstream update is read back. If a later target fails, Studio
-   attempts compensating rollback of already applied targets only when their
-   revisions still match the transaction's planned revisions.
+   rechecks every target before the first write, applies per-target
+   compare-and-swap updates in edit-input order, and then creates scripts in
+   create-input order. Each script is configured off-tree, absence is rechecked,
+   and only then is the new Instance parented. Edit mode, document identity,
+   and the exact prepared path/Instance binding are rechecked at each yielding
+   source-update callback and immediately before each create or compensating
+   mutation commits.
+5. Every downstream update or creation is read back. If a later target fails,
+   Studio attempts compensating rollback of existing edits only when their
+   revisions still match the transaction's planned revisions. It destroys a
+   created script only when the retained transaction-created Instance remains
+   the unique exact-path object with the prepared name, class, source bytes,
+   and SHA-256 and has zero children, zero attributes, and zero tags.
 
 The prepare receipt is internal and never returned as a successful public
 multi-edit result. It binds the identity tuple, prepare request and transaction
-IDs, `target-input-edit-input-v1` ordering, the
-`preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1`
-atomicity statement, aggregate source bounds, and per-target expected,
-prepared, and planned revisions and counts.
+IDs, `edit-target-input-then-create-input-v2` ordering, the
+`preflight-all-per-target-cas-created-script-compensation-no-cross-script-atomicity-v2`
+atomicity statement, aggregate source bounds, and a closed discriminated
+edit/create target list with expected/prepared/planned revisions or absence
+states and counts.
 
 The public result is a closed, broker-validated downstream receipt. It repeats
 the exact Studio/client/document/generation/request/transaction identity,
 `prepare_request_id`, `prepare_sha256`, ordering and atomicity versions,
-`broker-validated-downstream-ack-v1`, per-target before/after revisions and
-statuses, and a canonical `receipt_sha256`. Target receipt `index` values are
-one-based and exactly follow caller target order. Apply outcomes are:
+`broker-validated-downstream-ack-v2`, per-target before/after revisions or
+create states and statuses, and a canonical `receipt_sha256`. Target receipt
+`index` values are one-based and follow edit-input order then create-input
+order. Existing-target statuses are `applied`, `rolled_back`, `not_applied`,
+or `recovery_required`; create statuses are `created`, `rolled_back`,
+`not_created`, or `recovery_required`. Apply outcomes are:
 
 - `applied`: every target was applied and acknowledged;
 - `aborted_preflight`: the apply recheck found drift before the first write;
@@ -239,15 +274,29 @@ one-based and exactly follow caller target order. Apply outcomes are:
 - `recovery_required`: at least one dispatched mutation cannot be proven
   applied or restored.
 
+Mutation receipts also carry explicit provenance fields. Apply receipts use
+`evidence_mode: "apply_execution"` with empty prior-terminal fields. Recovery
+uses `evidence_mode: "live_recovery"` with empty prior-terminal fields, or
+`evidence_mode: "cached_safe_terminal"` with an exact prior outcome
+(`aborted_preflight`, `rolled_back`, or `recovered`) and its 64-hex receipt
+SHA-256. The latter is a fresh, same-generation read-only replay of already
+proven safe terminal evidence; `applied` and `recovery_required` are never
+cached as safe terminal.
+
 This is intentionally not cross-script atomicity. A safe terminal outcome is
-reported only when all target revisions prove it. `recovery_required` marks
-the transaction and session mutation lane quarantined. The caller may invoke
+reported only when every existing revision and create-state proves it.
+`recovery_required` marks the transaction and session mutation lane
+quarantined. The caller may invoke
 `studio_recover_multi_edit_v2` with the same explicit `studio_id` and exact
 `transaction_id`; recovery cannot accept new edit text or rebind the
 transaction to another client, document, or generation. Its only outcomes are
 `recovered` after every target is positively terminal, or
 `recovery_required`. Disconnects and generation changes never cause replay or
-manufactured success.
+manufactured success. Recovery can delete only a still-exact script proven
+created by that transaction; moved, renamed, edited, replaced, ambiguous, or
+unavailable content, or content with a child, attribute, or tag, fails closed.
+The exact parent path must still resolve to the prepared parent immediately
+before destruction. No general deletion operation exists.
 
 ## Play bridge context
 

@@ -107,7 +107,9 @@ FAMILY_ALLOWED_ARGUMENTS = {
     "script_update": frozenset(
         {"path", "expected_sha256", "new_source"}
     ),
-    "multi_edit": frozenset({"datamodel_type", "targets"}),
+    "multi_edit": frozenset(
+        {"datamodel_type", "targets", "creates"}
+    ),
     "multi_edit_recovery": frozenset({"transaction_id"}),
     "attribute_update": frozenset(
         {

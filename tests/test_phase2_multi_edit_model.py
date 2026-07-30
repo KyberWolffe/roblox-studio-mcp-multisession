@@ -81,11 +81,13 @@ def _prepare_receipt():
         "atomicity": MULTI_EDIT_ATOMICITY,
         "target_count": 2,
         "edit_count": 3,
+        "create_count": 0,
         "aggregate_source_bytes": 30,
         "aggregate_planned_source_bytes": 35,
         "targets": [
             {
                 "index": 0,
+                "kind": "edit",
                 "path": ["ServerScriptService", "Alpha"],
                 "expected_sha256": SHA_A,
                 "prepared_sha256": SHA_A,
@@ -98,6 +100,7 @@ def _prepare_receipt():
             },
             {
                 "index": 1,
+                "kind": "edit",
                 "path": ["ReplicatedStorage", "Beta"],
                 "expected_sha256": SHA_C,
                 "prepared_sha256": SHA_C,
@@ -127,14 +130,19 @@ def _mutation_receipt():
         "ordering_version": MULTI_EDIT_ORDERING_VERSION,
         "atomicity": MULTI_EDIT_ATOMICITY,
         "receipt_contract": MULTI_EDIT_RECEIPT_CONTRACT,
+        "evidence_mode": "apply_execution",
+        "prior_terminal_outcome": "",
+        "prior_terminal_receipt_sha256": "",
         "outcome": "applied",
         "safe_terminal": True,
         "recovery_required": False,
         "target_count": 2,
         "edit_count": 3,
+        "create_count": 0,
         "targets": [
             {
                 "index": 0,
+                "kind": "edit",
                 "path": ["ServerScriptService", "Alpha"],
                 "expected_sha256": SHA_A,
                 "prepared_sha256": SHA_A,
@@ -149,6 +157,7 @@ def _mutation_receipt():
             },
             {
                 "index": 1,
+                "kind": "edit",
                 "path": ["ReplicatedStorage", "Beta"],
                 "expected_sha256": SHA_C,
                 "prepared_sha256": SHA_C,
@@ -247,7 +256,7 @@ class Phase2MultiEditModelTests(unittest.TestCase):
         )
         self.assertEqual(
             MULTI_EDIT_ORDERING_VERSION,
-            "target-input-edit-input-v1",
+            "edit-target-input-then-create-input-v2",
         )
         self.assertEqual(total_edit_count(normalized["targets"]), 3)
 
@@ -680,7 +689,7 @@ class Phase2MultiEditModelTests(unittest.TestCase):
     def test_prepare_receipt_golden_hash_and_every_field_drifts(self) -> None:
         receipt = _prepare_receipt()
         expected = (
-            "37dd19c0a0ef2fa9f6edbbd1e29a4b3422fe4cc396138c056077cd4667165a8e"
+            "2f4362b3fa5e2d4b27e623d965cc64e3755a529852e3c7b64d1ce731318e28c2"
         )
         self.assertEqual(prepare_receipt_sha256(receipt), expected)
         self.assertEqual(
@@ -699,11 +708,13 @@ class Phase2MultiEditModelTests(unittest.TestCase):
             "atomicity",
             "target_count",
             "edit_count",
+            "create_count",
             "aggregate_source_bytes",
             "aggregate_planned_source_bytes",
         )
         target_fields = (
             "index",
+            "kind",
             "path",
             "expected_sha256",
             "prepared_sha256",
@@ -740,7 +751,7 @@ class Phase2MultiEditModelTests(unittest.TestCase):
     def test_mutation_receipt_golden_hash_and_every_field_drifts(self) -> None:
         receipt = _mutation_receipt()
         expected = (
-            "225f66b3cb65a319610f7a25e91248a50ecac9dbc64b77aa5bab9233dc92a552"
+            "5e808a56e2dfd04d8445825a8aaf91eea29a4febe32e94beb9a748a42e72485a"
         )
         self.assertEqual(mutation_receipt_sha256(receipt), expected)
         self.assertEqual(
@@ -761,14 +772,19 @@ class Phase2MultiEditModelTests(unittest.TestCase):
             "ordering_version",
             "atomicity",
             "receipt_contract",
+            "evidence_mode",
+            "prior_terminal_outcome",
+            "prior_terminal_receipt_sha256",
             "outcome",
             "safe_terminal",
             "recovery_required",
             "target_count",
             "edit_count",
+            "create_count",
         )
         target_fields = (
             "index",
+            "kind",
             "path",
             "expected_sha256",
             "prepared_sha256",

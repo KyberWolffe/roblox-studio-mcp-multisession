@@ -672,7 +672,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             payload, manifest_sha256 = (
                 gate._validated_candidate_release(
                     extracted,
-                    expected_version="0.4.0-rc.5",
+                    expected_version="0.4.0-rc.6",
                 )
             )
             self.assertTrue(payload.is_dir())
@@ -707,7 +707,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             payload, manifest_sha256 = (
                 gate._validated_candidate_release(
                     work_root,
-                    expected_version="0.4.0-rc.5",
+                    expected_version="0.4.0-rc.6",
                 )
             )
             durable_sha256 = gate.sha256_bytes(
@@ -719,7 +719,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             )
             rejected_args = argparse.Namespace(
                 work_root=work_root,
-                version="0.4.0-rc.5",
+                version="0.4.0-rc.6",
                 durable_catalog_sha256=durable_sha256,
                 release_manifest_sha256="0" * 64,
                 port=44_757,
@@ -739,7 +739,7 @@ class CandidateReadOnlyGateTests(unittest.TestCase):
             state = gate.prepare(
                 argparse.Namespace(
                     work_root=work_root,
-                    version="0.4.0-rc.5",
+                    version="0.4.0-rc.6",
                     durable_catalog_sha256=durable_sha256,
                     release_manifest_sha256=manifest_sha256,
                     port=44_757,

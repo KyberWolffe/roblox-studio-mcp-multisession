@@ -11,6 +11,7 @@ from .errors import ValidationError
 
 
 MAX_MULTI_EDIT_TARGETS = 16
+MAX_MULTI_EDIT_CREATES = 16
 MAX_MULTI_EDIT_EDITS_PER_TARGET = 64
 MAX_MULTI_EDIT_EDITS = 128
 MAX_MULTI_EDIT_LITERAL_BYTES = 262_144
@@ -24,11 +25,12 @@ MAX_PATH_SEGMENTS = 64
 MAX_PATH_SEGMENT_BYTES = 100
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-MULTI_EDIT_ORDERING_VERSION = "target-input-edit-input-v1"
+MULTI_EDIT_ORDERING_VERSION = "edit-target-input-then-create-input-v2"
 MULTI_EDIT_ATOMICITY = (
-    "preflight-all-per-target-cas-compensating-no-cross-script-atomicity-v1"
+    "preflight-all-per-target-cas-created-script-compensation-no-cross-"
+    "script-atomicity-v2"
 )
-MULTI_EDIT_RECEIPT_CONTRACT = "broker-validated-downstream-ack-v1"
+MULTI_EDIT_RECEIPT_CONTRACT = "broker-validated-downstream-ack-v2"
 
 
 def _utf8(value: Any, label: str, *, maximum: int, allow_empty: bool) -> bytes:
@@ -70,6 +72,12 @@ def _normalize_path(value: Any, label: str) -> Tuple[str, ...]:
     return tuple(normalized)
 
 
+def _normalize_create_name(value: Any, label: str) -> str:
+    # A create name is exactly one final path segment and therefore inherits
+    # the same UTF-8, control-character, NUL, and byte bounds.
+    return _normalize_path([value], label)[0]
+
+
 def canonical_json_bytes(value: Any) -> bytes:
     try:
         return json.dumps(
@@ -90,19 +98,46 @@ def canonical_json_sha256(value: Any) -> str:
 def normalize_multi_edit_arguments(arguments: Any) -> Dict[str, Any]:
     if not isinstance(arguments, dict):
         raise ValidationError("multi-edit arguments must be an object")
-    if frozenset(arguments) != frozenset({"datamodel_type", "targets"}):
+    allowed_argument_keys = frozenset(
+        {"datamodel_type", "targets", "creates"}
+    )
+    if (
+        not {"datamodel_type", "targets"}.issubset(arguments)
+        or not frozenset(arguments).issubset(allowed_argument_keys)
+    ):
         raise ValidationError(
-            "multi-edit requires exactly datamodel_type and targets"
+            "multi-edit requires datamodel_type and targets, with only the "
+            "optional creates field"
         )
     if arguments.get("datamodel_type") != "Edit":
         raise ValidationError("multi-edit datamodel_type must be Edit")
     raw_targets = arguments.get("targets")
     if (
         not isinstance(raw_targets, list)
-        or not 1 <= len(raw_targets) <= MAX_MULTI_EDIT_TARGETS
+        or len(raw_targets) > MAX_MULTI_EDIT_TARGETS
     ):
         raise ValidationError(
-            f"targets must contain 1-{MAX_MULTI_EDIT_TARGETS} entries"
+            f"targets must contain 0-{MAX_MULTI_EDIT_TARGETS} entries"
+        )
+    creates_present = "creates" in arguments
+    raw_creates = arguments.get("creates", [])
+    if (
+        not isinstance(raw_creates, list)
+        or len(raw_creates) > MAX_MULTI_EDIT_CREATES
+        or (creates_present and not raw_creates)
+    ):
+        raise ValidationError(
+            f"creates, when provided, must contain "
+            f"1-{MAX_MULTI_EDIT_CREATES} entries"
+        )
+    if not raw_targets and not raw_creates:
+        raise ValidationError(
+            "multi-edit requires at least one edit target or create entry"
+        )
+    if len(raw_targets) + len(raw_creates) > MAX_MULTI_EDIT_TARGETS:
+        raise ValidationError(
+            f"multi-edit may contain at most {MAX_MULTI_EDIT_TARGETS} "
+            "combined edit and create entries"
         )
 
     normalized_targets: List[Dict[str, Any]] = []
@@ -257,10 +292,103 @@ def normalize_multi_edit_arguments(arguments: Any) -> Dict[str, Any]:
             }
         )
 
+    normalized_creates: List[Dict[str, Any]] = []
+    create_source_bytes = 0
+    create_paths = set()
+    for create_index, raw_create in enumerate(raw_creates):
+        if (
+            not isinstance(raw_create, dict)
+            or frozenset(raw_create)
+            != frozenset(
+                {
+                    "parent_path",
+                    "name",
+                    "class_name",
+                    "expected_absent",
+                    "source",
+                }
+            )
+        ):
+            raise ValidationError(
+                f"creates[{create_index}] has fields outside the closed schema"
+            )
+        parent_path = _normalize_path(
+            raw_create.get("parent_path"),
+            f"creates[{create_index}].parent_path",
+        )
+        if len(parent_path) > MAX_PATH_SEGMENTS - 1:
+            raise ValidationError(
+                f"creates[{create_index}].parent_path must contain at most "
+                f"{MAX_PATH_SEGMENTS - 1} exact path segments"
+            )
+        name = _normalize_create_name(
+            raw_create.get("name"), f"creates[{create_index}].name"
+        )
+        path = parent_path + (name,)
+        if path in seen_paths:
+            raise ValidationError(
+                "multi-edit edit and create exact paths must be unique"
+            )
+        seen_paths.add(path)
+        create_paths.add(path)
+        aggregate_path_bytes += sum(
+            len(segment.encode("utf-8")) for segment in path
+        )
+        if aggregate_path_bytes > MAX_MULTI_EDIT_AGGREGATE_PATH_BYTES:
+            raise ValidationError(
+                "aggregate multi-edit target paths exceed 8192 UTF-8 bytes"
+            )
+        class_name = raw_create.get("class_name")
+        if class_name not in {"Script", "LocalScript", "ModuleScript"}:
+            raise ValidationError(
+                f"creates[{create_index}].class_name must be Script, "
+                "LocalScript, or ModuleScript"
+            )
+        if raw_create.get("expected_absent") is not True:
+            raise ValidationError(
+                f"creates[{create_index}].expected_absent must be true"
+            )
+        source = raw_create.get("source")
+        source_bytes = _utf8(
+            source,
+            f"creates[{create_index}].source",
+            maximum=MAX_MULTI_EDIT_SOURCE_BYTES,
+            allow_empty=True,
+        )
+        create_source_bytes += len(source_bytes)
+        if (
+            create_source_bytes
+            > MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES
+        ):
+            raise ValidationError(
+                "aggregate multi-edit create source exceeds 1048576 "
+                "UTF-8 bytes"
+            )
+        normalized_creates.append(
+            {
+                "parent_path": list(parent_path),
+                "name": name,
+                "class_name": class_name,
+                "expected_absent": True,
+                "source": source,
+            }
+        )
+
+    # Creation never depends on another creation in the same transaction:
+    # every parent must already exist during the all-target preflight.
+    for create_index, create in enumerate(normalized_creates):
+        if tuple(create["parent_path"]) in create_paths:
+            raise ValidationError(
+                f"creates[{create_index}].parent_path cannot name another "
+                "script created by the same transaction"
+            )
+
     normalized = {
         "datamodel_type": "Edit",
         "targets": normalized_targets,
     }
+    if normalized_creates:
+        normalized["creates"] = normalized_creates
     if len(canonical_json_bytes(normalized)) > MAX_MULTI_EDIT_ARGUMENT_BYTES:
         raise ValidationError("encoded multi-edit arguments exceed 350000 bytes")
     return normalized
@@ -288,7 +416,7 @@ def _append_path(parts: List[str], path: Sequence[str]) -> None:
 def prepare_receipt_sha256(receipt: Mapping[str, Any]) -> str:
     parts: List[str] = []
     for value in (
-        "studio-multi-edit-prepare-v1",
+        "studio-multi-edit-prepare-v2",
         receipt["studio_id"],
         receipt["client_instance_id"],
         receipt["document_epoch"],
@@ -299,6 +427,7 @@ def prepare_receipt_sha256(receipt: Mapping[str, Any]) -> str:
         receipt["atomicity"],
         receipt["target_count"],
         receipt["edit_count"],
+        receipt["create_count"],
         receipt["aggregate_source_bytes"],
         receipt["aggregate_planned_source_bytes"],
     ):
@@ -307,17 +436,35 @@ def prepare_receipt_sha256(receipt: Mapping[str, Any]) -> str:
     _append_canonical(parts, len(targets))
     for target in targets:
         _append_canonical(parts, target["index"])
+        _append_canonical(parts, target["kind"])
         _append_path(parts, target["path"])
-        for field_name in (
-            "expected_sha256",
-            "prepared_sha256",
-            "planned_sha256",
-            "source_length",
-            "planned_source_length",
-            "edit_count",
-            "replacement_count",
-            "status",
-        ):
+        field_names = (
+            (
+                "expected_sha256",
+                "prepared_sha256",
+                "planned_sha256",
+                "source_length",
+                "planned_source_length",
+                "edit_count",
+                "replacement_count",
+                "status",
+            )
+            if "expected_sha256" in target
+            else (
+                "parent_path",
+                "name",
+                "class_name",
+                "expected_absent",
+                "prepared_absent",
+                "planned_sha256",
+                "planned_source_length",
+                "status",
+            )
+        )
+        for field_name in field_names:
+            if field_name == "parent_path":
+                _append_path(parts, target[field_name])
+                continue
             _append_canonical(parts, target[field_name])
     return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()
 
@@ -325,7 +472,7 @@ def prepare_receipt_sha256(receipt: Mapping[str, Any]) -> str:
 def mutation_receipt_sha256(receipt: Mapping[str, Any]) -> str:
     parts: List[str] = []
     for value in (
-        "studio-multi-edit-mutation-v1",
+        "studio-multi-edit-mutation-v2",
         receipt["phase"],
         receipt["studio_id"],
         receipt["client_instance_id"],
@@ -338,30 +485,55 @@ def mutation_receipt_sha256(receipt: Mapping[str, Any]) -> str:
         receipt["ordering_version"],
         receipt["atomicity"],
         receipt["receipt_contract"],
+        receipt["evidence_mode"],
+        receipt["prior_terminal_outcome"],
+        receipt["prior_terminal_receipt_sha256"],
         receipt["outcome"],
         receipt["safe_terminal"],
         receipt["recovery_required"],
         receipt["target_count"],
         receipt["edit_count"],
+        receipt["create_count"],
     ):
         _append_canonical(parts, value)
     targets = receipt["targets"]
     _append_canonical(parts, len(targets))
     for target in targets:
         _append_canonical(parts, target["index"])
+        _append_canonical(parts, target["kind"])
         _append_path(parts, target["path"])
-        for field_name in (
-            "expected_sha256",
-            "prepared_sha256",
-            "planned_sha256",
-            "observed_before_sha256",
-            "observed_after_sha256",
-            "source_length",
-            "planned_source_length",
-            "edit_count",
-            "replacement_count",
-            "status",
-        ):
+        field_names = (
+            (
+                "expected_sha256",
+                "prepared_sha256",
+                "planned_sha256",
+                "observed_before_sha256",
+                "observed_after_sha256",
+                "source_length",
+                "planned_source_length",
+                "edit_count",
+                "replacement_count",
+                "status",
+            )
+            if "expected_sha256" in target
+            else (
+                "parent_path",
+                "name",
+                "class_name",
+                "expected_absent",
+                "planned_sha256",
+                "planned_source_length",
+                "observed_before_state",
+                "observed_after_state",
+                "observed_after_class_name",
+                "observed_after_sha256",
+                "status",
+            )
+        )
+        for field_name in field_names:
+            if field_name == "parent_path":
+                _append_path(parts, target[field_name])
+                continue
             _append_canonical(parts, target[field_name])
     return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()
 
@@ -372,3 +544,8 @@ def public_arguments_sha256(arguments: Mapping[str, Any]) -> str:
 
 def total_edit_count(targets: Iterable[Mapping[str, Any]]) -> int:
     return sum(len(target["edits"]) for target in targets)
+
+
+def total_create_count(arguments: Mapping[str, Any]) -> int:
+    creates = arguments.get("creates", [])
+    return len(creates) if isinstance(creates, list) else 0

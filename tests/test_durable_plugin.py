@@ -61,7 +61,7 @@ DURABLE_OPERATIONS = {
 class DurableCatalogTests(unittest.TestCase):
     def test_catalog_is_versioned_closed_and_explicitly_targeted(self):
         payload = json.loads(DURABLE_CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual(payload["catalog_version"], "0.4.0-rc.5")
+        self.assertEqual(payload["catalog_version"], "0.4.0-rc.6")
         self.assertEqual(
             payload["upstream"]["compatibility"],
             "reviewed-local-subset-only",
@@ -89,6 +89,99 @@ class DurableCatalogTests(unittest.TestCase):
                 "routing context, not authorization",
                 schema["properties"]["studio_id"]["description"],
             )
+
+    def test_multi_edit_schema_closes_expected_absent_script_creation(self):
+        payload = json.loads(DURABLE_CATALOG.read_text(encoding="utf-8"))
+        tools = {tool["name"]: tool for tool in payload["tools"]}
+        multi_edit = tools["studio_multi_edit"]
+        schema = multi_edit["inputSchema"]
+        self.assertEqual(
+            {"datamodel_type", "targets", "creates"},
+            set(schema["properties"]),
+        )
+        self.assertEqual(["datamodel_type", "targets"], schema["required"])
+        self.assertIs(schema["additionalProperties"], False)
+        self.assertEqual(0, schema["properties"]["targets"]["minItems"])
+        create = schema["properties"]["creates"]
+        self.assertEqual((1, 16), (create["minItems"], create["maxItems"]))
+        create_item = create["items"]
+        self.assertEqual(
+            {
+                "parent_path",
+                "name",
+                "class_name",
+                "expected_absent",
+                "source",
+            },
+            set(create_item["properties"]),
+        )
+        self.assertEqual(
+            set(create_item["properties"]),
+            set(create_item["required"]),
+        )
+        self.assertIs(create_item["additionalProperties"], False)
+        self.assertIs(
+            create_item["properties"]["expected_absent"]["const"], True
+        )
+        self.assertEqual(
+            ["Script", "LocalScript", "ModuleScript"],
+            create_item["properties"]["class_name"]["enum"],
+        )
+        c1_closed_pattern = "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+        self.assertEqual(
+            c1_closed_pattern,
+            schema["properties"]["targets"]["items"]["properties"][
+                "path"
+            ]["items"]["pattern"],
+        )
+        self.assertEqual(
+            c1_closed_pattern,
+            create_item["properties"]["parent_path"]["items"][
+                "pattern"
+            ],
+        )
+        self.assertEqual(
+            c1_closed_pattern,
+            create_item["properties"]["name"]["pattern"],
+        )
+
+        for name in ("studio_multi_edit", "studio_recover_multi_edit"):
+            with self.subTest(output=name):
+                output = tools[name]["outputSchema"]
+                self.assertEqual(2, output["properties"]["v"]["const"])
+                self.assertIn("create_count", output["required"])
+                for field in (
+                    "evidence_mode",
+                    "prior_terminal_outcome",
+                    "prior_terminal_receipt_sha256",
+                ):
+                    self.assertIn(field, output["required"])
+                self.assertEqual(
+                    {
+                        "#/$defs/editTargetReceipt",
+                        "#/$defs/createTargetReceipt",
+                    },
+                    {
+                        item["$ref"]
+                        for item in output["$defs"]["targetReceipt"][
+                            "oneOf"
+                        ]
+                    },
+                )
+        apply_output = tools["studio_multi_edit"]["outputSchema"]
+        self.assertEqual(
+            "apply_execution",
+            apply_output["properties"]["evidence_mode"]["const"],
+        )
+        recovery_output = tools["studio_recover_multi_edit"][
+            "outputSchema"
+        ]
+        self.assertEqual(
+            {"live_recovery", "cached_safe_terminal"},
+            set(
+                recovery_output["properties"]["evidence_mode"]["enum"]
+            ),
+        )
 
     def test_every_exposed_operation_has_one_closed_handler_branch(self):
         source = HANDLERS.read_text(encoding="utf-8")
@@ -148,11 +241,11 @@ class DurableRendererTests(unittest.TestCase):
             base_url=base_url,
         )
 
-    def test_render_matches_phase2_0_4_0_rc_5_contract(self):
+    def test_render_matches_phase2_0_4_0_rc_6_contract(self):
         rendered = self.render().encode("utf-8")
         self.assertEqual(
             hashlib.sha256(rendered).hexdigest(),
-            "fc1b49f5dababa4d79f4be4c0de88243f75b45f639a9cec77004cf2408d45c9e",
+            "fa507cc5fef0efc18082a29df085fac85189da03a1b49e84b585e543bd7d1268",
         )
 
     def test_durable_handlers_are_private_and_below_local_budget(self):

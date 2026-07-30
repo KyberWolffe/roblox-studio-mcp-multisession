@@ -312,7 +312,7 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
             True,
         )
         self.assertEqual(
-            "8c7592254d00db421daa4be8853423b56789f5f95098038e61b2273d16134074",
+            "a865132ec5083bee64b82a0aa9cfc026199eab600bcaafcc94805ddf55e356fd",
             canonical_sha256(schema),
         )
 
@@ -375,10 +375,60 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
         recovery_target = JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][
             "recoveryTargetReceipt"
         ]
-        self.assertIs(recovery_target["additionalProperties"], False)
         self.assertEqual(
-            "rolled_back",
-            recovery_target["properties"]["status"]["const"],
+            {
+                "#/$defs/recoveryEditTargetReceipt",
+                "#/$defs/recoveryCreateTargetReceipt",
+            },
+            {branch["$ref"] for branch in recovery_target["oneOf"]},
+        )
+        for name, kind, statuses in (
+            (
+                "recoveryEditTargetReceipt",
+                "edit",
+                {"rolled_back", "not_applied"},
+            ),
+            (
+                "recoveryCreateTargetReceipt",
+                "create",
+                {"rolled_back", "not_created"},
+            ),
+        ):
+            with self.subTest(recovery_target=name):
+                target = JOB_RECEIPT_OUTPUT_SCHEMA["$defs"][name]
+                self.assertIs(target["additionalProperties"], False)
+                self.assertEqual(
+                    set(target["properties"]),
+                    set(target["required"]),
+                )
+                self.assertEqual(
+                    kind, target["properties"]["kind"]["const"]
+                )
+                self.assertEqual(
+                    statuses,
+                    set(target["properties"]["status"]["enum"]),
+                )
+        self.assertEqual(
+            {"live_recovery", "cached_safe_terminal"},
+            set(
+                recovery_result["properties"]["evidence_mode"]["enum"]
+            ),
+        )
+        self.assertIn("evidence_mode", recovery_result["required"])
+        self.assertIn(
+            "prior_terminal_outcome", recovery_result["required"]
+        )
+        self.assertIn(
+            "prior_terminal_receipt_sha256", recovery_result["required"]
+        )
+        self.assertEqual(
+            2, recovery_result["properties"]["v"]["const"]
+        )
+        self.assertEqual(
+            0, recovery_result["properties"]["edit_count"]["minimum"]
+        )
+        self.assertIn(
+            "create_count", recovery_result["properties"]
         )
         source_branch = resolution["allOf"][0]
         self.assertEqual(
@@ -419,6 +469,29 @@ class Phase2OutputSchemaParityTests(unittest.TestCase):
                     schema["$defs"][name]["additionalProperties"],
                     False,
                 )
+        multi_edit = schema["$defs"]["multiEditAdmission"]
+        self.assertEqual(
+            "studio-job-admission-v2",
+            multi_edit["properties"]["contract_version"]["const"],
+        )
+        self.assertEqual(
+            "edit-target-input-then-create-input-v2",
+            multi_edit["properties"]["ordering_version"]["const"],
+        )
+        self.assertEqual(
+            0, multi_edit["properties"]["edit_count"]["minimum"]
+        )
+        self.assertIn("create_count", multi_edit["required"])
+        self.assertEqual(
+            {
+                "#/$defs/multiEditEditTarget",
+                "#/$defs/multiEditCreateTarget",
+            },
+            {
+                branch["$ref"]
+                for branch in schema["$defs"]["multiEditTarget"]["oneOf"]
+            },
+        )
 
         encoded = json.dumps(schema["allOf"], sort_keys=True)
         for field in (

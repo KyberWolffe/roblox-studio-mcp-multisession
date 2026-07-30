@@ -31,8 +31,10 @@ not a configured session count.
 
 The public product is **Roblox Studio MCP Multisession**, with short display
 name **Studio MCP Multisession** and Codex server name
-`Roblox_Studio_Multisession`. Version 0.4.0-rc.5 migrates the owned Codex
-registration and adds the canonical public launcher/display identities.
+`Roblox_Studio_Multisession`. Version 0.4.0-rc.5 migrated the owned Codex
+registration and added the canonical public launcher/display identities.
+The isolated 0.4.0-rc.6 line retains that identity while extending only the
+revision-protected multi-edit transaction with bounded script creation.
 
 The `_v2` tool suffixes, `/v2` authenticated routes, Python package/internal
 identifiers, support root, plugin filename, former launcher aliases, archive
@@ -164,18 +166,33 @@ generation
 transaction_id
 prepare_request_id
 prepare_sha256
-normalized bounded arguments
-ordered target paths and expected/prepared/planned revisions
+normalized bounded edit/create arguments
+ordered edit and create paths plus expected/prepared/planned states
 downstream per-target acknowledgements
 terminal or recovery-required outcome
 ```
 
 Prepare resolves and validates every existing exact script path, revision,
 ordered edit, expanded replacement span, source limit, and final revision
-without writing. Apply rechecks all revisions before its first write and then
-uses per-target compare-and-swap in input order. Each write is read back. A
-later failure triggers compensating rollback only for a target whose observed
-revision still equals the transaction's planned revision.
+without writing. It also resolves every exact create parent, proves the new
+full path absent, validates the allowlisted script class and initial source,
+and rejects any parent that another entry in the same transaction would create.
+Apply rechecks every revision, parent, and absence assertion before its first
+write. It updates existing targets in input order, then creates new targets in
+create-input order. Each update or creation is read back. Studio positively
+rechecks Edit mode and document identity at each yielding source-update commit
+boundary, inside its compare-and-swap callback, immediately before parenting a
+new script, and immediately before any compensating restore or destruction.
+The exact path must still resolve to the prepared Instance at those boundaries.
+
+A later failure triggers compensating rollback only under transaction-proven
+state. An existing edit is restored only while its observed SHA-256 still
+equals the transaction's planned revision. A created script is destroyed only
+when the retained same-generation Instance is still the unique object at its
+exact path and its name, class, source bytes, and SHA-256 still match the
+prepared plan and it has zero children, zero attributes, and zero tags. A
+moved, renamed, edited, decorated, replaced, ambiguous, or unavailable created
+object is not deleted and makes recovery remain fail-closed.
 
 This provides all-target preflight plus per-target CAS; Roblox exposes no
 transaction primitive spanning multiple script sources, so v2 does not claim
@@ -184,6 +201,12 @@ or compensatingly restored, the exact transaction enters recovery-required
 state and the session's mutation lane is quarantined. Recovery accepts only
 that `transaction_id` under its original Studio/client/document/generation
 identity. It cannot accept a replacement plan or replay across reconnect.
+An exact same-generation recovery may return a fresh
+`cached_safe_terminal` receipt only for a previously proven
+`aborted_preflight`, `rolled_back`, or `recovered` terminal receipt; it carries
+that prior outcome and prior receipt SHA-256 explicitly. Live recovery uses
+`live_recovery` evidence and cannot substitute cached evidence. There is no
+general script or Instance deletion handler.
 
 ## Play/Stop lifecycle
 

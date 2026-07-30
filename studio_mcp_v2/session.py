@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import copy
+import hashlib
 import json
 import math
 import re
@@ -25,6 +26,7 @@ from .errors import (
 )
 from .multi_edit import (
     MAX_MULTI_EDIT_AGGREGATE_SOURCE_BYTES,
+    MAX_MULTI_EDIT_CREATES,
     MAX_MULTI_EDIT_RECEIPT_BYTES,
     MAX_MULTI_EDIT_EDITS,
     MAX_MULTI_EDIT_EDITS_PER_TARGET,
@@ -40,6 +42,7 @@ from .multi_edit import (
     mutation_receipt_sha256,
     normalize_multi_edit_arguments,
     prepare_receipt_sha256,
+    total_create_count,
     total_edit_count,
 )
 
@@ -536,6 +539,7 @@ _DURABLE_MULTI_EDIT_PREPARE_KEYS = frozenset(
         "atomicity",
         "target_count",
         "edit_count",
+        "create_count",
         "aggregate_source_bytes",
         "aggregate_planned_source_bytes",
         "targets",
@@ -546,6 +550,7 @@ _DURABLE_MULTI_EDIT_PREPARE_KEYS = frozenset(
 _DURABLE_MULTI_EDIT_PREPARED_TARGET_KEYS = frozenset(
     {
         "index",
+        "kind",
         "path",
         "expected_sha256",
         "prepared_sha256",
@@ -554,6 +559,21 @@ _DURABLE_MULTI_EDIT_PREPARED_TARGET_KEYS = frozenset(
         "planned_source_length",
         "edit_count",
         "replacement_count",
+        "status",
+    }
+)
+_DURABLE_MULTI_EDIT_PREPARED_CREATE_KEYS = frozenset(
+    {
+        "index",
+        "kind",
+        "path",
+        "parent_path",
+        "name",
+        "class_name",
+        "expected_absent",
+        "prepared_absent",
+        "planned_sha256",
+        "planned_source_length",
         "status",
     }
 )
@@ -574,11 +594,15 @@ _DURABLE_MULTI_EDIT_MUTATION_KEYS = frozenset(
         "ordering_version",
         "atomicity",
         "receipt_contract",
+        "evidence_mode",
+        "prior_terminal_outcome",
+        "prior_terminal_receipt_sha256",
         "outcome",
         "safe_terminal",
         "recovery_required",
         "target_count",
         "edit_count",
+        "create_count",
         "targets",
         "receipt_sha256",
     }
@@ -586,6 +610,7 @@ _DURABLE_MULTI_EDIT_MUTATION_KEYS = frozenset(
 _DURABLE_MULTI_EDIT_TARGET_OUTCOME_KEYS = frozenset(
     {
         "index",
+        "kind",
         "path",
         "expected_sha256",
         "prepared_sha256",
@@ -596,6 +621,24 @@ _DURABLE_MULTI_EDIT_TARGET_OUTCOME_KEYS = frozenset(
         "planned_source_length",
         "edit_count",
         "replacement_count",
+        "status",
+    }
+)
+_DURABLE_MULTI_EDIT_CREATE_OUTCOME_KEYS = frozenset(
+    {
+        "index",
+        "kind",
+        "path",
+        "parent_path",
+        "name",
+        "class_name",
+        "expected_absent",
+        "planned_sha256",
+        "planned_source_length",
+        "observed_before_state",
+        "observed_after_state",
+        "observed_after_class_name",
+        "observed_after_sha256",
         "status",
     }
 )
@@ -646,28 +689,52 @@ def _job_admitted_contract(
         "operation": remote_tool,
     }
     if remote_tool == "studio_multi_edit":
+        creates = arguments.get("creates", [])
+        create_count = total_create_count(arguments)
+        ordered_targets = []
+        for index, target in enumerate(arguments["targets"], start=1):
+            ordered_targets.append(
+                {
+                    "index": index,
+                    "kind": "edit",
+                    "path": copy.deepcopy(target["path"]),
+                    "expected_sha256": target["expected_sha256"],
+                    "edit_count": len(target["edits"]),
+                }
+            )
+        for offset, create in enumerate(creates, start=1):
+            source_bytes = create["source"].encode("utf-8")
+            ordered_targets.append(
+                {
+                    "index": len(arguments["targets"]) + offset,
+                    "kind": "create",
+                    "path": copy.deepcopy(
+                        create["parent_path"] + [create["name"]]
+                    ),
+                    "parent_path": copy.deepcopy(
+                        create["parent_path"]
+                    ),
+                    "name": create["name"],
+                    "class_name": create["class_name"],
+                    "expected_absent": True,
+                    "source_sha256": hashlib.sha256(
+                        source_bytes
+                    ).hexdigest(),
+                    "source_length": len(source_bytes),
+                }
+            )
         summary.update(
             {
+                "contract_version": "studio-job-admission-v2",
                 "datamodel_type": "Edit",
-                "target_count": len(arguments["targets"]),
+                "target_count": len(ordered_targets),
                 "edit_count": total_edit_count(
                     arguments["targets"]
                 ),
+                "create_count": create_count,
                 "ordering_version": MULTI_EDIT_ORDERING_VERSION,
                 "atomicity": MULTI_EDIT_ATOMICITY,
-                "targets": [
-                    {
-                        "index": index,
-                        "path": copy.deepcopy(target["path"]),
-                        "expected_sha256": target[
-                            "expected_sha256"
-                        ],
-                        "edit_count": len(target["edits"]),
-                    }
-                    for index, target in enumerate(
-                        arguments["targets"], start=1
-                    )
-                ],
+                "targets": ordered_targets,
             }
         )
         return summary
@@ -1363,6 +1430,11 @@ class StudioSession:
                 "outcome_unknown: "
                 + ",".join(sorted(self.uncertain_requests))
             )
+        elif self.multi_edit_recovery is not None:
+            self.uncertainty_state = (
+                "multi_edit:"
+                + str(self.multi_edit_recovery.get("state", "recovery"))
+            )
         else:
             self.uncertainty_state = fallback
 
@@ -1453,6 +1525,8 @@ class StudioSession:
             "datamodel_type": "Edit",
             "targets": copy.deepcopy(arguments["targets"]),
         }
+        if arguments.get("creates"):
+            prepare_args["creates"] = copy.deepcopy(arguments["creates"])
         phase = "prepare"
         phase_request_id = prepare_request_id
         apply_dispatched = False
@@ -1586,13 +1660,71 @@ class StudioSession:
         generation: int,
         state: str,
     ) -> None:
+        existing_recovery_request_id = ""
+        if (
+            self.multi_edit_recovery is not None
+            and self.multi_edit_recovery.get("transaction_id")
+            == transaction_id
+            and self.multi_edit_recovery.get("generation")
+            == generation
+        ):
+            candidate = self.multi_edit_recovery.get(
+                "recovery_request_id"
+            )
+            if isinstance(candidate, str):
+                existing_recovery_request_id = candidate
         self.multi_edit_recovery = {
             "transaction_id": transaction_id,
             "request_id": request_id,
+            "recovery_request_id": existing_recovery_request_id,
             "generation": generation,
             "state": state,
         }
         self.uncertainty_state = "multi_edit:" + state
+
+    def _mark_multi_edit_recovery_dispatched(
+        self,
+        transaction_id: str,
+        request_id: str,
+        generation: int,
+    ) -> None:
+        if (
+            self.multi_edit_recovery is None
+            or self.multi_edit_recovery.get("transaction_id")
+            != transaction_id
+            or self.multi_edit_recovery.get("generation")
+            != generation
+        ):
+            raise SessionConflictError(
+                "Exact recovery dispatch lost its transaction fence"
+            )
+        self.multi_edit_recovery["recovery_request_id"] = request_id
+        self.multi_edit_recovery["state"] = "recovery_dispatched"
+        self.uncertainty_state = "multi_edit:recovery_dispatched"
+
+    def _exact_multi_edit_recovery_controls(
+        self,
+        transaction_id: Any,
+        *,
+        excluding_request_id: str = "",
+    ) -> bool:
+        if (
+            not isinstance(transaction_id, str)
+            or self.multi_edit_recovery is None
+            or self.multi_edit_recovery.get("transaction_id")
+            != transaction_id
+            or self.multi_edit_recovery.get("generation")
+            != self.generation
+        ):
+            return False
+        request_id = self.multi_edit_recovery.get(
+            "recovery_request_id"
+        )
+        return (
+            isinstance(request_id, str)
+            and bool(request_id)
+            and request_id != excluding_request_id
+        )
 
     async def _invoke_locked(
         self,
@@ -1660,6 +1792,12 @@ class StudioSession:
             assert self.transport is not None
             await self.transport.send(envelope)
             dispatched = True
+            if remote_tool == "studio_recover_multi_edit":
+                self._mark_multi_edit_recovery_dispatched(
+                    arguments.get("transaction_id"),
+                    operation_request_id,
+                    admitted_generation,
+                )
             if on_dispatched is not None:
                 dispatched_phase = arguments.get("_phase")
                 if not isinstance(dispatched_phase, str):
@@ -3378,7 +3516,18 @@ class StudioSession:
             )
         return False
 
-    def _valid_multi_edit_prepared_target(
+    @staticmethod
+    def _ordered_multi_edit_requests(
+        arguments: Dict[str, Any],
+    ) -> list[tuple[str, Dict[str, Any]]]:
+        ordered: list[tuple[str, Dict[str, Any]]] = []
+        for target in arguments.get("targets", []):
+            ordered.append(("edit", target))
+        for create in arguments.get("creates", []):
+            ordered.append(("create", create))
+        return ordered
+
+    def _valid_multi_edit_prepared_edit_target(
         self,
         target: Any,
         requested: Dict[str, Any],
@@ -3397,6 +3546,7 @@ class StudioSession:
             == _DURABLE_MULTI_EDIT_PREPARED_TARGET_KEYS
             and target.get("index") == index
             and type(target.get("index")) is int
+            and target.get("kind") == "edit"
             and path is not None
             and path == expected_path
             and target.get("expected_sha256")
@@ -3428,11 +3578,72 @@ class StudioSession:
             and target.get("status") == "prepared"
         )
 
+    def _valid_multi_edit_prepared_create_target(
+        self,
+        target: Any,
+        requested: Dict[str, Any],
+        index: int,
+    ) -> bool:
+        if type(target) is not dict:
+            return False
+        parent_path = self._normalized_script_path(
+            target.get("parent_path"), allow_empty=False
+        )
+        expected_parent = self._normalized_script_path(
+            requested.get("parent_path"), allow_empty=False
+        )
+        path = self._normalized_script_path(
+            target.get("path"), allow_empty=False
+        )
+        expected_path = (
+            expected_parent + (requested.get("name"),)
+            if expected_parent is not None
+            and isinstance(requested.get("name"), str)
+            else None
+        )
+        source = requested.get("source")
+        if not isinstance(source, str):
+            return False
+        try:
+            source_bytes = source.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return (
+            frozenset(target)
+            == _DURABLE_MULTI_EDIT_PREPARED_CREATE_KEYS
+            and target.get("index") == index
+            and type(target.get("index")) is int
+            and target.get("kind") == "create"
+            and parent_path is not None
+            and parent_path == expected_parent
+            and path is not None
+            and path == expected_path
+            and target.get("name") == requested.get("name")
+            and target.get("class_name")
+            == requested.get("class_name")
+            and target.get("class_name") in _DURABLE_SCRIPT_CLASSES
+            and target.get("expected_absent") is True
+            and requested.get("expected_absent") is True
+            and target.get("prepared_absent") is True
+            and target.get("planned_sha256")
+            == hashlib.sha256(source_bytes).hexdigest()
+            and target.get("planned_source_length")
+            == len(source_bytes)
+            and self._bounded_integer(
+                target.get("planned_source_length"),
+                0,
+                MAX_MULTI_EDIT_SOURCE_BYTES,
+            )
+            and target.get("status") == "prepared"
+        )
+
     def _valid_multi_edit_prepare_result(
         self, pending: PendingRequest, result: Any
     ) -> bool:
         arguments = pending.arguments
         targets = arguments.get("targets")
+        creates = arguments.get("creates", [])
+        ordered_requests = self._ordered_multi_edit_requests(arguments)
         if (
             arguments.get("_phase") != "prepare"
             or arguments.get("datamodel_type") != "Edit"
@@ -3440,6 +3651,9 @@ class StudioSession:
                 arguments.get("transaction_id")
             )
             or type(targets) is not list
+            or type(creates) is not list
+            or not 1 <= len(ordered_requests) <= MAX_MULTI_EDIT_TARGETS
+            or len(creates) > MAX_MULTI_EDIT_CREATES
         ):
             return False
         if (
@@ -3447,7 +3661,7 @@ class StudioSession:
             or frozenset(result) != _DURABLE_MULTI_EDIT_PREPARE_KEYS
             or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
             or type(result.get("v")) is not int
-            or result.get("v") != 1
+            or result.get("v") != 2
             or result.get("operation") != "studio_multi_edit"
             or result.get("phase") != "prepare"
             or result.get("studio_id") != self.studio_id
@@ -3463,14 +3677,18 @@ class StudioSession:
             or result.get("ordering_version")
             != MULTI_EDIT_ORDERING_VERSION
             or result.get("atomicity") != MULTI_EDIT_ATOMICITY
-            or result.get("target_count") != len(targets)
+            or result.get("target_count") != len(ordered_requests)
             or type(result.get("target_count")) is not int
             or not 1
             <= result["target_count"]
             <= MAX_MULTI_EDIT_TARGETS
             or result.get("edit_count") != total_edit_count(targets)
             or type(result.get("edit_count")) is not int
-            or not 1 <= result["edit_count"] <= MAX_MULTI_EDIT_EDITS
+            or not 0 <= result["edit_count"] <= MAX_MULTI_EDIT_EDITS
+            or result.get("create_count") != len(creates)
+            or type(result.get("create_count")) is not int
+            or not 0 <= result["create_count"] <= MAX_MULTI_EDIT_CREATES
+            or result["edit_count"] + result["create_count"] < 1
             or result.get("expires_in_ms") != 120_000
             or type(result.get("expires_in_ms")) is not int
         ):
@@ -3478,25 +3696,31 @@ class StudioSession:
         receipt_targets = result.get("targets")
         if (
             type(receipt_targets) is not list
-            or len(receipt_targets) != len(targets)
+            or len(receipt_targets) != len(ordered_requests)
         ):
             return False
         aggregate_source = 0
         aggregate_planned = 0
         replacement_total = 0
-        for index, (receipt_target, requested) in enumerate(
-            zip(receipt_targets, targets), start=1
+        for index, (receipt_target, requested_entry) in enumerate(
+            zip(receipt_targets, ordered_requests), start=1
         ):
-            if not self._valid_multi_edit_prepared_target(
+            kind, requested = requested_entry
+            if kind == "edit":
+                if not self._valid_multi_edit_prepared_edit_target(
+                    receipt_target, requested, index
+                ):
+                    return False
+                aggregate_source += receipt_target["source_length"]
+                replacement_total += receipt_target[
+                    "replacement_count"
+                ]
+            elif not self._valid_multi_edit_prepared_create_target(
                 receipt_target, requested, index
             ):
                 return False
-            aggregate_source += receipt_target["source_length"]
             aggregate_planned += receipt_target[
                 "planned_source_length"
-            ]
-            replacement_total += receipt_target[
-                "replacement_count"
             ]
         if (
             result.get("aggregate_source_bytes") != aggregate_source
@@ -3546,7 +3770,7 @@ class StudioSession:
             or frozenset(result) != _DURABLE_MULTI_EDIT_MUTATION_KEYS
             or result.get("adapter") != _DURABLE_SCRIPT_ADAPTER
             or type(result.get("v")) is not int
-            or result.get("v") != 1
+            or result.get("v") != 2
             or result.get("operation") != expected_operation
             or result.get("phase") != expected_phase
             or result.get("studio_id") != self.studio_id
@@ -3576,6 +3800,9 @@ class StudioSession:
             or type(result.get("target_count")) is not int
             or result.get("edit_count") != prepared.get("edit_count")
             or type(result.get("edit_count")) is not int
+            or result.get("create_count")
+            != prepared.get("create_count")
+            or type(result.get("create_count")) is not int
             or type(result.get("safe_terminal")) is not bool
             or type(result.get("recovery_required")) is not bool
             or result["recovery_required"] is result["safe_terminal"]
@@ -3599,6 +3826,44 @@ class StudioSession:
             is (outcome == "recovery_required")
         ):
             return False
+        evidence_mode = result.get("evidence_mode")
+        prior_terminal_outcome = result.get(
+            "prior_terminal_outcome"
+        )
+        prior_terminal_receipt_sha256 = result.get(
+            "prior_terminal_receipt_sha256"
+        )
+        if expected_phase == "apply":
+            if (
+                evidence_mode != "apply_execution"
+                or prior_terminal_outcome != ""
+                or prior_terminal_receipt_sha256 != ""
+            ):
+                return False
+        elif evidence_mode == "live_recovery":
+            if (
+                prior_terminal_outcome != ""
+                or prior_terminal_receipt_sha256 != ""
+            ):
+                return False
+        elif evidence_mode == "cached_safe_terminal":
+            if (
+                outcome != "recovered"
+                or prior_terminal_outcome
+                not in {
+                    "aborted_preflight",
+                    "rolled_back",
+                    "recovered",
+                }
+                or type(prior_terminal_receipt_sha256) is not str
+                or SHA256_RE.fullmatch(
+                    prior_terminal_receipt_sha256
+                )
+                is None
+            ):
+                return False
+        else:
+            return False
         targets = result.get("targets")
         prepared_targets = prepared.get("targets")
         if (
@@ -3613,12 +3878,34 @@ class StudioSession:
         for index, (target, expected) in enumerate(
             zip(targets, prepared_targets), start=1
         ):
+            if not isinstance(expected, dict):
+                return False
+            if expected.get("kind") == "create":
+                valid, is_recovery, is_conflict = (
+                    self._valid_multi_edit_create_outcome(
+                        target,
+                        expected,
+                        index,
+                        expected_phase=expected_phase,
+                        outcome=outcome,
+                        evidence_mode=evidence_mode,
+                    )
+                )
+                if not valid:
+                    return False
+                saw_recovery = saw_recovery or is_recovery
+                saw_preflight_conflict = (
+                    saw_preflight_conflict or is_conflict
+                )
+                continue
             if (
                 type(target) is not dict
                 or frozenset(target)
                 != _DURABLE_MULTI_EDIT_TARGET_OUTCOME_KEYS
                 or target.get("index") != index
                 or type(target.get("index")) is not int
+                or target.get("kind") != "edit"
+                or expected.get("kind") != "edit"
                 or self._normalized_script_path(
                     target.get("path"), allow_empty=False
                 )
@@ -3694,12 +3981,25 @@ class StudioSession:
                     ):
                         return False
             else:
-                if outcome == "recovered" and (
-                    status != "rolled_back"
-                    or before not in {prepared_sha, planned_sha}
-                    or after != prepared_sha
-                ):
-                    return False
+                if outcome == "recovered":
+                    live_recovered = (
+                        status == "rolled_back"
+                        and before in {prepared_sha, planned_sha}
+                        and after == prepared_sha
+                    )
+                    cached_safe_terminal = (
+                        evidence_mode == "cached_safe_terminal"
+                        and status == "not_applied"
+                        and before == after
+                        and (
+                            before == ""
+                            or SHA256_RE.fullmatch(before) is not None
+                        )
+                    )
+                    if not (
+                        live_recovered or cached_safe_terminal
+                    ):
+                        return False
                 if outcome == "recovery_required":
                     if status not in {
                         "rolled_back",
@@ -3742,6 +4042,200 @@ class StudioSession:
         ):
             return False
         return len(encoded) <= MAX_MULTI_EDIT_RECEIPT_BYTES
+
+    def _valid_multi_edit_create_outcome(
+        self,
+        target: Any,
+        expected: Dict[str, Any],
+        index: int,
+        *,
+        expected_phase: str,
+        outcome: str,
+        evidence_mode: str,
+    ) -> tuple[bool, bool, bool]:
+        if (
+            type(target) is not dict
+            or frozenset(target)
+            != _DURABLE_MULTI_EDIT_CREATE_OUTCOME_KEYS
+            or target.get("index") != index
+            or type(target.get("index")) is not int
+            or target.get("kind") != "create"
+            or expected.get("kind") != "create"
+            or self._normalized_script_path(
+                target.get("path"), allow_empty=False
+            )
+            != self._normalized_script_path(
+                expected.get("path"), allow_empty=False
+            )
+            or self._normalized_script_path(
+                target.get("parent_path"), allow_empty=False
+            )
+            != self._normalized_script_path(
+                expected.get("parent_path"), allow_empty=False
+            )
+        ):
+            return False, False, False
+        for field_name in (
+            "name",
+            "class_name",
+            "expected_absent",
+            "planned_sha256",
+            "planned_source_length",
+        ):
+            if target.get(field_name) != expected.get(field_name):
+                return False, False, False
+        if (
+            target.get("expected_absent") is not True
+            or target.get("class_name") not in _DURABLE_SCRIPT_CLASSES
+            or not self._bounded_integer(
+                target.get("planned_source_length"),
+                0,
+                MAX_MULTI_EDIT_SOURCE_BYTES,
+            )
+        ):
+            return False, False, False
+        before = target.get("observed_before_state")
+        after = target.get("observed_after_state")
+        class_name = target.get("observed_after_class_name")
+        after_sha = target.get("observed_after_sha256")
+        status = target.get("status")
+        states = {
+            "absent",
+            "created_exact",
+            "present_unproven",
+            "unavailable",
+        }
+        if (
+            before not in states
+            or after not in states
+            or not self._bounded_text(
+                class_name, 100, allow_empty=True
+            )
+            or class_name not in (_DURABLE_SCRIPT_CLASSES | {""})
+            or type(after_sha) is not str
+            or (
+                after_sha
+                and SHA256_RE.fullmatch(after_sha) is None
+            )
+            or status
+            not in {
+                "created",
+                "rolled_back",
+                "not_created",
+                "recovery_required",
+            }
+        ):
+            return False, False, False
+        if after == "created_exact" and (
+            class_name != expected["class_name"]
+            or after_sha != expected["planned_sha256"]
+        ):
+            return False, False, False
+        if after != "created_exact" and (class_name or after_sha):
+            return False, False, False
+
+        safe_absent = after == "absent" and not class_name and not after_sha
+        preflight_conflict = before in {
+            "present_unproven",
+            "unavailable",
+        }
+        if expected_phase == "apply":
+            if outcome == "applied":
+                valid = (
+                    status == "created"
+                    and before == "absent"
+                    and after == "created_exact"
+                )
+            elif outcome == "aborted_preflight":
+                valid = status == "not_created" and (
+                    (before == "absent" and safe_absent)
+                    or (
+                        before == "present_unproven"
+                        and after == "present_unproven"
+                    )
+                    or (
+                        before == "unavailable"
+                        and after == "unavailable"
+                    )
+                )
+            elif outcome == "rolled_back":
+                valid = (
+                    (
+                        status == "rolled_back"
+                        and before in {"absent", "created_exact"}
+                        and safe_absent
+                    )
+                    or (
+                        status == "not_created"
+                        and before == "absent"
+                        and safe_absent
+                    )
+                )
+            else:
+                valid = (
+                    (
+                        status == "rolled_back"
+                        and before in {"absent", "created_exact"}
+                        and safe_absent
+                    )
+                    or (
+                        status == "not_created"
+                        and before == "absent"
+                        and safe_absent
+                    )
+                    or (
+                        status == "recovery_required"
+                        and before
+                        in {
+                            "absent",
+                            "created_exact",
+                            "present_unproven",
+                            "unavailable",
+                        }
+                        and after != "absent"
+                    )
+                )
+        elif outcome == "recovered":
+            live_recovered = (
+                status in {"rolled_back", "not_created"}
+                and before in {"absent", "created_exact"}
+                and safe_absent
+                and (
+                    status != "not_created"
+                    or before == "absent"
+                )
+            )
+            cached_safe_terminal = (
+                evidence_mode == "cached_safe_terminal"
+                and status == "not_created"
+                and before == after
+                and before
+                in {
+                    "absent",
+                    "present_unproven",
+                    "unavailable",
+                }
+                and not class_name
+                and not after_sha
+            )
+            valid = live_recovered or cached_safe_terminal
+        else:
+            valid = (
+                (
+                    status in {"rolled_back", "not_created"}
+                    and before in {"absent", "created_exact"}
+                    and safe_absent
+                )
+                or (
+                    status == "recovery_required"
+                    and after != "absent"
+                )
+            )
+        return (
+            bool(valid),
+            status == "recovery_required",
+            preflight_conflict,
+        )
 
     def _valid_multi_edit_result(
         self, pending: PendingRequest, result: Any
@@ -3996,6 +4490,18 @@ class StudioSession:
         if result.get("phase") == "prepare":
             return
         transaction_id = result["transaction_id"]
+        if (
+            result.get("phase") == "apply"
+            and self._exact_multi_edit_recovery_controls(
+                transaction_id,
+                excluding_request_id=pending.request_id,
+            )
+        ):
+            # Once exact recovery has been positively dispatched, a late
+            # apply receipt is immutable evidence only. Recovery remains the
+            # sole authority that may clear the prepared receipt/fence or
+            # settle an outcome-unknown job.
+            return
         if result.get("recovery_required") is True:
             self.uncertain_requests[pending.request_id] = {
                 "generation": pending.generation,
@@ -4128,6 +4634,13 @@ class StudioSession:
                 else "direct"
             )
         mutation_phase = phase in {"apply", "recover"}
+        recovery_controls_late_apply = (
+            phase == "apply"
+            and self._exact_multi_edit_recovery_controls(
+                pending.arguments.get("transaction_id"),
+                excluding_request_id=pending.request_id,
+            )
+        )
         for job in self.jobs.values():
             if pending.request_id not in job.dispatched_request_ids:
                 continue
@@ -4170,7 +4683,10 @@ class StudioSession:
                         "result_bytes": len(encoded),
                     }
                 )
-                if phase != "prepare":
+                if (
+                    phase != "prepare"
+                    and not recovery_controls_late_apply
+                ):
                     job.result = copy.deepcopy(result)
                     job.result_sha256 = result_sha256
                     job.result_bytes = len(encoded)
@@ -4293,6 +4809,15 @@ class StudioSession:
             ):
                 continue
             if success:
+                if (
+                    isinstance(result, dict)
+                    and result.get("phase") == "apply"
+                    and self._exact_multi_edit_recovery_controls(
+                        result.get("transaction_id"),
+                        excluding_request_id=request_id,
+                    )
+                ):
+                    return
                 if (
                     job.remote_tool == "studio_multi_edit"
                     and isinstance(result, dict)

@@ -653,7 +653,7 @@ class MCPFrontendTests(unittest.TestCase):
             "roblox-studio-mcp-multisession",
             response["result"]["serverInfo"]["name"],
         )
-        self.assertEqual("0.4.0-rc.5", response["result"]["serverInfo"]["version"])
+        self.assertEqual("0.4.0-rc.6", response["result"]["serverInfo"]["version"])
         instructions = response["result"]["instructions"]
         self.assertIn("Roblox_Studio_Multisession", instructions)
         self.assertNotIn("Roblox_Studio_v2", instructions)

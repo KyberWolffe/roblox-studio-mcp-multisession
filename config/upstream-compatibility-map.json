@@ -1,7 +1,7 @@
 {
   "format": "studio-mcp-v2-upstream-compatibility-map",
   "manifest_version": "3",
-  "durable_catalog_version": "0.4.0-rc.5",
+  "durable_catalog_version": "0.4.0-rc.6",
   "schema_policy": "exact_handler_contract",
   "durable_handler_schema_sha256": {
     "studio_get_state": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
@@ -11,7 +11,7 @@
     "studio_grep_scripts": "3b2ebad80c2b07e5b2619262d60e3cac021675c36c7d673f3fb7b3c55922ab65",
     "studio_read_script": "eb92debbb23d9c64fd08daf5fc1feadc776dc38db808f488168651792f74d1ae",
     "studio_update_script": "b7e560f2b32725f5278cee37220c8f766821f0ff756562db1014b50a52e999db",
-    "studio_multi_edit": "4f49b3766471828ff9a72648bb60faa4a9188659f38c813f4c20ff002198190d",
+    "studio_multi_edit": "1224ed102bf53e2580524ff4a702c009b684370940452f6404705c97ff6f7f44",
     "studio_recover_multi_edit": "0f26e88242bf4c7656a4f8841f8b3f69c9c447be2401e5a2a40b0fdc3e3db54f",
     "studio_set_attribute": "4a9cf91cdad41a414cbc32db839ab08bc979d470e4a1bab667e938021b26a83b",
     "studio_get_console": "5095df022444768a8de7c9be18e03cf21600d27fa6e9e6a9ab9c1c44f9af7b48",
@@ -27,8 +27,8 @@
     "studio_grep_scripts": "52c5ade61f08d7e2f083e0a44536093adecbcf45d8293a3bdc072547a03ad1e1",
     "studio_read_script": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
     "studio_update_script": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-    "studio_multi_edit": "ed46fea6ae5aa92c0502541ef013793e1b28099722a2f05f262720434542cf38",
-    "studio_recover_multi_edit": "4f9d75998d0f4992a9430da71d677aa0ea16b7b3996a26b67b3d87753b868a61",
+    "studio_multi_edit": "b28b6d3517ea8a367bad14182cf4ca21a1340a3723a3910ecd30b20301ec0baa",
+    "studio_recover_multi_edit": "301c2833b15c90a40c976daf53e1b5a49c27a72aff6478724f896c3e419a39f5",
     "studio_set_attribute": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
     "studio_get_console": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
     "studio_capture_screenshot": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",

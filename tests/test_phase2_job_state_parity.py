@@ -159,16 +159,18 @@ class Phase2JobStateParityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             {
-                "contract_version": "studio-job-admission-v1",
+                "contract_version": "studio-job-admission-v2",
                 "operation": "studio_multi_edit",
                 "datamodel_type": "Edit",
                 "target_count": 1,
                 "edit_count": 1,
+                "create_count": 0,
                 "ordering_version": MULTI_EDIT_ORDERING_VERSION,
                 "atomicity": MULTI_EDIT_ATOMICITY,
                 "targets": [
                     {
                         "index": 1,
+                        "kind": "edit",
                         "path": ["ServerScriptService", "Main"],
                         "expected_sha256": "a" * 64,
                         "edit_count": 1,

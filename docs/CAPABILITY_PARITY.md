@@ -4,9 +4,10 @@
 <!-- p0-parity: incomplete -->
 <!-- full-parity-claimed: false -->
 
-Version `0.4.0-rc.5` is an experimental release candidate. Full 25-tool parity
-is not claimed. It preserves the frozen `0.4.0-rc.4` multi-session architecture
-and immediate rollback while the 12 P0 gaps below remain partial or deferred.
+Version `0.4.0-rc.6` is an experimental, unpublished release candidate. Full
+25-tool parity is not claimed. It preserves the installed `0.4.0-rc.5`
+Multisession integration and its `0.4.0-rc.4` immediate rollback while the 12
+P0 gaps below remain partial or deferred.
 
 This matrix covers exactly the first 25 modern tools in
 `config/tool-catalog.json`. The six trailing legacy reference-plugin aliases
@@ -41,7 +42,7 @@ delegates automatically.
 | `script_read` | P0 | v2 full | No | `studio_read_script_v2` | None |
 | `insert_asset` | P1 | deferred | No | None | No bounded asset insertion adapter or permission contract exists. |
 | `subagent` | P1 | native Codex equivalent | No | Codex multi-agent delegation | None |
-| `multi_edit` | P0 | v2 partial | **Yes** | `studio_multi_edit_v2`, `studio_recover_multi_edit_v2` | V2 provides bounded, revision-protected ordered edits across 1-16 existing exact script paths with all-target preflight, per-target compare-and-swap, identity-bound receipts, compensating rollback, and explicit recovery. It intentionally does not create scripts and does not claim impossible cross-script atomicity, so the upstream creation and atomic-operation claims remain incomplete. |
+| `multi_edit` | P0 | v2 partial | **Yes** | `studio_multi_edit_v2`, `studio_recover_multi_edit_v2` | V2 provides bounded, revision-protected ordered edits and expected-absent creation of Script, LocalScript, or ModuleScript instances across 1-16 combined exact paths, with all-target preflight, identity-bound receipts, exact read-back, transaction-proven compensating rollback/deletion, and explicit recovery. The script-creation gap is closed, but V2 does not claim impossible cross-script atomicity and intentionally retains a safer explicit-path/CAS contract rather than the upstream shape. |
 | `get_studio_state` | P0 | v2 partial | **Yes** | `studio_get_state_v2` | V2 reports normalized lifecycle state, raw controller predicates, and the sole routable Edit DataModel channel. General Server/Client operation channels remain unavailable; the PlayServer bridge is lifecycle-only and is intentionally not advertised as a route. |
 | `search_asset` | P1 | deferred | No | None | Web search is not equivalent to Creator Store and authenticated inventory search. |
 | `execute_luau` | P0 | deferred | **Yes** | None | Arbitrary Luau evaluation is intentionally absent pending a reviewed capability and authorization design. |

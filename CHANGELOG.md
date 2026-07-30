@@ -4,6 +4,44 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
+## 0.4.0-rc.6 — 2026-07-29
+
+Extended revision-protected multi-edit with bounded, expected-absent script
+creation and transaction-proven compensating deletion. This candidate remains
+isolated and unpublished; the installed `0.4.0-rc.5` integration and its
+`0.4.0-rc.4` rollback are unchanged.
+
+### Transactional script lifecycle
+
+- A single explicit-session transaction may combine existing exact-path
+  revision-protected edits with creation of new `Script`, `LocalScript`, or
+  `ModuleScript` instances beneath existing exact parents.
+- Every create requires `expected_absent: true`; host and Studio independently
+  reject duplicates, ambiguous or missing parents, pre-existing full paths,
+  invalid names/classes/UTF-8, and count/source/path/payload bound violations
+  before the first mutation.
+- Deterministic order is existing edit-target input order followed by create
+  input order. Prepare/apply/recovery and job receipts use a closed v2
+  discriminated edit/create target contract bound to Studio, client,
+  document, generation, transaction, request, and exact revisions.
+- Compensation may destroy only the exact retained instance proven created by
+  that transaction while its path, class, source SHA-256, zero children, zero
+  attributes, and zero tags still match. Moved, renamed, edited, decorated,
+  replaced, ambiguous, or unavailable content is never deleted and instead
+  leaves the transaction recovery-required.
+- General instance deletion, arbitrary Luau, asset operations, global/default
+  Studio routing, and silent v1 fallback remain absent.
+
+### Parity and qualification boundary
+
+- The upstream script-creation gap within `multi_edit` is closed, but the row
+  remains `v2_partial` and a P0 gap because Roblox exposes no cross-script
+  atomic transaction and the safer explicit-path/CAS shape intentionally
+  differs from upstream.
+- Focused host, Studio-model, schema, job/direct-parity, concurrency,
+  generation-fencing, compensation, and adversarial tests qualify the isolated
+  candidate before any separately authorized live mutation or installation.
+
 ## 0.4.0-rc.5 — 2026-07-29
 
 Renamed the public product and Codex registration to Roblox Studio MCP
