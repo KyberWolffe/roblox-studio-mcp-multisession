@@ -4,12 +4,26 @@
 <!-- capability-parity: incomplete -->
 <!-- global-v1-fallback: forbidden -->
 
-Version `0.4.0-rc.7` is an isolated, unpublished correction to the rejected
-rc.6 script-lifecycle candidate. Rc.6 proved native creation but failed its
-live gate because a successful apply closed normal mutation recovery before
-the host could admit later transaction-owned cleanup. Rc.6 remains immutable
-and rejected; this candidate does not change the installed `0.4.0-rc.5`
-integration or its retained `0.4.0-rc.4` rollback.
+Version `0.4.0-rc.7` is the current published experimental prerelease. It
+corrects the rejected rc.6 script-lifecycle candidate. Rc.6 proved native
+creation but failed its live gate because a successful apply closed normal
+mutation recovery before the host could admit later transaction-owned cleanup.
+Rc.6 remains immutable and rejected. Rc.7 was transactionally promoted from
+rc.5 with rc.5 retained as its immediate rollback and rc.4 retained as older
+recovery.
+
+## Published identity
+
+- Release:
+  [`v0.4.0-rc.7`](https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/tag/v0.4.0-rc.7)
+- Commit: `63dd793f385ebb9c992fd325185acae07c27aa21`
+- Source tree: `f9f4921e779c4d46a4cef8bb1e3af3053337d947`
+- Archive SHA-256:
+  `2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8`
+- Bootstrap SHA-256:
+  `e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b`
+- `SHA256SUMS` SHA-256:
+  `ab023fbab1198c704006287024705cb57a599b478a235c767d398fa9a86ca14e`
 
 ## Successful-creation cleanup
 
@@ -64,5 +78,15 @@ bounded audit tombstones retain only identity digests and terminal evidence.
 - There is no general delete, arbitrary Luau, active/default Studio route,
   silent v1 fallback, or cross-script atomicity claim.
 - Capability parity remains incomplete and `multi_edit` remains `v2_partial`.
-- A separate, explicitly authorized disposable-place live gate is still
-  required before installation or publication of rc.7.
+- The exact source and archive passed 540 automated tests, deterministic
+  build/archive and isolated lifecycle proof, native Studio
+  compile/load/registration, cross-session isolation, and adversarial
+  CAS/replay/reconnect/expiry coverage.
+- The bounded live gate passed in the two disposable Custom MCP test places:
+  mixed edit/create, concurrent peer-job creation, wrong-session rejection,
+  exact restoration, and transaction-owned cleanup all succeeded.
+- The durable installed-path sanity resolved both disposable sessions with
+  distinct client/document identities in Edit and zero pending, uncertainty,
+  recovery, or nonterminal jobs.
+- The public tag and five exact qualified release assets are immutable. Public
+  unauthenticated downloads reproduce every published checksum.

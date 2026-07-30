@@ -11,14 +11,13 @@ name is `Roblox_Studio_Multisession`. Every Studio-bound tool requires an
 explicit, server-assigned `studio_id`. There is no active Studio pointer,
 implicit single-session choice, or default-session fallback.
 
-Version `0.4.0-rc.7` is an isolated, unpublished correction to the rejected
-rc.6 script-lifecycle candidate, based on the published and installed
-`0.4.0-rc.5` state. It retains expected-absent creation of bounded `Script`,
-`LocalScript`, and `ModuleScript` instances and adds a distinct, identity-bound
-authorization for later cleanup of only exact unchanged
-transaction-created scripts. The durable installed rc.5 bytes remain
-untouched, and installed `0.4.0-rc.4` remains rc.5's immutable immediate
-rollback target.
+Version `0.4.0-rc.7` is the current published experimental prerelease. It
+corrects the rejected rc.6 script-lifecycle candidate, retains expected-absent
+creation of bounded `Script`, `LocalScript`, and `ModuleScript` instances, and
+adds a distinct, identity-bound authorization for later cleanup of only exact
+unchanged transaction-created scripts. Transactional upgrades from
+`0.4.0-rc.5` retain rc.5 as the immediate rollback; installed
+`0.4.0-rc.4` remains an older recovery release.
 The `0.3.0-rc.4` restore artifact remains available as older recovery history.
 Rc.5 transactionally replaced an owned former
 `Roblox_Studio_v2` Codex registration with
@@ -29,11 +28,11 @@ basename, and manifest format remain unchanged. Rc.5 also installs canonical
 launcher/manager names and points the sole Codex registration at the canonical
 launcher. The retained physical aliases form an intentional migration bridge
 so the `0.4.0-rc.4` bootstrap, update journal, and byte-for-byte one-step
-rollback remain usable. The public experimental prerelease tag
-[`v0.4.0-rc.5`](https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/tag/v0.4.0-rc.5)
+rollback remain usable. The current public experimental prerelease tag
+[`v0.4.0-rc.7`](https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/tag/v0.4.0-rc.7)
 is pinned to qualified commit
-`923422254e95050f0fe66bacc0114e9ace2789c5` and source tree
-`3e3713045821412b6a6bbe0a4db9e27ab7bb58e3`. The tag and release artifacts
+`63dd793f385ebb9c992fd325185acae07c27aa21` and source tree
+`f9f4921e779c4d46a4cef8bb1e3af3053337d947`. The tag and release artifacts
 remain immutable; later default-branch documentation does not replace them.
 
 > **Experimental prerelease:** the safe Multisession surface does not yet
@@ -134,7 +133,7 @@ the exact Studio main-executable hash, Info.plist version/build and bundle
 executable, and narrow Apple/Roblox signing identity with the executable's
 CDHash. Full-bundle `codesign --verify --deep --strict` remains useful
 diagnostic/provenance evidence, but is not a hard functional prerequisite.
-Compilation evidence covers the exact sole `Main` source. The exact rc.5
+Compilation evidence covers the exact sole `Main` source. The exact rc.7
 rendered plugin also passed the linked load/registration gate, clean-log
 checks, bounded explicit-session reads, and concurrent cross-session isolation
 before publication. Future candidates must repeat the applicable linked gate.
@@ -159,22 +158,24 @@ rc.5 activates, use `roblox-studio-mcp-multisession-manage`. Direct
 cross-version replacement is refused unless it is the exact candidate inside
 that live, nonce-fenced update transaction.
 
-### Published `0.4.0-rc.5` prerelease
+### Published `0.4.0-rc.7` prerelease
 
 The exact public release files are:
 
 | File | SHA-256 |
 |---|---|
-| `roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz` | `d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d` |
-| `roblox-studio-mcp-v2-bootstrap-0.4.0-rc.5.py` | `e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b` |
-| `SHA256SUMS` | `fa7339b2271f815e7e43bdd7a93008646bf062b701ddcf72f358c99b25924b4f` |
+| `roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz` | `2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8` |
+| `roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz.sha256` | `dfce91f45171396820d49d22a2c5f55b7ccef356bd66069bc7879e2c5612e362` |
+| `roblox-studio-mcp-v2-bootstrap-0.4.0-rc.7.py` | `e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b` |
+| `roblox-studio-mcp-v2-bootstrap-0.4.0-rc.7.py.sha256` | `17a3638a5b972532a520a02933c660971ec9799b26b4c369948b39c13df5236e` |
+| `SHA256SUMS` | `ab023fbab1198c704006287024705cb57a599b478a235c767d398fa9a86ca14e` |
 
 For a fresh install or reinstall of the same version, this command downloads
 the exact bootstrap, verifies its fixed digest, and gives it the exact archive
 digest:
 
 ```bash
-/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.4.0-rc.5 e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
+/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.4.0-rc.7 e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b 2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8
 ```
 
 The command deliberately does not pipe network content into a shell. The
@@ -241,6 +242,29 @@ when disabled, that Studio simply remains unregistered. After those gates,
 name the desired place in the task; do not manually select a broker session.
 
 ## Repair, update, rollback, and uninstall
+
+To update an installed rc.5 to rc.7 while retaining rc.5 as the immediate
+rollback:
+
+```bash
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
+  update \
+  --owner KyberWolffe \
+  --repo roblox-studio-mcp-multisession \
+  --tag v0.4.0-rc.7 \
+  --expected-sha256 2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8
+```
+
+The exact one-step rollback is:
+
+```bash
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
+  rollback \
+  --to-version 0.4.0-rc.5 \
+  --accept-current-version 0.4.0-rc.7
+```
+
+Historical rc.4-to-rc.5 migration remains supported:
 
 To migrate an installed `0.4.0-rc.4` release to rc.5, first close Studio
 windows and use rc.4's former manager name. The guarded update retains rc.4 as
@@ -336,7 +360,7 @@ hash-fenced.
 - [Testing and release proof](docs/TESTING.md)
 - [GitHub distribution](docs/GITHUB_DISTRIBUTION.md)
 - [Design provenance and source limits](docs/SOURCE_AUDIT.md)
-- [Current candidate release notes](docs/RELEASE_NOTES_0.4.0-rc.7.md)
-- [Published rc.5 release notes](docs/RELEASE_NOTES_0.4.0-rc.5.md)
+- [Published rc.7 release notes](docs/RELEASE_NOTES_0.4.0-rc.7.md)
+- [Prior rc.5 release notes](docs/RELEASE_NOTES_0.4.0-rc.5.md)
 - [Changelog](CHANGELOG.md)
 - [License status](LICENSE_STATUS.md)

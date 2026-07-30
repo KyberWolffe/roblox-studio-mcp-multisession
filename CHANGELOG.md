@@ -8,8 +8,25 @@ separately and is reported by `doctor`.
 
 Corrected the live cleanup-admission defect that rejected rc.6. Successful
 creation now retains a separate, bounded cleanup authorization after normal
-apply recovery closes. Rc.6 remains immutable and rejected; installed rc.5 and
-its rc.4 rollback remain unchanged.
+apply recovery closes. Rc.6 remains immutable and rejected. Rc.7 was
+transactionally promoted with rc.5 retained as its immediate rollback and rc.4
+retained as older recovery.
+
+### Publication and qualification
+
+- Published as an immutable experimental GitHub prerelease from tag
+  `v0.4.0-rc.7`, commit
+  `63dd793f385ebb9c992fd325185acae07c27aa21`, and source tree
+  `f9f4921e779c4d46a4cef8bb1e3af3053337d947`.
+- Qualified the exact archive
+  `2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8`
+  and bootstrap
+  `e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b`.
+- 540 automated tests, deterministic release proof, native Studio
+  compile/load, disposable-place transactional cleanup, durable installed
+  registration, and explicit-session isolation gates passed.
+- Capability parity remains incomplete and `multi_edit` remains
+  `v2_partial`; this is not a stable or cross-script-atomicity claim.
 
 ### Transaction-scoped cleanup
 

@@ -4,7 +4,7 @@ This document describes the release flow for
 `KyberWolffe/roblox-studio-mcp-multisession`. Never substitute a mutable branch
 for an exact version tag.
 
-Version `0.4.0-rc.5` uses the canonical product name Roblox Studio MCP
+Version `0.4.0-rc.7` uses the canonical product name Roblox Studio MCP
 Multisession and Codex server name `Roblox_Studio_Multisession`. Its archive,
 bootstrap, plugin, support-root, manifest, and former launcher-alias names
 intentionally retain their `v2` physical identities. The immutable
@@ -13,13 +13,13 @@ renaming the compatibility artifacts would break the migration bridge.
 
 ## Public repository
 
-A public release requires no GitHub credentials to install. This current rc.5
+A public release requires no GitHub credentials to install. This current rc.7
 command downloads the versioned bootstrap from the exact immutable tag,
 verifies its published digest, pins the archive digest, and runs only the
 verified file:
 
 ```bash
-/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.4.0-rc.5 e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
+/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.4.0-rc.7 e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b 2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8
 ```
 
 This bootstrap path is for a fresh install or reinstalling the same version.
@@ -41,13 +41,13 @@ does not execute content from `main`.
 
 ```bash
 curl --fail --location --remote-name \
-  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.4.0-rc.5/roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.4.0-rc.7/roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz"
 curl --fail --location --remote-name \
-  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.4.0-rc.5/roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz.sha256"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.4.0-rc.7/roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz.sha256"
 shasum -a 256 --check \
-  roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz.sha256
-tar -xzf roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz
-python3 roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64/install.py install
+  roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz.sha256
+tar -xzf roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz
+python3 roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64/install.py install
 ```
 
 Compare the displayed digest with the GitHub Release notes or another trusted
@@ -63,21 +63,21 @@ authentication outside Multisession:
 
 ```bash
 gh auth status
-gh release download v0.4.0-rc.5 \
+gh release download v0.4.0-rc.7 \
   --repo KyberWolffe/roblox-studio-mcp-multisession \
-  --pattern 'roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz*'
+  --pattern 'roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz*'
 ```
 
 Then verify and install exactly as above, or pass the local files to the
 installed manager:
 
 ```bash
-"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
   update \
-  --tag v0.4.0-rc.5 \
-  --archive ./roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz \
-  --checksum-file ./roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz.sha256 \
-  --expected-sha256 d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
+  --tag v0.4.0-rc.7 \
+  --archive ./roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz \
+  --checksum-file ./roblox-studio-mcp-v2-0.4.0-rc.7-macos-arm64.tar.gz.sha256 \
+  --expected-sha256 2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8
 ```
 
 Do not paste a GitHub token into chat, a Multisession configuration file, a
@@ -146,6 +146,27 @@ publish job, where `contents: write` is required to create the release:
 
 ## Update and rollback
 
+Current rc.5-to-rc.7 online update through the canonical manager:
+
+```bash
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
+  update \
+  --owner KyberWolffe \
+  --repo roblox-studio-mcp-multisession \
+  --tag v0.4.0-rc.7 \
+  --expected-sha256 2f116b0a072c59513e3a0f63857c2f0559a17ead5a8d06bb9d525ac00d59d7b8
+```
+
+Exact rollback from rc.7 to the retained rc.5 installation:
+
+```bash
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
+  rollback \
+  --to-version 0.4.0-rc.5 \
+  --accept-current-version 0.4.0-rc.7
+```
+
+The following initial rc.4-to-rc.5 migration remains historical and supported.
 The initial rc.4-to-rc.5 migration is invoked through rc.4's former manager
 name. After rc.5 activates, use the canonical manager for later operations.
 
