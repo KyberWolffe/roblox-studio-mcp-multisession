@@ -23,8 +23,12 @@ basename, and manifest format remain unchanged. Rc.5 also installs canonical
 launcher/manager names and points the sole Codex registration at the canonical
 launcher. The retained physical aliases form an intentional migration bridge
 so the `0.4.0-rc.4` bootstrap, update journal, and byte-for-byte one-step
-rollback remain usable. Rc.5 is not installed or published by this source
-change.
+rollback remain usable. The public experimental prerelease tag
+[`v0.4.0-rc.5`](https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/tag/v0.4.0-rc.5)
+is pinned to qualified commit
+`923422254e95050f0fe66bacc0114e9ace2789c5` and source tree
+`3e3713045821412b6a6bbe0a4db9e27ab7bb58e3`. The tag and release artifacts
+remain immutable; later default-branch documentation does not replace them.
 
 > **Experimental prerelease:** the safe Multisession surface does not yet
 > cover all 25 modern v1 capabilities. Twelve P0 rows remain partial or
@@ -124,10 +128,11 @@ the exact Studio main-executable hash, Info.plist version/build and bundle
 executable, and narrow Apple/Roblox signing identity with the executable's
 CDHash. Full-bundle `codesign --verify --deep --strict` remains useful
 diagnostic/provenance evidence, but is not a hard functional prerequisite.
-Compilation evidence covers the exact sole `Main` source; a linked future gate
-must then load the actual candidate plugin, verify registration and clean
-logs, and run bounded read-only operations against explicitly targeted Studio
-sessions. See `docs/TESTING.md`.
+Compilation evidence covers the exact sole `Main` source. The exact rc.5
+rendered plugin also passed the linked load/registration gate, clean-log
+checks, bounded explicit-session reads, and concurrent cross-session isolation
+before publication. Future candidates must repeat the applicable linked gate.
+See `docs/TESTING.md`.
 
 To build only the portable release:
 
@@ -148,8 +153,31 @@ rc.5 activates, use `roblox-studio-mcp-multisession-manage`. Direct
 cross-version replacement is refused unless it is the exact candidate inside
 that live, nonce-fenced update transaction.
 
-The release publishes a small versioned bootstrap separately. The following
-historical `0.3.0-rc.3` command is retained verbatim as provenance: it
+### Current `0.4.0-rc.5` prerelease
+
+The exact public release files are:
+
+| File | SHA-256 |
+|---|---|
+| `roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz` | `d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d` |
+| `roblox-studio-mcp-v2-bootstrap-0.4.0-rc.5.py` | `e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b` |
+| `SHA256SUMS` | `fa7339b2271f815e7e43bdd7a93008646bf062b701ddcf72f358c99b25924b4f` |
+
+For a fresh install or reinstall of the same version, this command downloads
+the exact bootstrap, verifies its fixed digest, and gives it the exact archive
+digest:
+
+```bash
+/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.4.0-rc.5 e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
+```
+
+The command deliberately does not pipe network content into a shell. The
+verified bootstrap verifies the archive checksum and internal manifest before
+invoking the fresh/same-version installer.
+
+### Historical provenance
+
+The following `0.3.0-rc.3` command is retained verbatim as provenance. It
 downloads from an exact tag, verifies both fixed release digests, then runs
 the verified bootstrap. The owner, repository, tag, and digests are pinned to
 that release:
@@ -157,10 +185,6 @@ that release:
 ```bash
 /bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.3 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
 ```
-
-The command deliberately does not pipe network content into a shell. The
-verified bootstrap then verifies the archive checksum and internal manifest
-before invoking the fresh/same-version installer.
 
 The matching historical explicit archive path is:
 
@@ -212,9 +236,21 @@ name the desired place in the task; do not manually select a broker session.
 
 ## Repair, update, rollback, and uninstall
 
-The pinned `0.3.0-rc.3` tag and digest in this block are retained as a
-historical exact-release example. Use the target release's reviewed tag and
-published digest for a current update.
+To migrate an installed `0.4.0-rc.4` release to rc.5, first close Studio
+windows and use rc.4's former manager name. The guarded update retains rc.4 as
+the immediate rollback:
+
+```bash
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
+  update \
+  --owner KyberWolffe \
+  --repo roblox-studio-mcp-multisession \
+  --tag v0.4.0-rc.5 \
+  --expected-sha256 d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
+```
+
+After rc.5 activates, use the canonical manager for status, repair, later
+exact-tag updates, rollback, and uninstall:
 
 ```bash
 MANAGER="$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage"
@@ -222,8 +258,8 @@ MANAGER="$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-m
 "$MANAGER" update \
   --owner KyberWolffe \
   --repo roblox-studio-mcp-multisession \
-  --tag v0.3.0-rc.3 \
-  --expected-sha256 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
+  --tag vNEXT \
+  --expected-sha256 ARCHIVE_SHA256_FROM_TARGET_RELEASE
 "$MANAGER" rollback --to-version PREVIOUS_VERSION --accept-current-version CURRENT_VERSION
 "$MANAGER" uninstall
 ```

@@ -13,13 +13,13 @@ renaming the compatibility artifacts would break the migration bridge.
 
 ## Public repository
 
-A public release requires no GitHub credentials to install. This single
-historical `0.3.0-rc.3` command is retained verbatim as provenance. It
-downloads the versioned bootstrap from an exact tag, verifies its published
-digest, pins the archive digest, and runs only the verified file:
+A public release requires no GitHub credentials to install. This current rc.5
+command downloads the versioned bootstrap from the exact immutable tag,
+verifies its published digest, pins the archive digest, and runs only the
+verified file:
 
 ```bash
-/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.3.0-rc.3 96d602fff3acb610dda09e1c0769c7864707267ac018004b9b6aa4c6f6f7a750 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
+/bin/bash -ceu 'd="$(mktemp -d)"; f="$d/roblox-studio-mcp-v2-bootstrap-${3#v}.py"; curl --fail --location --output "$f" "https://github.com/$1/$2/releases/download/$3/${f##*/}"; printf "%s  %s\n" "$4" "$f" | shasum -a 256 --check; python3 "$f" --owner "$1" --repo "$2" --tag "$3" --expected-sha256 "$5"; rm -- "$f"; rmdir -- "$d"' -- KyberWolffe roblox-studio-mcp-multisession v0.4.0-rc.5 e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
 ```
 
 This bootstrap path is for a fresh install or reinstalling the same version.
@@ -37,21 +37,24 @@ The bootstrap:
 The bootstrap itself is not trusted until its fixed SHA-256 is verified. It
 does not execute content from `main`.
 
-## Historical manual archive verification
+## Manual archive verification
 
 ```bash
 curl --fail --location --remote-name \
-  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.3.0-rc.3/roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64.tar.gz"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.4.0-rc.5/roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz"
 curl --fail --location --remote-name \
-  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.3.0-rc.3/roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64.tar.gz.sha256"
+  "https://github.com/KyberWolffe/roblox-studio-mcp-multisession/releases/download/v0.4.0-rc.5/roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz.sha256"
 shasum -a 256 --check \
-  roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64.tar.gz.sha256
-tar -xzf roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64.tar.gz
-python3 roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64/install.py install
+  roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz.sha256
+tar -xzf roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz
+python3 roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64/install.py install
 ```
 
 Compare the displayed digest with the GitHub Release notes or another trusted
 channel before running the installer.
+
+The former `0.3.0-rc.3` commands remain preserved in that release's immutable
+tag and documentation as historical provenance.
 
 ## Private repository
 
@@ -60,9 +63,9 @@ authentication outside Multisession:
 
 ```bash
 gh auth status
-gh release download v0.3.0-rc.3 \
+gh release download v0.4.0-rc.5 \
   --repo KyberWolffe/roblox-studio-mcp-multisession \
-  --pattern 'roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64.tar.gz*'
+  --pattern 'roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz*'
 ```
 
 Then verify and install exactly as above, or pass the local files to the
@@ -71,10 +74,10 @@ installed manager:
 ```bash
 "$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
   update \
-  --tag v0.3.0-rc.3 \
-  --archive ./roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64.tar.gz \
-  --checksum-file ./roblox-studio-mcp-v2-0.3.0-rc.3-macos-arm64.tar.gz.sha256 \
-  --expected-sha256 75a6f94f16e738c515eac3d9cc59a2f1ce3e645edacfe9783f06ac213ce72723
+  --tag v0.4.0-rc.5 \
+  --archive ./roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz \
+  --checksum-file ./roblox-studio-mcp-v2-0.4.0-rc.5-macos-arm64.tar.gz.sha256 \
+  --expected-sha256 d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
 ```
 
 Do not paste a GitHub token into chat, a Multisession configuration file, a
@@ -144,17 +147,17 @@ publish job, where `contents: write` is required to create the release:
 ## Update and rollback
 
 The initial rc.4-to-rc.5 migration is invoked through rc.4's former manager
-name. After rc.5 activates, use the canonical manager shown below.
+name. After rc.5 activates, use the canonical manager for later operations.
 
-Online update:
+Exact rc.4-to-rc.5 online update:
 
 ```bash
-"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-multisession-manage" \
+"$HOME/Library/Application Support/RobloxStudioMCPv2/bin/roblox-studio-mcp-v2-manage" \
   update \
   --owner KyberWolffe \
   --repo roblox-studio-mcp-multisession \
-  --tag vNEXT \
-  --expected-sha256 ARCHIVE_SHA256_FROM_TARGET_RELEASE
+  --tag v0.4.0-rc.5 \
+  --expected-sha256 d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d
 ```
 
 Rollback to a retained installed version:

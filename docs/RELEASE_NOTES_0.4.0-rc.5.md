@@ -11,6 +11,27 @@ The durable installed `0.4.0-rc.4` integration and its immutable restore
 bundle remain the required immediate rollback target. The
 `0.3.0-rc.4` restore artifact remains older recovery history.
 
+## Publication and qualification
+
+This exact candidate is published as an experimental prerelease:
+
+- tag: `v0.4.0-rc.5`;
+- commit: `923422254e95050f0fe66bacc0114e9ace2789c5`;
+- source tree: `3e3713045821412b6a6bbe0a4db9e27ab7bb58e3`;
+- Apple-Silicon archive SHA-256:
+  `d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d`;
+- bootstrap SHA-256:
+  `e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b`;
+- `SHA256SUMS` SHA-256:
+  `fa7339b2271f815e7e43bdd7a93008646bf062b701ddcf72f358c99b25924b4f`.
+
+The exact rendered plugin compiled in Studio, loaded and registered under the
+canonical Codex name, and passed bounded explicit-session state, search, grep,
+inspection, same-session serialization, cross-session isolation, and
+revision-protected multi-edit routing gates. All 479 automated tests passed.
+The retained `0.4.0-rc.4` package remains the immediate guarded rollback for
+systems migrated from rc.4.
+
 ## Canonical names
 
 | Surface | Canonical rc.5 value |
@@ -64,5 +85,5 @@ two-phase semantics.
 
 Every operational tool still requires an explicit `studio_id`; discovery is
 the sole exception. Capability parity remains incomplete and the release must
-remain marked as a prerelease. Source preparation alone is not an installation
-or live-validation claim.
+remain marked as a prerelease. The qualification above applies only to the
+exact tagged source and fixed release digests; it is not a full-parity claim.

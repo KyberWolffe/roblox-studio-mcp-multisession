@@ -4,11 +4,25 @@ This project uses semantic versioning for the broker, installer, and Studio
 plugin release. The reviewed upstream Roblox tool-catalog version is tracked
 separately and is reported by `doctor`.
 
-## 0.4.0-rc.5 — unreleased
+## 0.4.0-rc.5 — 2026-07-29
 
 Renamed the public product and Codex registration to Roblox Studio MCP
 Multisession without changing the v2 protocol, tool, or physical installation
 identities that rc.4 recovery depends on.
+
+### Publication and qualification
+
+- Published as an experimental GitHub prerelease from immutable tag
+  `v0.4.0-rc.5`, commit
+  `923422254e95050f0fe66bacc0114e9ace2789c5`.
+- Qualified the exact archive
+  `d279d1f6c9b3f075b176efd4e98e543053ccd0fff5e99a8be2d7f949012b559d`
+  and bootstrap
+  `e4f35d878024a3c73d6276bc512236e1cad8637c98894da976b233d556cd346b`;
+  479 automated tests and linked native load, registration, and explicit
+  multi-session isolation gates passed.
+- Capability parity remains incomplete, so this release remains experimental
+  and is not promoted to a stable release.
 
 ### Canonical public identity
 
